@@ -18,26 +18,26 @@ services:
       REDIS_URL: "${REDIS_URL:-redis://tapdue_user:BhUK71tUxASNZqOoQGMGJoQjLjhuv5WW@projects-redis:6379/0}"
       REDIS_KEY_PREFIX: "auth:"
       ADMIN_API_KEY: "${ADMIN_API_KEY}"
-      BASE_URL: "${BASE_URL:-https://auth.tapdue.com}"
+      BASE_URL: "${BASE_URL:-https://authservice.ayushojha.com}"
       JWT_ACCESS_TTL: "${JWT_ACCESS_TTL:-15m}"
       JWT_REFRESH_TTL: "${JWT_REFRESH_TTL:-168h}"
       BCRYPT_COST: "${BCRYPT_COST:-12}"
       RESEND_API_KEY: "${RESEND_API_KEY:-}"
-      EMAIL_FROM: "${EMAIL_FROM:-Auth Service <noreply@tapdue.com>}"
+      EMAIL_FROM: "${EMAIL_FROM:-Auth Service <noreply@ayushojha.com>}"
       GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
       GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
-      GOOGLE_REDIRECT_URL: "${GOOGLE_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/google/callback}"
+      GOOGLE_REDIRECT_URL: "${GOOGLE_REDIRECT_URL:-https://authservice.ayushojha.com/api/auth/oauth/google/callback}"
       GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
       GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"
-      GITHUB_REDIRECT_URL: "${GITHUB_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/github/callback}"
+      GITHUB_REDIRECT_URL: "${GITHUB_REDIRECT_URL:-https://authservice.ayushojha.com/api/auth/oauth/github/callback}"
       MICROSOFT_CLIENT_ID: "${MICROSOFT_CLIENT_ID:-}"
       MICROSOFT_CLIENT_SECRET: "${MICROSOFT_CLIENT_SECRET:-}"
       MICROSOFT_TENANT_ID: "${MICROSOFT_TENANT_ID:-common}"
-      MICROSOFT_REDIRECT_URL: "${MICROSOFT_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/microsoft/callback}"
+      MICROSOFT_REDIRECT_URL: "${MICROSOFT_REDIRECT_URL:-https://authservice.ayushojha.com/api/auth/oauth/microsoft/callback}"
       APPLE_CLIENT_ID: "${APPLE_CLIENT_ID:-}"
-      APPLE_REDIRECT_URL: "${APPLE_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/apple/callback}"
-      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:-auth.tapdue.com}"
-      WEBAUTHN_RP_ORIGIN: "${WEBAUTHN_RP_ORIGIN:-https://auth.tapdue.com}"
+      APPLE_REDIRECT_URL: "${APPLE_REDIRECT_URL:-https://authservice.ayushojha.com/api/auth/oauth/apple/callback}"
+      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:-authservice.ayushojha.com}"
+      WEBAUTHN_RP_ORIGIN: "${WEBAUTHN_RP_ORIGIN:-https://authservice.ayushojha.com}"
       WEBAUTHN_DISPLAY_NAME: "${WEBAUTHN_DISPLAY_NAME:-Auth Service}"
     networks:
       - coolify
@@ -54,10 +54,10 @@ services:
       - traefik.http.middlewares.redirect-to-https-auth.redirectscheme.scheme=https
       - traefik.http.routers.http-auth.entryPoints=http
       - traefik.http.routers.http-auth.middlewares=redirect-to-https-auth
-      - "traefik.http.routers.http-auth.rule=Host(`auth.tapdue.com`)"
+      - "traefik.http.routers.http-auth.rule=Host(`authservice.ayushojha.com`)"
       - traefik.http.routers.https-auth.entryPoints=https
       - traefik.http.routers.https-auth.middlewares=gzip-auth
-      - "traefik.http.routers.https-auth.rule=Host(`auth.tapdue.com`)"
+      - "traefik.http.routers.https-auth.rule=Host(`authservice.ayushojha.com`)"
       - traefik.http.routers.https-auth.tls=true
       - traefik.http.routers.https-auth.tls.certresolver=letsencrypt
       - traefik.http.services.auth-service.loadbalancer.server.port=8080

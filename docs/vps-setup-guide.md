@@ -1,6 +1,6 @@
-# VPS Setup Guide: Authentication Service + TapDue Integration
+# VPS Setup Guide: Authentication Microservice
 
-This guide is for setting up the authentication service on the VPS and integrating it with TapDue. Follow these steps in order.
+This guide covers deploying the authentication microservice on a VPS using Coolify + Traefik, and integrating it with any client project. Follow these steps in order.
 
 ---
 
@@ -9,24 +9,27 @@ This guide is for setting up the authentication service on the VPS and integrati
 ```
 Internet
   │
-  ├── tapdue.com ──────────► Traefik ──► tapdue-api (port 8080)
-  │                                         │
+  ├── project-a.com ───────► Traefik ──► project-a-api
   │                                         │  validates JWTs locally
   │                                         │  via pkg/jwtvalidator
-  │                                         │
-  └── auth.tapdue.com ─────► Traefik ──► auth-service (port 8080/9090)
-                                            │
-                                ┌───────────┼───────────┐
-                                │           │           │
-                            PostgreSQL    Redis     Resend
-                          (auth_service)  (auth:)   (email)
+  │
+  ├── project-b.com ───────► Traefik ──► project-b-api
+  │                                         │  validates JWTs locally
+  │
+  └── authservice.ayushojha.com ──► Traefik ──► auth-service (port 8080/9090)
+                                                  │
+                                      ┌───────────┼───────────┐
+                                      │           │           │
+                                  PostgreSQL    Redis     Resend
+                                (auth_service)  (auth:)   (email)
 ```
 
 **Key Points:**
-- Auth service runs at `auth.tapdue.com` as a separate container
-- TapDue frontend sends auth requests to `auth.tapdue.com` (not `tapdue.com`)
-- TapDue backend validates JWTs locally using `pkg/jwtvalidator` -- no network call needed
-- Both services share the same PostgreSQL instance (different databases) and Redis instance (different key prefixes)
+- Auth service runs at `authservice.ayushojha.com` as a shared microservice for all projects
+- Any project's frontend sends auth requests to `authservice.ayushojha.com` with its unique `X-API-Key`
+- Each project's backend validates JWTs locally using `pkg/jwtvalidator` -- no network call needed
+- All services share the same PostgreSQL instance (different databases) and Redis instance (different key prefixes)
+- Each project is registered as a "client" via the admin API, with fully isolated user namespaces
 
 ---
 
@@ -104,7 +107,7 @@ cd authentication-service
 DATABASE_URL=postgres://admin:i87RfJUBx5HZJuykZt4v9u3zaq10wAqV@projects-db:5432/auth_service?sslmode=disable
 REDIS_URL=redis://tapdue_user:BhUK71tUxASNZqOoQGMGJoQjLjhuv5WW@projects-redis:6379/0
 ADMIN_API_KEY=<generate-a-strong-random-key>
-BASE_URL=https://auth.tapdue.com
+BASE_URL=https://authservice.ayushojha.com
 
 # JWT (defaults are fine)
 JWT_ACCESS_TTL=15m
@@ -113,24 +116,24 @@ BCRYPT_COST=12
 
 # Email
 RESEND_API_KEY=<your-resend-api-key>
-EMAIL_FROM=TapDue <noreply@tapdue.com>
+EMAIL_FROM=Auth Service <noreply@ayushojha.com>
 
-# OAuth (same credentials as TapDue, but with auth.tapdue.com callbacks)
+# OAuth (same credentials as TapDue, but with authservice.ayushojha.com callbacks)
 GOOGLE_CLIENT_ID=<same-as-tapdue>
 GOOGLE_CLIENT_SECRET=<same-as-tapdue>
-GOOGLE_REDIRECT_URL=https://auth.tapdue.com/api/auth/oauth/google/callback
+GOOGLE_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/google/callback
 
 GITHUB_CLIENT_ID=<same-as-tapdue>
 GITHUB_CLIENT_SECRET=<same-as-tapdue>
-GITHUB_REDIRECT_URL=https://auth.tapdue.com/api/auth/oauth/github/callback
+GITHUB_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/github/callback
 
 MICROSOFT_CLIENT_ID=<same-as-tapdue>
 MICROSOFT_CLIENT_SECRET=<same-as-tapdue>
 MICROSOFT_TENANT_ID=common
-MICROSOFT_REDIRECT_URL=https://auth.tapdue.com/api/auth/oauth/microsoft/callback
+MICROSOFT_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/microsoft/callback
 
 APPLE_CLIENT_ID=<same-as-tapdue>
-APPLE_REDIRECT_URL=https://auth.tapdue.com/api/auth/oauth/apple/callback
+APPLE_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/apple/callback
 
 # WebAuthn
 WEBAUTHN_RP_ID=tapdue.com
@@ -153,10 +156,10 @@ You must update your OAuth provider configurations to add the new callback URLs:
 
 | Provider  | New Callback URL |
 |-----------|-----------------|
-| Google    | `https://auth.tapdue.com/api/auth/oauth/google/callback` |
-| GitHub    | `https://auth.tapdue.com/api/auth/oauth/github/callback` |
-| Microsoft | `https://auth.tapdue.com/api/auth/oauth/microsoft/callback` |
-| Apple     | `https://auth.tapdue.com/api/auth/oauth/apple/callback` |
+| Google    | `https://authservice.ayushojha.com/api/auth/oauth/google/callback` |
+| GitHub    | `https://authservice.ayushojha.com/api/auth/oauth/github/callback` |
+| Microsoft | `https://authservice.ayushojha.com/api/auth/oauth/microsoft/callback` |
+| Apple     | `https://authservice.ayushojha.com/api/auth/oauth/apple/callback` |
 
 ---
 
@@ -164,24 +167,24 @@ You must update your OAuth provider configurations to add the new callback URLs:
 
 ```bash
 # Health check
-curl https://auth.tapdue.com/healthz
+curl https://authservice.ayushojha.com/healthz
 # Expected: {"status":"ok"}
 ```
 
 ---
 
-## Step 5: Register TapDue as a Client
+## Step 5: Register a Project as a Client
 
-Once the auth service is running, register TapDue as a client tenant:
+Once the auth service is running, register any project as a client tenant. Example:
 
 ```bash
-curl -X POST https://auth.tapdue.com/api/admin/clients \
+curl -X POST https://authservice.ayushojha.com/api/admin/clients \
   -H "X-Admin-Key: <your-ADMIN_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "TapDue",
-    "slug": "tapdue",
-    "allowed_origins": ["https://tapdue.com", "https://www.tapdue.com"],
+    "name": "My Project",
+    "slug": "my-project",
+    "allowed_origins": ["https://myproject.com", "https://www.myproject.com"],
     "webhook_url": ""
   }'
 ```
@@ -500,7 +503,7 @@ Set `AUTH_JWT_SECRET` in Coolify to the `jwt_secret` value from Step 5.
 
 ## Step 8: Update TapDue Frontend
 
-The TapDue frontend needs to point auth-related requests to `auth.tapdue.com` instead of `tapdue.com`:
+The TapDue frontend needs to point auth-related requests to `authservice.ayushojha.com` instead of `tapdue.com`:
 
 ### Changes Required
 
@@ -510,7 +513,7 @@ The TapDue frontend needs to point auth-related requests to `auth.tapdue.com` in
    fetch('/api/auth/login', { ... })
 
    // After
-   fetch('https://auth.tapdue.com/api/auth/login', {
+   fetch('https://authservice.ayushojha.com/api/auth/login', {
      headers: {
        'Content-Type': 'application/json',
        'X-API-Key': 'your-client-api-key'
@@ -522,20 +525,20 @@ The TapDue frontend needs to point auth-related requests to `auth.tapdue.com` in
 
 2. **Store the API key** in the frontend config (it's not secret -- it identifies the client):
    ```javascript
-   const AUTH_BASE_URL = 'https://auth.tapdue.com';
+   const AUTH_BASE_URL = 'https://authservice.ayushojha.com';
    const AUTH_API_KEY = 'your-client-api-key-from-step-5';
    ```
 
-3. **Token handling** -- Access tokens from the auth service work identically. Store in `localStorage` and send as `Authorization: Bearer {token}` to both `auth.tapdue.com` (for auth endpoints) and `tapdue.com` (for business endpoints).
+3. **Token handling** -- Access tokens from the auth service work identically. Store in `localStorage` and send as `Authorization: Bearer {token}` to both `authservice.ayushojha.com` (for auth endpoints) and `tapdue.com` (for business endpoints).
 
-4. **Or use auth service's frontend pages** -- Instead of maintaining separate login/signup pages in TapDue, redirect to `auth.tapdue.com/login.html?api_key=YOUR_API_KEY`. The auth service already has polished login, signup, verify-email, forgot-password, reset-password, and 2FA pages.
+4. **Or use auth service's frontend pages** -- Instead of maintaining separate login/signup pages in TapDue, redirect to `authservice.ayushojha.com/login.html?api_key=YOUR_API_KEY`. The auth service already has polished login, signup, verify-email, forgot-password, reset-password, and 2FA pages.
 
 ### Redirect-Based Flow (Simpler)
 
 ```javascript
 // In TapDue frontend, redirect to auth service for login
 function login() {
-  window.location.href = 'https://auth.tapdue.com/login.html?api_key=YOUR_API_KEY';
+  window.location.href = 'https://authservice.ayushojha.com/login.html?api_key=YOUR_API_KEY';
 }
 
 // Auth service redirects back with access_token after successful login
@@ -598,16 +601,16 @@ Also migrate sessions, oauth_accounts, webauthn_credentials, and verification_to
 
 ## Step 10: DNS Setup
 
-Ensure `auth.tapdue.com` DNS record points to your VPS:
+Ensure `authservice.ayushojha.com` DNS record points to your VPS:
 
 ```
 Type: A
-Name: auth
-Value: 72.62.82.57
+Name: authservice
+Value: <your-vps-ip>
 TTL: 300
 ```
 
-Traefik will automatically provision a Let's Encrypt certificate for `auth.tapdue.com`.
+Traefik will automatically provision a Let's Encrypt certificate for `authservice.ayushojha.com`.
 
 ---
 
@@ -615,13 +618,13 @@ Traefik will automatically provision a Let's Encrypt certificate for `auth.tapdu
 
 ### 1. Health check
 ```bash
-curl https://auth.tapdue.com/healthz
+curl https://authservice.ayushojha.com/healthz
 # {"status":"ok"}
 ```
 
 ### 2. Signup a test user
 ```bash
-curl -X POST https://auth.tapdue.com/api/auth/signup \
+curl -X POST https://authservice.ayushojha.com/api/auth/signup \
   -H "X-API-Key: <tapdue-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"TestPass123!","display_name":"Test User"}'
@@ -629,7 +632,7 @@ curl -X POST https://auth.tapdue.com/api/auth/signup \
 
 ### 3. Login
 ```bash
-curl -X POST https://auth.tapdue.com/api/auth/login \
+curl -X POST https://authservice.ayushojha.com/api/auth/login \
   -H "X-API-Key: <tapdue-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"TestPass123!"}'
@@ -667,7 +670,7 @@ The `requireAuth` middleware in TapDue validates the JWT using the same secret, 
 - The `allowed_origins` on the client registration should include `https://tapdue.com`
 
 ### Refresh token cookie not working cross-domain
-- The auth service sets the refresh cookie on `auth.tapdue.com`
+- The auth service sets the refresh cookie on `authservice.ayushojha.com`
 - TapDue at `tapdue.com` cannot read this cookie
 - Solution: Use the auth service's `/api/auth/refresh` endpoint directly from the frontend, or implement a proxy endpoint on TapDue
 
@@ -677,7 +680,7 @@ The `requireAuth` middleware in TapDue validates the JWT using the same secret, 
 
 | Item | Value |
 |------|-------|
-| Auth service URL | `https://auth.tapdue.com` |
+| Auth service URL | `https://authservice.ayushojha.com` |
 | Auth REST port | 8080 |
 | Auth gRPC port | 9090 |
 | Auth database | `auth_service` on `projects-db:5432` |
