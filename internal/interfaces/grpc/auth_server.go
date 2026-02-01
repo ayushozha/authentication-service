@@ -317,9 +317,26 @@ func (s *AuthServer) VerifyMagicLink(ctx context.Context, req *VerifyMagicLinkRe
 
 // --- Service descriptor for manual gRPC registration ---
 
+// authServiceInterface is the interface type required by grpc.ServiceDesc.HandlerType.
+type authServiceInterface interface {
+	Signup(context.Context, *SignupRequest) (*AuthResponse, error)
+	Login(context.Context, *LoginRequest) (*AuthResponse, error)
+	RefreshToken(context.Context, *RefreshTokenRequest) (*AuthResponse, error)
+	Logout(context.Context, *LogoutRequest) (*Empty, error)
+	GetUser(context.Context, *GetUserRequest) (*UserResponse, error)
+	UpdateUser(context.Context, *UpdateUserRequest) (*UserResponse, error)
+	ChangePassword(context.Context, *ChangePasswordRequest) (*Empty, error)
+	VerifyEmail(context.Context, *VerifyEmailRequest) (*Empty, error)
+	ResendVerification(context.Context, *ResendVerificationRequest) (*Empty, error)
+	ForgotPassword(context.Context, *ForgotPasswordRequest) (*Empty, error)
+	ResetPassword(context.Context, *ResetPasswordRequest) (*Empty, error)
+	SendMagicLink(context.Context, *SendMagicLinkRequest) (*Empty, error)
+	VerifyMagicLink(context.Context, *VerifyMagicLinkRequest) (*AuthResponse, error)
+}
+
 var authServiceDesc = grpc.ServiceDesc{
 	ServiceName: "auth.v1.AuthService",
-	HandlerType: (*AuthServer)(nil),
+	HandlerType: (*authServiceInterface)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "Signup",

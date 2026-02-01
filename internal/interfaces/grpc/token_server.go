@@ -52,9 +52,14 @@ func (s *TokenServer) ValidateToken(ctx context.Context, req *ValidateTokenReque
 
 // --- Service descriptor for manual gRPC registration ---
 
+// tokenServiceInterface is the interface type required by grpc.ServiceDesc.HandlerType.
+type tokenServiceInterface interface {
+	ValidateToken(context.Context, *ValidateTokenRequest) (*ValidateTokenResponse, error)
+}
+
 var tokenServiceDesc = grpc.ServiceDesc{
 	ServiceName: "auth.v1.TokenService",
-	HandlerType: (*TokenServer)(nil),
+	HandlerType: (*tokenServiceInterface)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "ValidateToken",

@@ -103,9 +103,18 @@ func (s *AdminServer) RotateAPIKey(ctx context.Context, req *RotateAPIKeyRequest
 
 // --- Service descriptor for manual gRPC registration ---
 
+// adminServiceInterface is the interface type required by grpc.ServiceDesc.HandlerType.
+type adminServiceInterface interface {
+	CreateClient(context.Context, *CreateClientRequest) (*CreateClientResponse, error)
+	GetClient(context.Context, *GetClientRequest) (*ClientResponse, error)
+	ListClients(context.Context, *ListClientsRequest) (*ListClientsResponse, error)
+	RotateJWTSecret(context.Context, *RotateJWTSecretRequest) (*ClientResponse, error)
+	RotateAPIKey(context.Context, *RotateAPIKeyRequest) (*RotateAPIKeyResponse, error)
+}
+
 var adminServiceDesc = grpc.ServiceDesc{
 	ServiceName: "auth.v1.AdminService",
-	HandlerType: (*AdminServer)(nil),
+	HandlerType: (*adminServiceInterface)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "CreateClient",
