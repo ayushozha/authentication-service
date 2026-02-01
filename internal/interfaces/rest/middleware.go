@@ -37,9 +37,14 @@ func SecureHeaders(next http.Handler) http.Handler {
 }
 
 // RequireAPIKey validates the X-API-Key header and injects the client into context.
+// OPTIONS requests are passed through for CORS preflight support.
 func RequireAPIKey(clientSvc *application.ClientService) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodOptions {
+				next.ServeHTTP(w, r)
+				return
+			}
 			apiKey := r.Header.Get("X-API-Key")
 			if apiKey == "" {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing X-API-Key header"})
@@ -68,9 +73,14 @@ func RequireAPIKey(clientSvc *application.ClientService) func(http.Handler) http
 }
 
 // RequireAdminKey validates the master admin API key.
+// OPTIONS requests are passed through for CORS preflight support.
 func RequireAdminKey(adminAPIKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodOptions {
+				next.ServeHTTP(w, r)
+				return
+			}
 			key := r.Header.Get("X-Admin-Key")
 			if key == "" || key != adminAPIKey {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin key"})
