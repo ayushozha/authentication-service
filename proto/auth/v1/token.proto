@@ -1,0 +1,23 @@
+syntax = "proto3";
+package auth.v1;
+option go_package = "github.com/Ayush10/authentication-service/proto/auth/v1";
+
+// TokenService provides token validation for other microservices.
+service TokenService {
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+}
+
+message ValidateTokenRequest {
+  string access_token = 1;
+  string api_key = 2;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  string user_id = 2;
+  string email = 3;
+  string role = 4;
+  bool email_verified = 5;
+  string client_id = 6;
+  string error = 7;
+}

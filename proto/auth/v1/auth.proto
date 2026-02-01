@@ -1,0 +1,132 @@
+syntax = "proto3";
+package auth.v1;
+option go_package = "github.com/Ayush10/authentication-service/proto/auth/v1";
+
+// AuthService handles user authentication and account management.
+service AuthService {
+  rpc Signup(SignupRequest) returns (AuthResponse);
+  rpc Login(LoginRequest) returns (AuthResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (AuthResponse);
+  rpc Logout(LogoutRequest) returns (Empty);
+  rpc GetUser(GetUserRequest) returns (UserResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (UserResponse);
+  rpc ChangePassword(ChangePasswordRequest) returns (Empty);
+  rpc VerifyEmail(VerifyEmailRequest) returns (Empty);
+  rpc ResendVerification(ResendVerificationRequest) returns (Empty);
+  rpc ForgotPassword(ForgotPasswordRequest) returns (Empty);
+  rpc ResetPassword(ResetPasswordRequest) returns (Empty);
+  rpc SendMagicLink(SendMagicLinkRequest) returns (Empty);
+  rpc VerifyMagicLink(VerifyMagicLinkRequest) returns (AuthResponse);
+}
+
+message Empty {}
+
+message SignupRequest {
+  string email = 1;
+  string password = 2;
+  string display_name = 3;
+  string api_key = 4;
+  string ip = 5;
+  string user_agent = 6;
+}
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+  string api_key = 3;
+  string ip = 4;
+  string user_agent = 5;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+  string api_key = 2;
+  string ip = 3;
+  string user_agent = 4;
+}
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message UpdateUserRequest {
+  string user_id = 1;
+  string display_name = 2;
+  string timezone = 3;
+}
+
+message ChangePasswordRequest {
+  string user_id = 1;
+  string old_password = 2;
+  string new_password = 3;
+  string api_key = 4;
+  string ip = 5;
+  string user_agent = 6;
+}
+
+message VerifyEmailRequest {
+  string token = 1;
+}
+
+message ResendVerificationRequest {
+  string user_id = 1;
+  string base_url = 2;
+}
+
+message ForgotPasswordRequest {
+  string email = 1;
+  string client_id = 2;
+  string base_url = 3;
+}
+
+message ResetPasswordRequest {
+  string token = 1;
+  string new_password = 2;
+}
+
+message SendMagicLinkRequest {
+  string email = 1;
+  string api_key = 2;
+  string base_url = 3;
+  string ip = 4;
+  string user_agent = 5;
+}
+
+message VerifyMagicLinkRequest {
+  string token = 1;
+  string api_key = 2;
+  string ip = 3;
+  string user_agent = 4;
+}
+
+message AuthResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  string token_type = 3;
+  int32 expires_in = 4;
+  UserResponse user = 5;
+  bool requires_2fa = 6;
+  string two_factor_token = 7;
+  repeated string two_factor_methods = 8;
+}
+
+message UserResponse {
+  string id = 1;
+  string client_id = 2;
+  string email = 3;
+  bool email_verified = 4;
+  string display_name = 5;
+  string avatar_url = 6;
+  string timezone = 7;
+  string locale = 8;
+  string role = 9;
+  string status = 10;
+  bool totp_enabled = 11;
+  string last_login_at = 12;
+  string created_at = 13;
+  string updated_at = 14;
+}

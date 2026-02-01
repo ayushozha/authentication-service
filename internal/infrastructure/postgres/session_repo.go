@@ -1,0 +1,91 @@
+package postgres
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"time"
+
+	"github.com/Ayush10/authentication-service/internal/domain"
+	"github.com/google/uuid"
+)
+
+type SessionRepo struct {
+	db *sql.DB
+}
+
+func NewSessionRepo(db *sql.DB) *SessionRepo {
+	return &SessionRepo{db: db}
+}
+
+func generateToken(byteLen int) (string, error) {
+	b := make([]byte, byteLen)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func hashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+func (r *SessionRepo) Create(ctx context.Context, userID, clientID, ip, ua string, ttl time.Duration) (string, error) {
+	rawToken, err := generateToken(32)
+	if err != nil {
+		return "", err
+	}
+	tokenHash := hashToken(rawToken)
+	id := uuid.NewString()
+	expiresAt := time.Now().Add(ttl)
+
+	_, err = r.db.ExecContext(ctx, `
+		INSERT INTO sessions (id, user_id, client_id, refresh_token, user_agent, ip_address, expires_at, revoked, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, NOW())`,
+		id, userID, clientID, tokenHash, ua, ip, expiresAt,
+	)
+	if err != nil {
+		return "", err
+	}
+	return rawToken, nil
+}
+
+func (r *SessionRepo) Validate(ctx context.Context, rawToken string) (string, string, error) {
+	tokenHash := hashToken(rawToken)
+
+	var userID, sessionID string
+	err := r.db.QueryRowContext(ctx, `
+		SELECT id, user_id FROM sessions
+		WHERE refresh_token = $1 AND revoked = FALSE AND expires_at > NOW()`,
+		tokenHash,
+	).Scan(&sessionID, &userID)
+	if err == sql.ErrNoRows {
+		return "", "", domain.ErrInvalidToken
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return userID, sessionID, nil
+}
+
+func (r *SessionRepo) Revoke(ctx context.Context, sessionID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE sessions SET revoked = TRUE WHERE id = $1`, sessionID)
+	return err
+}
+
+func (r *SessionRepo) RevokeByToken(ctx context.Context, rawToken string) error {
+	tokenHash := hashToken(rawToken)
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE sessions SET revoked = TRUE WHERE refresh_token = $1`, tokenHash)
+	return err
+}
+
+func (r *SessionRepo) RevokeAllForUser(ctx context.Context, userID string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE sessions SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE`, userID)
+	return err
+}

@@ -1,0 +1,58 @@
+syntax = "proto3";
+package auth.v1;
+option go_package = "github.com/Ayush10/authentication-service/proto/auth/v1";
+
+// AdminService provides administrative operations for managing clients.
+service AdminService {
+  rpc CreateClient(CreateClientRequest) returns (CreateClientResponse);
+  rpc GetClient(GetClientRequest) returns (ClientResponse);
+  rpc ListClients(ListClientsRequest) returns (ListClientsResponse);
+  rpc RotateJWTSecret(RotateJWTSecretRequest) returns (ClientResponse);
+  rpc RotateAPIKey(RotateAPIKeyRequest) returns (RotateAPIKeyResponse);
+}
+
+message CreateClientRequest {
+  string name = 1;
+  string slug = 2;
+  repeated string allowed_origins = 3;
+  string webhook_url = 4;
+}
+
+message GetClientRequest {
+  string client_id = 1;
+}
+
+message ListClientsRequest {}
+
+message RotateJWTSecretRequest {
+  string client_id = 1;
+}
+
+message RotateAPIKeyRequest {
+  string client_id = 1;
+}
+
+message ClientResponse {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  repeated string allowed_origins = 4;
+  string webhook_url = 5;
+  string status = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message CreateClientResponse {
+  ClientResponse client = 1;
+  string api_key = 2;
+}
+
+message ListClientsResponse {
+  repeated ClientResponse clients = 1;
+}
+
+message RotateAPIKeyResponse {
+  ClientResponse client = 1;
+  string api_key = 2;
+}

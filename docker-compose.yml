@@ -1,0 +1,67 @@
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    expose:
+      - "8080"
+      - "9090"
+    environment:
+      PORT: "8080"
+      GRPC_PORT: "9090"
+      PUBLIC_DIR: "/app/public"
+      SERVE_FRONTEND: "true"
+      ALLOW_ORIGIN: "${ALLOW_ORIGIN:-*}"
+      DATABASE_URL: "${DATABASE_URL:-postgres://admin:i87RfJUBx5HZJuykZt4v9u3zaq10wAqV@projects-db:5432/auth_service?sslmode=disable}"
+      REDIS_URL: "${REDIS_URL:-redis://tapdue_user:BhUK71tUxASNZqOoQGMGJoQjLjhuv5WW@projects-redis:6379/0}"
+      REDIS_KEY_PREFIX: "auth:"
+      ADMIN_API_KEY: "${ADMIN_API_KEY}"
+      BASE_URL: "${BASE_URL:-https://auth.tapdue.com}"
+      JWT_ACCESS_TTL: "${JWT_ACCESS_TTL:-15m}"
+      JWT_REFRESH_TTL: "${JWT_REFRESH_TTL:-168h}"
+      BCRYPT_COST: "${BCRYPT_COST:-12}"
+      RESEND_API_KEY: "${RESEND_API_KEY:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-Auth Service <noreply@tapdue.com>}"
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      GOOGLE_REDIRECT_URL: "${GOOGLE_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/google/callback}"
+      GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
+      GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"
+      GITHUB_REDIRECT_URL: "${GITHUB_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/github/callback}"
+      MICROSOFT_CLIENT_ID: "${MICROSOFT_CLIENT_ID:-}"
+      MICROSOFT_CLIENT_SECRET: "${MICROSOFT_CLIENT_SECRET:-}"
+      MICROSOFT_TENANT_ID: "${MICROSOFT_TENANT_ID:-common}"
+      MICROSOFT_REDIRECT_URL: "${MICROSOFT_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/microsoft/callback}"
+      APPLE_CLIENT_ID: "${APPLE_CLIENT_ID:-}"
+      APPLE_REDIRECT_URL: "${APPLE_REDIRECT_URL:-https://auth.tapdue.com/api/auth/oauth/apple/callback}"
+      WEBAUTHN_RP_ID: "${WEBAUTHN_RP_ID:-auth.tapdue.com}"
+      WEBAUTHN_RP_ORIGIN: "${WEBAUTHN_RP_ORIGIN:-https://auth.tapdue.com}"
+      WEBAUTHN_DISPLAY_NAME: "${WEBAUTHN_DISPLAY_NAME:-Auth Service}"
+    networks:
+      - coolify
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.middlewares.gzip-auth.compress=true
+      - traefik.http.middlewares.redirect-to-https-auth.redirectscheme.scheme=https
+      - traefik.http.routers.http-auth.entryPoints=http
+      - traefik.http.routers.http-auth.middlewares=redirect-to-https-auth
+      - "traefik.http.routers.http-auth.rule=Host(`auth.tapdue.com`)"
+      - traefik.http.routers.https-auth.entryPoints=https
+      - traefik.http.routers.https-auth.middlewares=gzip-auth
+      - "traefik.http.routers.https-auth.rule=Host(`auth.tapdue.com`)"
+      - traefik.http.routers.https-auth.tls=true
+      - traefik.http.routers.https-auth.tls.certresolver=letsencrypt
+      - traefik.http.services.auth-service.loadbalancer.server.port=8080
+
+networks:
+  coolify:
+    external: true
