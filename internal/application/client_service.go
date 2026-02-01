@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
+	"github.com/google/uuid"
 )
 
 type ClientService struct {
@@ -40,7 +42,9 @@ func (s *ClientService) CreateClient(ctx context.Context, req CreateClientReques
 		return nil, fmt.Errorf("generate jwt secret: %w", err)
 	}
 
+	now := time.Now().UTC()
 	client := &domain.Client{
+		ID:             uuid.New().String(),
 		Name:           req.Name,
 		Slug:           req.Slug,
 		JWTSecret:      jwtSecret,
@@ -49,6 +53,8 @@ func (s *ClientService) CreateClient(ctx context.Context, req CreateClientReques
 		Settings:       map[string]interface{}{},
 		Status:         "active",
 		APIKeyHash:     hashKey(apiKey),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	if err := s.clients.Create(ctx, client); err != nil {
