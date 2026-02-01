@@ -88,15 +88,16 @@ func (s *ClientService) GetClientByAPIKey(ctx context.Context, apiKey string) (*
 	return client, nil
 }
 
-func (s *ClientService) RotateJWTSecret(ctx context.Context, clientID string) (*domain.Client, error) {
+func (s *ClientService) RotateJWTSecret(ctx context.Context, clientID string) (string, *domain.Client, error) {
 	newSecret, err := generateSecureKey(32)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	if err := s.clients.UpdateJWTSecret(ctx, clientID, newSecret); err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return s.clients.GetByID(ctx, clientID)
+	client, err := s.clients.GetByID(ctx, clientID)
+	return newSecret, client, err
 }
 
 func (s *ClientService) RotateAPIKey(ctx context.Context, clientID string) (string, *domain.Client, error) {

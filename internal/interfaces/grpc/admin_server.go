@@ -77,7 +77,7 @@ func (s *AdminServer) RotateJWTSecret(ctx context.Context, req *RotateJWTSecretR
 		return nil, status.Errorf(codes.InvalidArgument, "client_id is required")
 	}
 
-	client, err := s.clients.RotateJWTSecret(ctx, req.ClientID)
+	_, client, err := s.clients.RotateJWTSecret(ctx, req.ClientID)
 	if err != nil {
 		return nil, domainToGRPCError(err)
 	}

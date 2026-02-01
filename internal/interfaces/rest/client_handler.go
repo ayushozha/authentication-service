@@ -88,12 +88,12 @@ func (h *ClientHandler) handleClientByID(w http.ResponseWriter, r *http.Request)
 		}
 		switch action {
 		case "rotate-jwt":
-			client, err := h.svc.RotateJWTSecret(ctx, clientID)
+			newSecret, client, err := h.svc.RotateJWTSecret(ctx, clientID)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, client)
+			writeJSON(w, http.StatusOK, map[string]interface{}{"client": client, "jwt_secret": newSecret})
 		case "rotate-key":
 			newKey, client, err := h.svc.RotateAPIKey(ctx, clientID)
 			if err != nil {
