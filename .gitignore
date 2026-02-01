@@ -1,7 +1,7 @@
 .env
 *.exe
 auth-server
-server
-/public/*.html
+/server
+# /public/*.html  # Frontend pages are tracked in git
 tmp/
 .history/
