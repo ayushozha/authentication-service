@@ -23,7 +23,7 @@ func (r *AuditRepo) Log(ctx context.Context, clientID string, userID *string, ev
 	}
 
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO audit_events (client_id, user_id, event_type, ip_address, user_agent, metadata, created_at)
+		INSERT INTO login_audit_log (client_id, user_id, event_type, ip_address, user_agent, metadata, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
 		clientID, userID, eventType, ip, ua, metadataJSON,
 	)

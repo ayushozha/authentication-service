@@ -54,8 +54,11 @@ func main() {
 	rl := redisclient.NewRateLimiter(rdb)
 
 	// Email client
-	mailer := email.NewResendClient(cfg.ResendAPIKey, cfg.EmailFrom)
-	if mailer == nil {
+	var mailer application.EmailSender
+	resendClient := email.NewResendClient(cfg.ResendAPIKey, cfg.EmailFrom)
+	if resendClient != nil {
+		mailer = resendClient
+	} else {
 		log.Printf("WARNING: RESEND_API_KEY not set, email sending disabled")
 	}
 
