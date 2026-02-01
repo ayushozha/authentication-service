@@ -95,7 +95,7 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 	}
 
 	existing, err := s.users.GetByEmail(ctx, client.ID, email)
-	if err != nil {
+	if err != nil && err != domain.ErrNotFound {
 		return nil, fmt.Errorf("internal error")
 	}
 	if existing != nil {
@@ -153,7 +153,7 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 	}
 
 	user, err := s.users.GetByEmail(ctx, client.ID, req.Email)
-	if err != nil {
+	if err != nil && err != domain.ErrNotFound {
 		return nil, "", fmt.Errorf("internal error")
 	}
 	if user == nil || user.PasswordHash == nil || !CheckPassword(*user.PasswordHash, req.Password) {
