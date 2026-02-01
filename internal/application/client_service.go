@@ -28,8 +28,9 @@ type CreateClientRequest struct {
 }
 
 type CreateClientResponse struct {
-	Client *domain.Client `json:"client"`
-	APIKey string         `json:"api_key"`
+	Client    *domain.Client `json:"client"`
+	APIKey    string         `json:"api_key"`
+	JWTSecret string         `json:"jwt_secret"`
 }
 
 func (s *ClientService) CreateClient(ctx context.Context, req CreateClientRequest) (*CreateClientResponse, error) {
@@ -61,7 +62,7 @@ func (s *ClientService) CreateClient(ctx context.Context, req CreateClientReques
 		return nil, err
 	}
 
-	return &CreateClientResponse{Client: client, APIKey: apiKey}, nil
+	return &CreateClientResponse{Client: client, APIKey: apiKey, JWTSecret: jwtSecret}, nil
 }
 
 func (s *ClientService) GetClient(ctx context.Context, id string) (*domain.Client, error) {
