@@ -24,11 +24,11 @@ func (r *ClientRepo) Create(ctx context.Context, client *domain.Client) error {
 	}
 
 	_, err = r.db.ExecContext(ctx, `
-		INSERT INTO clients (id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, api_key_hash, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		INSERT INTO clients (id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, token_mode, api_key_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		client.ID, client.Name, client.Slug, client.JWTSecret,
 		pq.Array(client.AllowedOrigins), client.WebhookURL,
-		settingsJSON, client.Status, client.APIKeyHash,
+		settingsJSON, client.Status, client.TokenMode, client.APIKeyHash,
 		client.CreatedAt, client.UpdatedAt,
 	)
 	return err
@@ -36,25 +36,25 @@ func (r *ClientRepo) Create(ctx context.Context, client *domain.Client) error {
 
 func (r *ClientRepo) GetByID(ctx context.Context, id string) (*domain.Client, error) {
 	return r.scanClient(r.db.QueryRowContext(ctx, `
-		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, api_key_hash, created_at, updated_at
+		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, token_mode, api_key_hash, created_at, updated_at
 		FROM clients WHERE id = $1`, id))
 }
 
 func (r *ClientRepo) GetBySlug(ctx context.Context, slug string) (*domain.Client, error) {
 	return r.scanClient(r.db.QueryRowContext(ctx, `
-		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, api_key_hash, created_at, updated_at
+		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, token_mode, api_key_hash, created_at, updated_at
 		FROM clients WHERE slug = $1`, slug))
 }
 
 func (r *ClientRepo) GetByAPIKeyHash(ctx context.Context, hash string) (*domain.Client, error) {
 	return r.scanClient(r.db.QueryRowContext(ctx, `
-		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, api_key_hash, created_at, updated_at
+		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, token_mode, api_key_hash, created_at, updated_at
 		FROM clients WHERE api_key_hash = $1 AND status = 'active'`, hash))
 }
 
 func (r *ClientRepo) List(ctx context.Context) ([]*domain.Client, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, api_key_hash, created_at, updated_at
+		SELECT id, name, slug, jwt_secret, allowed_origins, webhook_url, settings, status, token_mode, api_key_hash, created_at, updated_at
 		FROM clients`)
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func (r *ClientRepo) scanClient(row *sql.Row) (*domain.Client, error) {
 	err := row.Scan(
 		&c.ID, &c.Name, &c.Slug, &c.JWTSecret,
 		pq.Array(&c.AllowedOrigins), &c.WebhookURL,
-		&settingsJSON, &c.Status, &c.APIKeyHash,
+		&settingsJSON, &c.Status, &c.TokenMode, &c.APIKeyHash,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -149,7 +149,7 @@ func (r *ClientRepo) scanClientFromRow(row rowScanner) (*domain.Client, error) {
 	err := row.Scan(
 		&c.ID, &c.Name, &c.Slug, &c.JWTSecret,
 		pq.Array(&c.AllowedOrigins), &c.WebhookURL,
-		&settingsJSON, &c.Status, &c.APIKeyHash,
+		&settingsJSON, &c.Status, &c.TokenMode, &c.APIKeyHash,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {

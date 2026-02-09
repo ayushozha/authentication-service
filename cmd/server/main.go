@@ -49,6 +49,8 @@ func main() {
 	webauthnRepo := postgres.NewWebAuthnRepo(db)
 	tokenRepo := postgres.NewTokenRepo(db)
 	auditRepo := postgres.NewAuditRepo(db)
+	signingKeyRepo := postgres.NewSigningKeyRepo(db)
+	application.SetSigningKeyRepository(signingKeyRepo)
 
 	// Rate limiter
 	rl := redisclient.NewRateLimiter(rdb)
@@ -66,10 +68,10 @@ func main() {
 	clientSvc := application.NewClientService(clientRepo)
 	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditRepo, rl)
 	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer)
-	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, mailer)
-	magicSvc := application.NewMagicLinkService(userRepo, sessionRepo, rdb, mailer, auditRepo, rl)
+	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer)
+	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, auditRepo, rl)
 	totpSvc := application.NewTOTPService(userRepo, sessionRepo, rdb, auditRepo)
-	oauthSvc := application.NewOAuthService(userRepo, oauthRepo, sessionRepo, rdb, auditRepo)
+	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditRepo)
 
 	// Wire signup email hook
 	verifySvc.WireSignupHook(cfg.BaseURL)
@@ -103,11 +105,14 @@ func main() {
 
 	// Handler config
 	handlerCfg := &rest.HandlerConfig{
-		AllowOrigin: cfg.AllowOrigin,
-		BaseURL:     cfg.BaseURL,
-		BcryptCost:  cfg.BcryptCost,
-		AccessTTL:   cfg.JWTAccessTTL,
-		RefreshTTL:  cfg.JWTRefreshTTL,
+		AllowOrigin:    cfg.AllowOrigin,
+		BaseURL:        cfg.BaseURL,
+		BcryptCost:     cfg.BcryptCost,
+		AccessTTL:      cfg.JWTAccessTTL,
+		RefreshTTL:     cfg.JWTRefreshTTL,
+		CookieSecure:   cfg.CookieSecure,
+		CookieSameSite: cfg.CookieSameSite,
+		CookieDomain:   cfg.CookieDomain,
 	}
 
 	// Router

@@ -21,10 +21,22 @@ func NewVerifyHandler(verifySvc *application.EmailVerifyService, resetSvc *appli
 }
 
 func (h *VerifyHandler) RegisterRoutes(mux *http.ServeMux, authMw func(http.HandlerFunc) http.HandlerFunc) {
+	h.RegisterPublicRoutes(mux)
+	h.RegisterAPIKeyRoutes(mux)
+	h.RegisterProtectedRoutes(mux, authMw)
+}
+
+func (h *VerifyHandler) RegisterPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/verify-email", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.verifyEmail)))
-	mux.HandleFunc("/api/auth/resend-verification", CORSHandler(h.cfg.AllowOrigin, authMw(MethodCheck(http.MethodPost, h.resendVerification))))
-	mux.HandleFunc("/api/auth/forgot-password", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.forgotPassword)))
 	mux.HandleFunc("/api/auth/reset-password", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.resetPassword)))
+}
+
+func (h *VerifyHandler) RegisterAPIKeyRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/auth/forgot-password", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.forgotPassword)))
+}
+
+func (h *VerifyHandler) RegisterProtectedRoutes(mux *http.ServeMux, authMw func(http.HandlerFunc) http.HandlerFunc) {
+	mux.HandleFunc("/api/auth/resend-verification", CORSHandler(h.cfg.AllowOrigin, authMw(MethodCheck(http.MethodPost, h.resendVerification))))
 }
 
 func (h *VerifyHandler) verifyEmail(w http.ResponseWriter, r *http.Request) {

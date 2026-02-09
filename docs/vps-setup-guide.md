@@ -16,7 +16,7 @@ Internet
   ├── project-b.com ───────► Traefik ──► project-b-api
   │                                         │  validates JWTs locally
   │
-  └── authservice.ayushojha.com ──► Traefik ──► auth-service (port 8080/9090)
+  └── <auth-domain> ──► Traefik ──► auth-service (port 8080/9090)
                                                   │
                                       ┌───────────┼───────────┐
                                       │           │           │
@@ -25,8 +25,8 @@ Internet
 ```
 
 **Key Points:**
-- Auth service runs at `authservice.ayushojha.com` as a shared microservice for all projects
-- Any project's frontend sends auth requests to `authservice.ayushojha.com` with its unique `X-API-Key`
+- Auth service runs at `<auth-domain>` as a shared microservice for all projects
+- Any project's frontend sends auth requests to `<auth-domain>` with its unique `X-API-Key`
 - Each project's backend validates JWTs locally using `pkg/jwtvalidator` -- no network call needed
 - All services share the same PostgreSQL instance (different databases) and Redis instance (different key prefixes)
 - Each project is registered as a "client" via the admin API, with fully isolated user namespaces
@@ -38,16 +38,16 @@ Internet
 SSH into the VPS and create the database:
 
 ```bash
-ssh ayush@72.62.82.57
+ssh ayush@<vps-ip>
 
 # Create auth_service database
-PGPASSWORD='i87RfJUBx5HZJuykZt4v9u3zaq10wAqV' psql -h 127.0.0.1 -p 5433 -U admin -d postgres -c "CREATE DATABASE auth_service;"
+PGPASSWORD='<db-password>' psql -h 127.0.0.1 -p 5433 -U admin -d postgres -c "CREATE DATABASE auth_service;"
 ```
 
 Verify it was created:
 
 ```bash
-PGPASSWORD='i87RfJUBx5HZJuykZt4v9u3zaq10wAqV' psql -h 127.0.0.1 -p 5433 -U admin -d postgres -c "\l" | grep auth_service
+PGPASSWORD='<db-password>' psql -h 127.0.0.1 -p 5433 -U admin -d postgres -c "\l" | grep auth_service
 ```
 
 ---
@@ -57,13 +57,13 @@ PGPASSWORD='i87RfJUBx5HZJuykZt4v9u3zaq10wAqV' psql -h 127.0.0.1 -p 5433 -U admin
 The auth service needs its own Redis ACL user with the `auth:` key prefix. SSH into the VPS and configure Redis:
 
 ```bash
-ssh ayush@72.62.82.57
+ssh ayush@<vps-ip>
 
 # Connect to Redis as admin
-redis-cli -p 6379 --user admin --pass P0UnWC3CC7fsxV0Dsz2CgyDra19aL5iK
+redis-cli -p 6379 --user admin --pass <redis-admin-password>
 
 # Inside redis-cli, create the auth user:
-ACL SETUSER auth_user on >AuthService2026SecureKey ~auth:* +@all
+ACL SETUSER auth_user on ><redis-auth-password> ~auth:* +@all
 ACL SAVE
 
 # Verify
@@ -72,7 +72,7 @@ ACL LIST
 
 **Auth Redis credentials:**
 - Username: `auth_user`
-- Password: `AuthService2026SecureKey` (change this to a strong random password)
+- Password: `<redis-auth-password>` (change this to a strong random password)
 - Key prefix: `auth:`
 
 > **Note:** The current docker-compose.yml uses the `tapdue_user` Redis credentials. Update it to use the dedicated `auth_user` once created, or keep using `tapdue_user` since both share the same Redis instance and the key prefix `auth:` prevents collisions.
@@ -104,10 +104,10 @@ cd authentication-service
 
 ```bash
 # Required
-DATABASE_URL=postgres://admin:i87RfJUBx5HZJuykZt4v9u3zaq10wAqV@projects-db:5432/auth_service?sslmode=disable
-REDIS_URL=redis://tapdue_user:BhUK71tUxASNZqOoQGMGJoQjLjhuv5WW@projects-redis:6379/0
+DATABASE_URL=postgres://admin:<db-password>@projects-db:5432/auth_service?sslmode=disable
+REDIS_URL=redis://tapdue_user:<redis-password>@projects-redis:6379/0
 ADMIN_API_KEY=<generate-a-strong-random-key>
-BASE_URL=https://authservice.ayushojha.com
+BASE_URL=https://<auth-domain>
 
 # JWT (defaults are fine)
 JWT_ACCESS_TTL=15m
@@ -118,22 +118,22 @@ BCRYPT_COST=12
 RESEND_API_KEY=<your-resend-api-key>
 EMAIL_FROM=Auth Service <noreply@ayushojha.com>
 
-# OAuth (same credentials as TapDue, but with authservice.ayushojha.com callbacks)
+# OAuth (same credentials as TapDue, but with <auth-domain> callbacks)
 GOOGLE_CLIENT_ID=<same-as-tapdue>
 GOOGLE_CLIENT_SECRET=<same-as-tapdue>
-GOOGLE_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/google/callback
+GOOGLE_REDIRECT_URL=https://<auth-domain>/api/auth/oauth/google/callback
 
 GITHUB_CLIENT_ID=<same-as-tapdue>
 GITHUB_CLIENT_SECRET=<same-as-tapdue>
-GITHUB_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/github/callback
+GITHUB_REDIRECT_URL=https://<auth-domain>/api/auth/oauth/github/callback
 
 MICROSOFT_CLIENT_ID=<same-as-tapdue>
 MICROSOFT_CLIENT_SECRET=<same-as-tapdue>
 MICROSOFT_TENANT_ID=common
-MICROSOFT_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/microsoft/callback
+MICROSOFT_REDIRECT_URL=https://<auth-domain>/api/auth/oauth/microsoft/callback
 
 APPLE_CLIENT_ID=<same-as-tapdue>
-APPLE_REDIRECT_URL=https://authservice.ayushojha.com/api/auth/oauth/apple/callback
+APPLE_REDIRECT_URL=https://<auth-domain>/api/auth/oauth/apple/callback
 
 # WebAuthn
 WEBAUTHN_RP_ID=tapdue.com
@@ -156,10 +156,10 @@ You must update your OAuth provider configurations to add the new callback URLs:
 
 | Provider  | New Callback URL |
 |-----------|-----------------|
-| Google    | `https://authservice.ayushojha.com/api/auth/oauth/google/callback` |
-| GitHub    | `https://authservice.ayushojha.com/api/auth/oauth/github/callback` |
-| Microsoft | `https://authservice.ayushojha.com/api/auth/oauth/microsoft/callback` |
-| Apple     | `https://authservice.ayushojha.com/api/auth/oauth/apple/callback` |
+| Google    | `https://<auth-domain>/api/auth/oauth/google/callback` |
+| GitHub    | `https://<auth-domain>/api/auth/oauth/github/callback` |
+| Microsoft | `https://<auth-domain>/api/auth/oauth/microsoft/callback` |
+| Apple     | `https://<auth-domain>/api/auth/oauth/apple/callback` |
 
 ---
 
@@ -167,7 +167,7 @@ You must update your OAuth provider configurations to add the new callback URLs:
 
 ```bash
 # Health check
-curl https://authservice.ayushojha.com/healthz
+curl https://<auth-domain>/healthz
 # Expected: {"status":"ok"}
 ```
 
@@ -178,7 +178,7 @@ curl https://authservice.ayushojha.com/healthz
 Once the auth service is running, register any project as a client tenant. Example:
 
 ```bash
-curl -X POST https://authservice.ayushojha.com/api/admin/clients \
+curl -X POST https://<auth-domain>/api/admin/clients \
   -H "X-Admin-Key: <your-ADMIN_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -463,8 +463,8 @@ services:
       PORT: "8080"
       PUBLIC_DIR: "/app/public"
       ALLOW_ORIGIN: "${ALLOW_ORIGIN:-https://tapdue.com}"
-      DATABASE_URL: "${DATABASE_URL:-postgres://admin:i87RfJUBx5HZJuykZt4v9u3zaq10wAqV@projects-db:5432/tapdue?sslmode=disable}"
-      REDIS_URL: "${REDIS_URL:-redis://tapdue_user:BhUK71tUxASNZqOoQGMGJoQjLjhuv5WW@projects-redis:6379/0}"
+      DATABASE_URL: "${DATABASE_URL:-postgres://admin:<db-password>@projects-db:5432/tapdue?sslmode=disable}"
+      REDIS_URL: "${REDIS_URL:-redis://tapdue_user:<redis-password>@projects-redis:6379/0}"
       REDIS_KEY_PREFIX: "tapdue:"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
       BASE_URL: "${BASE_URL:-https://tapdue.com}"
@@ -503,7 +503,7 @@ Set `AUTH_JWT_SECRET` in Coolify to the `jwt_secret` value from Step 5.
 
 ## Step 8: Update TapDue Frontend
 
-The TapDue frontend needs to point auth-related requests to `authservice.ayushojha.com` instead of `tapdue.com`:
+The TapDue frontend needs to point auth-related requests to `<auth-domain>` instead of `tapdue.com`:
 
 ### Changes Required
 
@@ -513,7 +513,7 @@ The TapDue frontend needs to point auth-related requests to `authservice.ayushoj
    fetch('/api/auth/login', { ... })
 
    // After
-   fetch('https://authservice.ayushojha.com/api/auth/login', {
+   fetch('https://<auth-domain>/api/auth/login', {
      headers: {
        'Content-Type': 'application/json',
        'X-API-Key': 'your-client-api-key'
@@ -525,20 +525,20 @@ The TapDue frontend needs to point auth-related requests to `authservice.ayushoj
 
 2. **Store the API key** in the frontend config (it's not secret -- it identifies the client):
    ```javascript
-   const AUTH_BASE_URL = 'https://authservice.ayushojha.com';
+   const AUTH_BASE_URL = 'https://<auth-domain>';
    const AUTH_API_KEY = 'your-client-api-key-from-step-5';
    ```
 
-3. **Token handling** -- Access tokens from the auth service work identically. Store in `localStorage` and send as `Authorization: Bearer {token}` to both `authservice.ayushojha.com` (for auth endpoints) and `tapdue.com` (for business endpoints).
+3. **Token handling** -- Access tokens from the auth service work identically. Store in `localStorage` and send as `Authorization: Bearer {token}` to both `<auth-domain>` (for auth endpoints) and `tapdue.com` (for business endpoints).
 
-4. **Or use auth service's frontend pages** -- Instead of maintaining separate login/signup pages in TapDue, redirect to `authservice.ayushojha.com/login.html?api_key=YOUR_API_KEY`. The auth service already has polished login, signup, verify-email, forgot-password, reset-password, and 2FA pages.
+4. **Or use auth service's frontend pages** -- Instead of maintaining separate login/signup pages in TapDue, redirect to `<auth-domain>/login.html?api_key=YOUR_API_KEY`. The auth service already has polished login, signup, verify-email, forgot-password, reset-password, and 2FA pages.
 
 ### Redirect-Based Flow (Simpler)
 
 ```javascript
 // In TapDue frontend, redirect to auth service for login
 function login() {
-  window.location.href = 'https://authservice.ayushojha.com/login.html?api_key=YOUR_API_KEY';
+  window.location.href = 'https://<auth-domain>/login.html?api_key=YOUR_API_KEY';
 }
 
 // Auth service redirects back with access_token after successful login
@@ -561,7 +561,7 @@ If TapDue already has users in its database, you need to migrate them.
 
 ```bash
 # Via SSH tunnel
-PGPASSWORD='i87RfJUBx5HZJuykZt4v9u3zaq10wAqV' psql -h localhost -p 5433 -U admin -d tapdue -c "
+PGPASSWORD='<db-password>' psql -h localhost -p 5433 -U admin -d tapdue -c "
   COPY (
     SELECT id, email, email_verified, password_hash, display_name, avatar_url,
            timezone, locale, role, status, totp_secret, totp_enabled,
@@ -579,7 +579,7 @@ PGPASSWORD='i87RfJUBx5HZJuykZt4v9u3zaq10wAqV' psql -h localhost -p 5433 -U admin
 CLIENT_ID="<client-id-from-step-5>"
 
 # Import into auth_service database
-PGPASSWORD='i87RfJUBx5HZJuykZt4v9u3zaq10wAqV' psql -h localhost -p 5433 -U admin -d auth_service -c "
+PGPASSWORD='<db-password>' psql -h localhost -p 5433 -U admin -d auth_service -c "
   -- Create temp table
   CREATE TEMP TABLE tmp_users (LIKE users INCLUDING DEFAULTS);
   ALTER TABLE tmp_users DROP COLUMN client_id;
@@ -601,7 +601,7 @@ Also migrate sessions, oauth_accounts, webauthn_credentials, and verification_to
 
 ## Step 10: DNS Setup
 
-Ensure `authservice.ayushojha.com` DNS record points to your VPS:
+Ensure `<auth-domain>` DNS record points to your VPS:
 
 ```
 Type: A
@@ -610,7 +610,7 @@ Value: <your-vps-ip>
 TTL: 300
 ```
 
-Traefik will automatically provision a Let's Encrypt certificate for `authservice.ayushojha.com`.
+Traefik will automatically provision a Let's Encrypt certificate for `<auth-domain>`.
 
 ---
 
@@ -618,13 +618,13 @@ Traefik will automatically provision a Let's Encrypt certificate for `authservic
 
 ### 1. Health check
 ```bash
-curl https://authservice.ayushojha.com/healthz
+curl https://<auth-domain>/healthz
 # {"status":"ok"}
 ```
 
 ### 2. Signup a test user
 ```bash
-curl -X POST https://authservice.ayushojha.com/api/auth/signup \
+curl -X POST https://<auth-domain>/api/auth/signup \
   -H "X-API-Key: <tapdue-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"TestPass123!","display_name":"Test User"}'
@@ -632,7 +632,7 @@ curl -X POST https://authservice.ayushojha.com/api/auth/signup \
 
 ### 3. Login
 ```bash
-curl -X POST https://authservice.ayushojha.com/api/auth/login \
+curl -X POST https://<auth-domain>/api/auth/login \
   -H "X-API-Key: <tapdue-api-key>" \
   -H "Content-Type: application/json" \
   -d '{"email":"test@example.com","password":"TestPass123!"}'
@@ -670,7 +670,7 @@ The `requireAuth` middleware in TapDue validates the JWT using the same secret, 
 - The `allowed_origins` on the client registration should include `https://tapdue.com`
 
 ### Refresh token cookie not working cross-domain
-- The auth service sets the refresh cookie on `authservice.ayushojha.com`
+- The auth service sets the refresh cookie on `<auth-domain>`
 - TapDue at `tapdue.com` cannot read this cookie
 - Solution: Use the auth service's `/api/auth/refresh` endpoint directly from the frontend, or implement a proxy endpoint on TapDue
 
@@ -680,7 +680,7 @@ The `requireAuth` middleware in TapDue validates the JWT using the same secret, 
 
 | Item | Value |
 |------|-------|
-| Auth service URL | `https://authservice.ayushojha.com` |
+| Auth service URL | `https://<auth-domain>` |
 | Auth REST port | 8080 |
 | Auth gRPC port | 9090 |
 | Auth database | `auth_service` on `projects-db:5432` |

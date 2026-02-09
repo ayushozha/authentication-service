@@ -95,6 +95,9 @@ go run ./cmd/server
 | `BASE_URL` | `http://localhost:8080` | No | Public base URL (used in email links) |
 | `JWT_ACCESS_TTL` | `15m` | No | Access token time-to-live |
 | `JWT_REFRESH_TTL` | `168h` | No | Refresh token time-to-live (default 7 days) |
+| `COOKIE_SECURE` | `false` | No | Set refresh cookie `Secure` flag (`true` in production HTTPS) |
+| `COOKIE_SAMESITE` | `lax` | No | Refresh cookie SameSite policy (`lax`, `strict`, `none`) |
+| `COOKIE_DOMAIN` | -- | No | Optional cookie domain override for refresh cookie |
 | `BCRYPT_COST` | `12` | No | bcrypt cost factor (range 10-16) |
 | `RESEND_API_KEY` | -- | No | Resend API key for transactional emails |
 | `EMAIL_FROM` | `Auth Service <noreply@example.com>` | No | Sender address for emails |
@@ -173,6 +176,7 @@ POST   /api/auth/passkey/login/begin       Begin passkey login
 POST   /api/auth/passkey/login/finish      Complete passkey login
 GET    /api/auth/passkeys                  List user passkeys (requires auth)
 DELETE /api/auth/passkeys                  Delete a passkey (requires auth)
+DELETE /api/auth/passkeys/{id}             Delete a passkey by ID (canonical path)
 ```
 
 ### Admin (Client Management)
@@ -189,7 +193,10 @@ POST /api/admin/clients/{id}/rotate-api-key   Rotate client API key
 
 ```
 GET /healthz    Health check (returns {"status": "ok"})
+GET /.well-known/jwks.json    Client JWKS (requires `X-API-Key` or `client_id`)
 ```
+
+`session_mode=token` is supported on `login`, `refresh`, `totp/verify`, `magic-link/verify`, and `passkey/login/finish` to return `refresh_token` in the JSON response instead of setting an HttpOnly cookie.
 
 ## Multi-Tenancy Guide
 
@@ -347,6 +354,8 @@ The service exposes gRPC services on port `9090` (configurable via `GRPC_PORT`).
 - **AuthService** -- User authentication operations (signup, login, refresh, logout, profile management, email verification, password reset, magic links)
 - **TokenService** -- Token validation for service-to-service communication
 - **AdminService** -- Client (tenant) management (create, list, rotate secrets/keys)
+
+Passkey/WebAuthn operations are currently exposed via REST endpoints.
 
 ### Token Validation (Service-to-Service)
 

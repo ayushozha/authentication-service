@@ -24,7 +24,7 @@ func (h *ClientHandler) RegisterRoutes(mux *http.ServeMux, adminMw func(http.Han
 }
 
 func (h *ClientHandler) handleClients(w http.ResponseWriter, r *http.Request) {
-	setCorsHeaders(w, "*")
+	setCorsHeaders(w, "*", false)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -62,14 +62,14 @@ func (h *ClientHandler) handleClients(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ClientHandler) handleClientByID(w http.ResponseWriter, r *http.Request) {
-	setCorsHeaders(w, "*")
+	setCorsHeaders(w, "*", false)
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
-	// /api/admin/clients/{id} or /api/admin/clients/{id}/rotate-jwt or /api/admin/clients/{id}/rotate-key
+	// /api/admin/clients/{id} or /api/admin/clients/{id}/rotate-jwt|rotate-secret or /api/admin/clients/{id}/rotate-key|rotate-api-key
 	if len(parts) < 5 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "client ID required"})
 		return
@@ -87,14 +87,14 @@ func (h *ClientHandler) handleClientByID(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		switch action {
-		case "rotate-jwt":
+		case "rotate-jwt", "rotate-secret":
 			newSecret, client, err := h.svc.RotateJWTSecret(ctx, clientID)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"client": client, "jwt_secret": newSecret})
-		case "rotate-key":
+		case "rotate-key", "rotate-api-key":
 			newKey, client, err := h.svc.RotateAPIKey(ctx, clientID)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 )
 
 type MagicLinkService struct {
+	clients  ClientRepository
 	users    UserRepository
 	sessions SessionRepository
 	cache    CacheClient
@@ -18,8 +20,13 @@ type MagicLinkService struct {
 	rl       RateLimiter
 }
 
-func NewMagicLinkService(users UserRepository, sessions SessionRepository, cache CacheClient, mailer EmailSender, audit AuditRepository, rl RateLimiter) *MagicLinkService {
-	return &MagicLinkService{users: users, sessions: sessions, cache: cache, mailer: mailer, audit: audit, rl: rl}
+func NewMagicLinkService(clients ClientRepository, users UserRepository, sessions SessionRepository, cache CacheClient, mailer EmailSender, audit AuditRepository, rl RateLimiter) *MagicLinkService {
+	return &MagicLinkService{clients: clients, users: users, sessions: sessions, cache: cache, mailer: mailer, audit: audit, rl: rl}
+}
+
+type magicLinkState struct {
+	UserID   string `json:"user_id"`
+	ClientID string `json:"client_id"`
 }
 
 func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Client, email, baseURL, ip, ua string) error {
@@ -43,7 +50,8 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 			log.Printf("generate magic token error: %v", err)
 			return nil
 		}
-		if err := s.cache.Set(ctx, "magic:"+HashToken(token), user.ID, 15*time.Minute); err != nil {
+		state, _ := json.Marshal(magicLinkState{UserID: user.ID, ClientID: client.ID})
+		if err := s.cache.Set(ctx, "magic:"+HashToken(token), string(state), 15*time.Minute); err != nil {
 			log.Printf("store magic token error: %v", err)
 			return nil
 		}
@@ -61,20 +69,55 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 }
 
 func (s *MagicLinkService) VerifyMagicLink(ctx context.Context, client *domain.Client, rawToken, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
+	return s.verifyMagicLink(ctx, rawToken, ip, ua, accessTTL, refreshTTL, client)
+}
+
+func (s *MagicLinkService) VerifyMagicLinkPublic(ctx context.Context, rawToken, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
+	return s.verifyMagicLink(ctx, rawToken, ip, ua, accessTTL, refreshTTL, nil)
+}
+
+func (s *MagicLinkService) verifyMagicLink(ctx context.Context, rawToken, ip, ua string, accessTTL, refreshTTL time.Duration, expectedClient *domain.Client) (*AuthResponse, string, error) {
 	if s.cache == nil {
 		return nil, "", domain.ErrRedisRequired
 	}
 
 	tokenKey := "magic:" + HashToken(rawToken)
-	userID, err := s.cache.Get(ctx, tokenKey)
-	if err != nil || userID == "" {
+	stateRaw, err := s.cache.Get(ctx, tokenKey)
+	if err != nil || stateRaw == "" {
 		return nil, "", domain.ErrInvalidToken
 	}
 	_ = s.cache.Del(ctx, tokenKey)
+	var state magicLinkState
+	if err := json.Unmarshal([]byte(stateRaw), &state); err != nil {
+		// backward compatibility with old token payloads that stored only user ID.
+		state = magicLinkState{UserID: stateRaw}
+	}
+	if state.UserID == "" {
+		return nil, "", domain.ErrInvalidToken
+	}
 
-	user, err := s.users.GetByID(ctx, userID)
+	user, err := s.users.GetByID(ctx, state.UserID)
 	if err != nil || user == nil {
 		return nil, "", domain.ErrNotFound
+	}
+	if state.ClientID == "" {
+		state.ClientID = user.ClientID
+	}
+	if user.ClientID != state.ClientID {
+		return nil, "", domain.ErrInvalidToken
+	}
+
+	var client *domain.Client
+	if expectedClient != nil {
+		if expectedClient.ID != state.ClientID {
+			return nil, "", domain.ErrInvalidToken
+		}
+		client = expectedClient
+	} else {
+		client, err = s.clients.GetByID(ctx, state.ClientID)
+		if err != nil || client == nil {
+			return nil, "", domain.ErrInvalidClient
+		}
 	}
 	if user.Status != "active" {
 		return nil, "", domain.ErrAccountSuspended
@@ -89,7 +132,7 @@ func (s *MagicLinkService) VerifyMagicLink(ctx context.Context, client *domain.C
 	uid := user.ID
 	s.audit.Log(ctx, client.ID, &uid, "login_success", ip, ua, map[string]interface{}{"method": "magic_link"})
 
-	accessToken, err := CreateAccessToken(client.JWTSecret, accessTTL, user)
+	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
 		return nil, "", err
 	}

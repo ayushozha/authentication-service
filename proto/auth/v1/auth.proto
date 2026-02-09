@@ -47,6 +47,7 @@ message RefreshTokenRequest {
 
 message LogoutRequest {
   string refresh_token = 1;
+  string api_key = 2;
 }
 
 message GetUserRequest {

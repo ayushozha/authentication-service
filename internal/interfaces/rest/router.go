@@ -1,9 +1,12 @@
 package rest
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/Ayush10/authentication-service/internal/application"
+	"github.com/Ayush10/authentication-service/internal/domain"
 )
 
 type Router struct {
@@ -32,31 +35,37 @@ func NewRouter(
 	authMw := RequireUserAuth(clientSvc)
 	adminMw := RequireAdminKey(adminAPIKey)
 
-	// Wrap all auth endpoints with API key middleware
+	// API key protected auth routes.
 	authMux := http.NewServeMux()
 
-	// Register auth handlers
+	// Register routes that require API key (and optional bearer user auth).
 	authHandler := NewAuthHandler(authSvc, cfg)
 	authHandler.RegisterRoutes(authMux, authMw)
 
 	verifyHandler := NewVerifyHandler(verifySvc, resetSvc, cfg)
-	verifyHandler.RegisterRoutes(authMux, authMw)
+	verifyHandler.RegisterAPIKeyRoutes(authMux)
+	verifyHandler.RegisterProtectedRoutes(authMux, authMw)
 
 	magicHandler := NewMagicLinkHandler(magicSvc, cfg)
-	magicHandler.RegisterRoutes(authMux)
+	magicHandler.RegisterSendRoute(authMux)
 
 	totpHandler := NewTOTPHandler(totpSvc, cfg)
 	totpHandler.RegisterRoutes(authMux, authMw)
 
 	if oauthSvc != nil && oauthProviders != nil {
 		oauthHandler := NewOAuthHandler(oauthSvc, oauthProviders, cfg)
-		oauthHandler.RegisterRoutes(authMux)
+		oauthHandler.RegisterBeginRoutes(authMux)
+		oauthHandler.RegisterCallbackRoutes(mux)
 	}
 
 	if passkeySvc != nil {
 		passkeyHandler := NewPasskeyHandler(passkeySvc, cfg)
 		passkeyHandler.RegisterRoutes(authMux, authMw)
 	}
+
+	// Public auth routes (no API key required).
+	verifyHandler.RegisterPublicRoutes(mux)
+	magicHandler.RegisterVerifyPublicRoute(mux)
 
 	// Mount auth routes under API key middleware
 	mux.Handle("/api/auth/", apiKeyMw(authMux))
@@ -69,6 +78,41 @@ func NewRouter(
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	// JWKS endpoint for RS256 token validation.
+	mux.HandleFunc("/.well-known/jwks.json", CORSHandler(cfg.AllowOrigin, MethodCheck(http.MethodGet, func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var (
+			client *domain.Client
+			err    error
+		)
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey != "" {
+			c, e := clientSvc.GetClientByAPIKey(ctx, apiKey)
+			client, err = c, e
+		} else {
+			clientID := r.URL.Query().Get("client_id")
+			if clientID == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "either X-API-Key or client_id is required"})
+				return
+			}
+			c, e := clientSvc.GetClient(ctx, clientID)
+			client, err = c, e
+		}
+		if err != nil || client == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid client"})
+			return
+		}
+
+		jwks, err := application.ClientJWKS(ctx, client.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load jwks"})
+			return
+		}
+		writeJSON(w, http.StatusOK, jwks)
+	})))
 
 	// Static files (optional frontend)
 	if serveFrontend && publicDir != "" {

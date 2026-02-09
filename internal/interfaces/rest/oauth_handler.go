@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/application"
+	"github.com/Ayush10/authentication-service/internal/domain"
 )
 
 type OAuthHandler struct {
@@ -19,6 +20,11 @@ func NewOAuthHandler(svc *application.OAuthService, providers map[string]*applic
 }
 
 func (h *OAuthHandler) RegisterRoutes(mux *http.ServeMux) {
+	h.RegisterBeginRoutes(mux)
+	h.RegisterCallbackRoutes(mux)
+}
+
+func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 	for name, prov := range h.providers {
 		provName := name
 		provCfg := prov
@@ -28,16 +34,32 @@ func (h *OAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			}
+			client := GetClient(r)
+			if client == nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+				return
+			}
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()
 
-			redirectURL, err := h.svc.BeginOAuth(ctx, provCfg)
+			redirectURL, err := h.svc.BeginOAuth(ctx, client, provCfg, provName)
 			if err != nil {
+				if err == domain.ErrRedisRequired {
+					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "oauth requires Redis"})
+					return
+				}
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 				return
 			}
 			http.Redirect(w, r, redirectURL, http.StatusFound)
 		}))
+	}
+}
+
+func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
+	for name, prov := range h.providers {
+		provName := name
+		provCfg := prov
 
 		mux.HandleFunc("/api/auth/oauth/"+provName+"/callback", CORSHandler(h.cfg.AllowOrigin, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -59,17 +81,16 @@ func (h *OAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 				return
 			}
 
-			client := GetClient(r)
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 
-			accessToken, refreshToken, err := h.svc.HandleCallback(ctx, client, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+			_, accessToken, refreshToken, err := h.svc.HandleCallback(ctx, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
 				http.Redirect(w, r, h.cfg.BaseURL+"/login?error="+err.Error(), http.StatusFound)
 				return
 			}
 
-			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL)
+			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
 			http.Redirect(w, r, h.cfg.BaseURL+"/login?access_token="+accessToken, http.StatusFound)
 		}))
 	}

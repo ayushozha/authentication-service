@@ -21,7 +21,15 @@ func NewMagicLinkHandler(svc *application.MagicLinkService, cfg *HandlerConfig) 
 }
 
 func (h *MagicLinkHandler) RegisterRoutes(mux *http.ServeMux) {
+	h.RegisterSendRoute(mux)
+	h.RegisterVerifyPublicRoute(mux)
+}
+
+func (h *MagicLinkHandler) RegisterSendRoute(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/magic-link/send", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.send)))
+}
+
+func (h *MagicLinkHandler) RegisterVerifyPublicRoute(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/magic-link/verify", CORSHandler(h.cfg.AllowOrigin, h.verify))
 }
 
@@ -61,11 +69,10 @@ func (h *MagicLinkHandler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := GetClient(r)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, refreshToken, err := h.svc.VerifyMagicLink(ctx, client, token, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+	resp, refreshToken, err := h.svc.VerifyMagicLinkPublic(ctx, token, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
 		if err == domain.ErrInvalidToken {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired magic link"})
@@ -77,7 +84,11 @@ func (h *MagicLinkHandler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL)
+	if isTokenSessionMode(r, "") {
+		resp.RefreshToken = refreshToken
+	} else {
+		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+	}
 
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		writeJSON(w, http.StatusOK, resp)

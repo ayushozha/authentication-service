@@ -3,9 +3,14 @@ package application
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/mail"
 	"strings"
 	"time"
@@ -39,6 +44,7 @@ type AccessClaims struct {
 
 type AuthResponse struct {
 	AccessToken  string       `json:"access_token,omitempty"`
+	RefreshToken string       `json:"refresh_token,omitempty"`
 	TokenType    string       `json:"token_type,omitempty"`
 	ExpiresIn    int          `json:"expires_in,omitempty"`
 	User         *domain.User `json:"user,omitempty"`
@@ -71,6 +77,11 @@ type UpdateProfileRequest struct {
 // OnSignup is called after successful signup to send verification email.
 // Set this from outside (e.g., from the email verify service).
 var OnSignup func(userID, email, displayName string)
+var signingKeys SigningKeyRepository
+
+func SetSigningKeyRepository(repo SigningKeyRepository) {
+	signingKeys = repo
+}
 
 func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req SignupRequest, ip, ua string, bcryptCost int, accessTTL, refreshTTL time.Duration) (*AuthResponse, error) {
 	// Rate limit
@@ -122,7 +133,7 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 		OnSignup(user.ID, user.Email, user.DisplayName)
 	}
 
-	accessToken, err := CreateAccessToken(client.JWTSecret, accessTTL, user)
+	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
 		return nil, fmt.Errorf("internal error")
 	}
@@ -194,7 +205,7 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 	uid := user.ID
 	s.audit.Log(ctx, client.ID, &uid, "login_success", ip, ua, map[string]interface{}{"method": "email"})
 
-	accessToken, err := CreateAccessToken(client.JWTSecret, accessTTL, user)
+	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
 		return nil, "", fmt.Errorf("internal error")
 	}
@@ -213,7 +224,7 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 }
 
 func (s *AuthService) Refresh(ctx context.Context, client *domain.Client, rawRefreshToken, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
-	userID, sessionID, err := s.sessions.Validate(ctx, rawRefreshToken)
+	userID, sessionID, err := s.sessions.Validate(ctx, client.ID, rawRefreshToken)
 	if err != nil {
 		return nil, "", fmt.Errorf("internal error")
 	}
@@ -228,7 +239,7 @@ func (s *AuthService) Refresh(ctx context.Context, client *domain.Client, rawRef
 		return nil, "", domain.ErrNotFound
 	}
 
-	accessToken, err := CreateAccessToken(client.JWTSecret, accessTTL, user)
+	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
 		return nil, "", fmt.Errorf("internal error")
 	}
@@ -246,8 +257,8 @@ func (s *AuthService) Refresh(ctx context.Context, client *domain.Client, rawRef
 	}, newRefreshToken, nil
 }
 
-func (s *AuthService) Logout(ctx context.Context, rawRefreshToken string) error {
-	return s.sessions.RevokeByToken(ctx, rawRefreshToken)
+func (s *AuthService) Logout(ctx context.Context, clientID, rawRefreshToken string) error {
+	return s.sessions.RevokeByToken(ctx, clientID, rawRefreshToken)
 }
 
 func (s *AuthService) GetUser(ctx context.Context, userID string) (*domain.User, error) {
@@ -288,6 +299,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, client *domain.Client,
 	if err := s.users.UpdatePassword(ctx, user.ID, hash); err != nil {
 		return err
 	}
+	_ = s.sessions.RevokeAllForUser(ctx, client.ID, user.ID)
 
 	uid := user.ID
 	s.audit.Log(ctx, client.ID, &uid, "password_changed", ip, ua, nil)
@@ -296,7 +308,18 @@ func (s *AuthService) ChangePassword(ctx context.Context, client *domain.Client,
 
 // --- Crypto helpers ---
 
-func CreateAccessToken(secret string, ttl time.Duration, user *domain.User) (string, error) {
+func CreateAccessToken(ctx context.Context, client *domain.Client, ttl time.Duration, user *domain.User) (string, error) {
+	if strings.EqualFold(client.TokenMode, "v2_jwks") {
+		key, err := ensureActiveSigningKey(ctx, client.ID)
+		if err != nil {
+			return "", err
+		}
+		return createRS256Token(key, ttl, user)
+	}
+	return createHS256Token(client.JWTSecret, ttl, user)
+}
+
+func createHS256Token(secret string, ttl time.Duration, user *domain.User) (string, error) {
 	now := time.Now()
 	claims := AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -314,12 +337,51 @@ func CreateAccessToken(secret string, ttl time.Duration, user *domain.User) (str
 	return token.SignedString([]byte(secret))
 }
 
-func ValidateAccessToken(secret, tokenStr string) (*AccessClaims, error) {
+func createRS256Token(key *domain.SigningKey, ttl time.Duration, user *domain.User) (string, error) {
+	privateKey, err := parseRSAPrivateKey(key.PrivateKeyPEM)
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now()
+	claims := AccessClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   user.ID,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			ID:        uuid.NewString(),
+		},
+		Email:         user.Email,
+		Role:          user.Role,
+		EmailVerified: user.EmailVerified,
+		ClientID:      user.ClientID,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = key.KID
+	return token.SignedString(privateKey)
+}
+
+func ValidateAccessToken(ctx context.Context, client *domain.Client, tokenStr string) (*AccessClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		switch t.Method.Alg() {
+		case jwt.SigningMethodHS256.Alg():
+			return []byte(client.JWTSecret), nil
+		case jwt.SigningMethodRS256.Alg():
+			kid, _ := t.Header["kid"].(string)
+			if kid == "" {
+				return nil, fmt.Errorf("missing key id")
+			}
+			if signingKeys == nil {
+				return nil, fmt.Errorf("signing key repository is not configured")
+			}
+			key, err := signingKeys.GetByClientAndKID(ctx, client.ID, kid)
+			if err != nil || key == nil {
+				return nil, fmt.Errorf("unknown signing key")
+			}
+			return parseRSAPublicKey(key.PublicKeyPEM)
+		default:
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return []byte(secret), nil
 	})
 	if err != nil {
 		return nil, err
@@ -328,7 +390,106 @@ func ValidateAccessToken(secret, tokenStr string) (*AccessClaims, error) {
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
+	if claims.ClientID != client.ID {
+		return nil, fmt.Errorf("token does not belong to this client")
+	}
 	return claims, nil
+}
+
+func ensureActiveSigningKey(ctx context.Context, clientID string) (*domain.SigningKey, error) {
+	if signingKeys == nil {
+		return nil, fmt.Errorf("signing key repository is not configured")
+	}
+	key, err := signingKeys.GetActiveByClient(ctx, clientID)
+	if err == nil && key != nil {
+		return key, nil
+	}
+	if err != nil && err != domain.ErrNotFound {
+		return nil, err
+	}
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+	privateDER := x509.MarshalPKCS1PrivateKey(privateKey)
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privateDER})
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})
+
+	newKey := &domain.SigningKey{
+		ID:            uuid.NewString(),
+		ClientID:      clientID,
+		KID:           uuid.NewString(),
+		Algorithm:     "RS256",
+		PublicKeyPEM:  string(publicPEM),
+		PrivateKeyPEM: string(privatePEM),
+		Status:        "active",
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := signingKeys.Create(ctx, newKey); err != nil {
+		return nil, err
+	}
+	return newKey, nil
+}
+
+func parseRSAPrivateKey(pemData string) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil {
+		return nil, fmt.Errorf("invalid private key")
+	}
+	return x509.ParsePKCS1PrivateKey(block.Bytes)
+}
+
+func parseRSAPublicKey(pemData string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil {
+		return nil, fmt.Errorf("invalid public key")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	rsaPub, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("unsupported public key type")
+	}
+	return rsaPub, nil
+}
+
+func ClientJWKS(ctx context.Context, clientID string) (map[string]interface{}, error) {
+	if signingKeys == nil {
+		return nil, fmt.Errorf("signing key repository is not configured")
+	}
+	keys, err := signingKeys.ListActiveByClient(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	jwkKeys := make([]map[string]interface{}, 0, len(keys))
+	for _, key := range keys {
+		pub, err := parseRSAPublicKey(key.PublicKeyPEM)
+		if err != nil {
+			return nil, err
+		}
+		eBytes := bigIntBytes(pub.E)
+		jwkKeys = append(jwkKeys, map[string]interface{}{
+			"kty": "RSA",
+			"kid": key.KID,
+			"use": "sig",
+			"alg": "RS256",
+			"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+			"e":   base64.RawURLEncoding.EncodeToString(eBytes),
+		})
+	}
+	return map[string]interface{}{"keys": jwkKeys}, nil
+}
+
+func bigIntBytes(v int) []byte {
+	i := big.NewInt(int64(v))
+	return i.Bytes()
 }
 
 func HashPassword(password string, cost int) (string, error) {

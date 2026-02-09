@@ -10,13 +10,14 @@ import (
 )
 
 type PasswordResetService struct {
-	users  UserRepository
-	tokens TokenRepository
-	mailer EmailSender
+	users    UserRepository
+	tokens   TokenRepository
+	sessions SessionRepository
+	mailer   EmailSender
 }
 
-func NewPasswordResetService(users UserRepository, tokens TokenRepository, mailer EmailSender) *PasswordResetService {
-	return &PasswordResetService{users: users, tokens: tokens, mailer: mailer}
+func NewPasswordResetService(users UserRepository, tokens TokenRepository, sessions SessionRepository, mailer EmailSender) *PasswordResetService {
+	return &PasswordResetService{users: users, tokens: tokens, sessions: sessions, mailer: mailer}
 }
 
 func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, email, baseURL string) error {
@@ -56,5 +57,13 @@ func (s *PasswordResetService) ResetPassword(ctx context.Context, rawToken, newP
 	if err != nil {
 		return fmt.Errorf("internal error")
 	}
-	return s.users.UpdatePassword(ctx, userID, hash)
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil || user == nil {
+		return domain.ErrNotFound
+	}
+	if err := s.users.UpdatePassword(ctx, userID, hash); err != nil {
+		return err
+	}
+	_ = s.sessions.RevokeAllForUser(ctx, user.ClientID, userID)
+	return nil
 }

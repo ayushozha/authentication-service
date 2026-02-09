@@ -79,8 +79,9 @@ func (h *TOTPHandler) enable(w http.ResponseWriter, r *http.Request) {
 func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	var req struct {
-		TwoFAToken string `json:"two_factor_token"`
-		Code       string `json:"code"`
+		TwoFAToken  string `json:"two_factor_token"`
+		Code        string `json:"code"`
+		SessionMode string `json:"session_mode"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -109,7 +110,11 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL)
+	if isTokenSessionMode(r, req.SessionMode) {
+		resp.RefreshToken = refreshToken
+	} else {
+		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

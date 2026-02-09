@@ -115,6 +115,9 @@ func (s *TOTPService) Verify(ctx context.Context, client *domain.Client, twoFATo
 	if err != nil || user == nil {
 		return nil, "", domain.ErrNotFound
 	}
+	if user.ClientID != client.ID {
+		return nil, "", domain.ErrInvalidToken
+	}
 
 	if user.TOTPSecret == nil {
 		return nil, "", domain.ErrTOTPNotEnabled
@@ -129,7 +132,7 @@ func (s *TOTPService) Verify(ctx context.Context, client *domain.Client, twoFATo
 	uid := user.ID
 	s.audit.Log(ctx, client.ID, &uid, "login_success", ip, ua, map[string]interface{}{"method": "email+totp"})
 
-	accessToken, err := CreateAccessToken(client.JWTSecret, accessTTL, user)
+	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
 		return nil, "", err
 	}

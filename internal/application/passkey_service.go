@@ -3,6 +3,9 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
@@ -15,7 +18,13 @@ type PasskeyService struct {
 	sessions SessionRepository
 	cache    CacheClient
 	audit    AuditRepository
-	wa       *webauthn.WebAuthn
+
+	defaultRPName   string
+	defaultRPID     string
+	defaultRPOrigin string
+
+	waMu    sync.RWMutex
+	waCache map[string]*webauthn.WebAuthn
 }
 
 type webauthnUser struct {
@@ -30,43 +39,80 @@ func (u *webauthnUser) WebAuthnName() string                       { return u.na
 func (u *webauthnUser) WebAuthnDisplayName() string                { return u.displayName }
 func (u *webauthnUser) WebAuthnCredentials() []webauthn.Credential { return u.credentials }
 
+type passkeyRegistrationState struct {
+	ClientID    string               `json:"client_id"`
+	UserID      string               `json:"user_id"`
+	SessionData webauthn.SessionData `json:"session_data"`
+}
+
+type passkeyLoginState struct {
+	ClientID    string               `json:"client_id"`
+	SessionData webauthn.SessionData `json:"session_data"`
+}
+
 func NewPasskeyService(users UserRepository, wa WebAuthnRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, rpDisplayName, rpID, rpOrigin string) (*PasskeyService, error) {
-	waInstance, err := webauthn.New(&webauthn.Config{
-		RPDisplayName: rpDisplayName,
-		RPID:          rpID,
-		RPOrigins:     []string{rpOrigin},
+	svc := &PasskeyService{
+		users:           users,
+		webauthn:        wa,
+		sessions:        sessions,
+		cache:           cache,
+		audit:           audit,
+		defaultRPName:   rpDisplayName,
+		defaultRPID:     rpID,
+		defaultRPOrigin: rpOrigin,
+		waCache:         make(map[string]*webauthn.WebAuthn),
+	}
+	_, err := svc.getWebAuthn(clientRPConfig{
+		DisplayName: rpDisplayName,
+		RPID:        rpID,
+		RPOrigin:    rpOrigin,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &PasskeyService{
-		users: users, webauthn: wa, sessions: sessions,
-		cache: cache, audit: audit, wa: waInstance,
-	}, nil
+	return svc, nil
 }
 
-func (s *PasskeyService) BeginRegistration(ctx context.Context, userID string) (interface{}, error) {
+func (s *PasskeyService) BeginRegistration(ctx context.Context, client *domain.Client, userID string) (interface{}, error) {
+	if s.cache == nil {
+		return nil, domain.ErrRedisRequired
+	}
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil || user == nil {
 		return nil, domain.ErrNotFound
 	}
+	if user.ClientID != client.ID {
+		return nil, domain.ErrNotFound
+	}
+
 	existingCreds, _ := s.webauthn.GetByUser(ctx, user.ID)
 	waUser := &webauthnUser{
 		id: []byte(user.ID), name: user.Email,
 		displayName: user.DisplayName, credentials: existingCreds,
 	}
-	options, sessionData, err := s.wa.BeginRegistration(waUser)
+
+	waClient, err := s.getWebAuthn(s.configForClient(client))
 	if err != nil {
 		return nil, err
 	}
-	if s.cache != nil {
-		sessionJSON, _ := json.Marshal(sessionData)
-		_ = s.cache.Set(ctx, "webauthn:reg:"+user.ID, string(sessionJSON), 5*time.Minute)
+
+	options, sessionData, err := waClient.BeginRegistration(waUser)
+	if err != nil {
+		return nil, err
 	}
+
+	state := passkeyRegistrationState{
+		ClientID:    client.ID,
+		UserID:      user.ID,
+		SessionData: *sessionData,
+	}
+	sessionJSON, _ := json.Marshal(state)
+	_ = s.cache.Set(ctx, registrationKey(client.ID, user.ID), string(sessionJSON), 5*time.Minute)
+
 	return options, nil
 }
 
-func (s *PasskeyService) FinishRegistration(ctx context.Context, client *domain.Client, userID, friendlyName string, r interface{ FormValue(string) string }) error {
+func (s *PasskeyService) FinishRegistration(ctx context.Context, client *domain.Client, userID, friendlyName string, r *http.Request, ip, ua string) error {
 	if s.cache == nil {
 		return domain.ErrRedisRequired
 	}
@@ -74,44 +120,160 @@ func (s *PasskeyService) FinishRegistration(ctx context.Context, client *domain.
 	if err != nil || user == nil {
 		return domain.ErrNotFound
 	}
-	sessionJSON, err := s.cache.Get(ctx, "webauthn:reg:"+user.ID)
+	if user.ClientID != client.ID {
+		return domain.ErrInvalidToken
+	}
+
+	sessionJSON, err := s.cache.Get(ctx, registrationKey(client.ID, user.ID))
 	if err != nil || sessionJSON == "" {
 		return domain.ErrInvalidToken
 	}
-	_ = s.cache.Del(ctx, "webauthn:reg:"+user.ID)
+	_ = s.cache.Del(ctx, registrationKey(client.ID, user.ID))
 
-	var sessionData webauthn.SessionData
-	if err := json.Unmarshal([]byte(sessionJSON), &sessionData); err != nil {
+	var state passkeyRegistrationState
+	if err := json.Unmarshal([]byte(sessionJSON), &state); err != nil {
 		return err
 	}
+	if state.ClientID != client.ID || state.UserID != user.ID {
+		return domain.ErrInvalidToken
+	}
+
 	existingCreds, _ := s.webauthn.GetByUser(ctx, user.ID)
 	waUser := &webauthnUser{
 		id: []byte(user.ID), name: user.Email,
 		displayName: user.DisplayName, credentials: existingCreds,
 	}
 
-	// We need the http.Request for FinishRegistration - this is handled at the handler level
-	// This method signature needs adjustment. See the handler layer for the actual call.
-	_ = waUser
-	_ = sessionData
+	waClient, err := s.getWebAuthn(s.configForClient(client))
+	if err != nil {
+		return err
+	}
+	credential, err := waClient.FinishRegistration(waUser, state.SessionData, r)
+	if err != nil {
+		return err
+	}
+
+	name := strings.TrimSpace(friendlyName)
+	if name == "" {
+		name = "Passkey"
+	}
+	if err := s.webauthn.Save(ctx, user.ID, credential, name); err != nil {
+		return err
+	}
+
+	uid := user.ID
+	s.audit.Log(ctx, client.ID, &uid, "passkey_registered", ip, ua, nil)
 	return nil
 }
 
-func (s *PasskeyService) BeginLogin(ctx context.Context) (interface{}, string, error) {
+func (s *PasskeyService) BeginLogin(ctx context.Context, client *domain.Client) (interface{}, string, error) {
 	if s.cache == nil {
 		return nil, "", domain.ErrRedisRequired
 	}
-	options, sessionData, err := s.wa.BeginDiscoverableLogin()
+	waClient, err := s.getWebAuthn(s.configForClient(client))
+	if err != nil {
+		return nil, "", err
+	}
+
+	options, sessionData, err := waClient.BeginDiscoverableLogin()
 	if err != nil {
 		return nil, "", err
 	}
 	sessionID, _ := GenerateToken(16)
-	sessionJSON, _ := json.Marshal(sessionData)
-	_ = s.cache.Set(ctx, "webauthn:login:"+sessionID, string(sessionJSON), 5*time.Minute)
+	state := passkeyLoginState{
+		ClientID:    client.ID,
+		SessionData: *sessionData,
+	}
+	sessionJSON, _ := json.Marshal(state)
+	_ = s.cache.Set(ctx, loginKey(sessionID), string(sessionJSON), 5*time.Minute)
+
 	return map[string]interface{}{
 		"publicKey":  options.Response,
 		"session_id": sessionID,
 	}, sessionID, nil
+}
+
+func (s *PasskeyService) FinishLogin(ctx context.Context, client *domain.Client, sessionID string, r *http.Request, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
+	if s.cache == nil {
+		return nil, "", domain.ErrRedisRequired
+	}
+
+	sessionJSON, err := s.cache.Get(ctx, loginKey(sessionID))
+	if err != nil || sessionJSON == "" {
+		return nil, "", domain.ErrInvalidToken
+	}
+	_ = s.cache.Del(ctx, loginKey(sessionID))
+
+	var state passkeyLoginState
+	if err := json.Unmarshal([]byte(sessionJSON), &state); err != nil {
+		return nil, "", err
+	}
+	if state.ClientID != client.ID {
+		return nil, "", domain.ErrInvalidToken
+	}
+
+	waClient, err := s.getWebAuthn(s.configForClient(client))
+	if err != nil {
+		return nil, "", err
+	}
+
+	userHandler := func(rawID, userHandle []byte) (webauthn.User, error) {
+		uid := string(userHandle)
+		u, err := s.users.GetByID(ctx, uid)
+		if err != nil || u == nil {
+			return nil, err
+		}
+		if u.ClientID != client.ID {
+			return nil, domain.ErrNotFound
+		}
+		creds, _ := s.webauthn.GetByUser(ctx, uid)
+		return &webauthnUser{
+			id: []byte(u.ID), name: u.Email,
+			displayName: u.DisplayName, credentials: creds,
+		}, nil
+	}
+
+	credential, err := waClient.FinishDiscoverableLogin(userHandler, state.SessionData, r)
+	if err != nil {
+		return nil, "", err
+	}
+	_ = s.webauthn.UpdateSignCount(ctx, credential.ID, credential.Authenticator.SignCount)
+
+	userIDStr, err := s.webauthn.GetUserIDByCredentialID(ctx, credential.ID)
+	if err != nil || userIDStr == "" {
+		return nil, "", domain.ErrNotFound
+	}
+
+	user, err := s.users.GetByID(ctx, userIDStr)
+	if err != nil || user == nil {
+		return nil, "", domain.ErrNotFound
+	}
+	if user.ClientID != client.ID {
+		return nil, "", domain.ErrInvalidToken
+	}
+	if user.Status != "active" {
+		return nil, "", domain.ErrAccountSuspended
+	}
+
+	_ = s.users.UpdateLastLogin(ctx, user.ID)
+	uid := user.ID
+	s.audit.Log(ctx, client.ID, &uid, "login_success", ip, ua, map[string]interface{}{"method": "passkey"})
+
+	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
+	if err != nil {
+		return nil, "", err
+	}
+	refreshToken, err := s.sessions.Create(ctx, user.ID, client.ID, ip, ua, refreshTTL)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return &AuthResponse{
+		AccessToken: accessToken,
+		TokenType:   "Bearer",
+		ExpiresIn:   int(accessTTL.Seconds()),
+		User:        user,
+	}, refreshToken, nil
 }
 
 func (s *PasskeyService) ListPasskeys(ctx context.Context, userID string) ([]domain.WebAuthnCredential, error) {
@@ -134,9 +296,77 @@ func (s *PasskeyService) DeletePasskey(ctx context.Context, client *domain.Clien
 	return nil
 }
 
-func (s *PasskeyService) GetWA() *webauthn.WebAuthn         { return s.wa }
-func (s *PasskeyService) GetWebAuthnRepo() WebAuthnRepository { return s.webauthn }
-func (s *PasskeyService) GetUserRepo() UserRepository         { return s.users }
-func (s *PasskeyService) GetSessionRepo() SessionRepository   { return s.sessions }
-func (s *PasskeyService) GetCache() CacheClient               { return s.cache }
-func (s *PasskeyService) GetAudit() AuditRepository           { return s.audit }
+type clientRPConfig struct {
+	DisplayName string
+	RPID        string
+	RPOrigin    string
+}
+
+func (s *PasskeyService) configForClient(client *domain.Client) clientRPConfig {
+	cfg := clientRPConfig{
+		DisplayName: s.defaultRPName,
+		RPID:        s.defaultRPID,
+		RPOrigin:    s.defaultRPOrigin,
+	}
+	if client == nil || client.Settings == nil {
+		return cfg
+	}
+	if v, ok := getStringSetting(client.Settings, "webauthn_display_name"); ok {
+		cfg.DisplayName = v
+	}
+	if v, ok := getStringSetting(client.Settings, "webauthn_rp_id"); ok {
+		cfg.RPID = v
+	}
+	if v, ok := getStringSetting(client.Settings, "webauthn_rp_origin"); ok {
+		cfg.RPOrigin = v
+	}
+	return cfg
+}
+
+func getStringSetting(settings map[string]interface{}, key string) (string, bool) {
+	val, ok := settings[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := val.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	return s, true
+}
+
+func (s *PasskeyService) getWebAuthn(cfg clientRPConfig) (*webauthn.WebAuthn, error) {
+	cacheKey := cfg.DisplayName + "|" + cfg.RPID + "|" + cfg.RPOrigin
+	s.waMu.RLock()
+	if waClient, ok := s.waCache[cacheKey]; ok {
+		s.waMu.RUnlock()
+		return waClient, nil
+	}
+	s.waMu.RUnlock()
+
+	waClient, err := webauthn.New(&webauthn.Config{
+		RPDisplayName: cfg.DisplayName,
+		RPID:          cfg.RPID,
+		RPOrigins:     []string{cfg.RPOrigin},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.waMu.Lock()
+	s.waCache[cacheKey] = waClient
+	s.waMu.Unlock()
+	return waClient, nil
+}
+
+func registrationKey(clientID, userID string) string {
+	return "webauthn:reg:" + clientID + ":" + userID
+}
+
+func loginKey(sessionID string) string {
+	return "webauthn:login:" + sessionID
+}

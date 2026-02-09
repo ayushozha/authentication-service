@@ -50,7 +50,10 @@ type Config struct {
 	WebAuthnRPName   string
 
 	// Security
-	BcryptCost int
+	BcryptCost     int
+	CookieSecure   bool
+	CookieSameSite string
+	CookieDomain   string
 }
 
 func loadConfig() Config {
@@ -62,6 +65,7 @@ func loadConfig() Config {
 	}
 
 	serveFrontend := envStr("SERVE_FRONTEND", "true") == "true"
+	cookieSecure := envStr("COOKIE_SECURE", "false") == "true"
 
 	return Config{
 		Port:          envStr("PORT", "8080"),
@@ -101,7 +105,10 @@ func loadConfig() Config {
 		WebAuthnRPOrigin: envStr("WEBAUTHN_RP_ORIGIN", "http://localhost:8080"),
 		WebAuthnRPName:   envStr("WEBAUTHN_DISPLAY_NAME", "Auth Service"),
 
-		BcryptCost: bcryptCost,
+		BcryptCost:     bcryptCost,
+		CookieSecure:   cookieSecure,
+		CookieSameSite: envStr("COOKIE_SAMESITE", "lax"),
+		CookieDomain:   envStr("COOKIE_DOMAIN", ""),
 	}
 }
 

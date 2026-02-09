@@ -30,6 +30,7 @@ type RefreshTokenRequest struct {
 
 type LogoutRequest struct {
 	RefreshToken string `json:"refresh_token"`
+	APIKey       string `json:"api_key"`
 }
 
 type GetUserRequest struct {

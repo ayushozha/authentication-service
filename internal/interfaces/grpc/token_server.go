@@ -32,7 +32,7 @@ func (s *TokenServer) ValidateToken(ctx context.Context, req *ValidateTokenReque
 		}, nil
 	}
 
-	claims, err := application.ValidateAccessToken(client.JWTSecret, req.AccessToken)
+	claims, err := application.ValidateAccessToken(ctx, client, req.AccessToken)
 	if err != nil {
 		return &ValidateTokenResponse{
 			Valid: false,

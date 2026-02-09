@@ -53,6 +53,7 @@ func (s *ClientService) CreateClient(ctx context.Context, req CreateClientReques
 		WebhookURL:     req.WebhookURL,
 		Settings:       map[string]interface{}{},
 		Status:         "active",
+		TokenMode:      "v2_jwks",
 		APIKeyHash:     hashKey(apiKey),
 		CreatedAt:      now,
 		UpdatedAt:      now,

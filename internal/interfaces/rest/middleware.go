@@ -113,9 +113,13 @@ func RequireUserAuth(clientSvc *application.ClientService) func(http.HandlerFunc
 				return
 			}
 
-			claims, err := application.ValidateAccessToken(client.JWTSecret, parts[1])
+			claims, err := application.ValidateAccessToken(r.Context(), client, parts[1])
 			if err != nil {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+				return
+			}
+			if claims.ClientID != client.ID {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "token does not belong to this client"})
 				return
 			}
 
@@ -135,24 +139,34 @@ func GetUserClaims(r *http.Request) *application.AccessClaims {
 	return claims
 }
 
-func SetRefreshCookie(w http.ResponseWriter, token string, ttl time.Duration) {
+func SetRefreshCookie(w http.ResponseWriter, token string, ttl time.Duration, cfg *HandlerConfig) {
+	if cfg == nil {
+		cfg = &HandlerConfig{}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_refresh",
 		Value:    token,
 		Path:     "/api/auth",
+		Domain:   cfg.CookieDomain,
+		Secure:   cfg.CookieSecure,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: parseSameSite(cfg.CookieSameSite),
 		MaxAge:   int(ttl.Seconds()),
 	})
 }
 
-func ClearRefreshCookie(w http.ResponseWriter) {
+func ClearRefreshCookie(w http.ResponseWriter, cfg *HandlerConfig) {
+	if cfg == nil {
+		cfg = &HandlerConfig{}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_refresh",
 		Value:    "",
 		Path:     "/api/auth",
+		Domain:   cfg.CookieDomain,
+		Secure:   cfg.CookieSecure,
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: parseSameSite(cfg.CookieSameSite),
 		MaxAge:   -1,
 	})
 }
@@ -161,11 +175,15 @@ func ClearRefreshCookie(w http.ResponseWriter) {
 func CORSHandler(origin string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client := GetClient(r)
-		o := origin
-		if client != nil && len(client.AllowedOrigins) > 0 {
-			o = client.AllowedOrigins[0]
+		requestOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+		corsOrigin, allowCredentials, allowed := resolveAllowedOrigin(requestOrigin, origin, client)
+		if requestOrigin != "" && !allowed {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin is not allowed"})
+			return
 		}
-		setCorsHeaders(w, o)
+		if requestOrigin != "" || corsOrigin != "" {
+			setCorsHeaders(w, corsOrigin, allowCredentials)
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -185,4 +203,63 @@ func MethodCheck(method string, next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func parseSameSite(value string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		return http.SameSiteLaxMode
+	}
+}
+
+func resolveAllowedOrigin(requestOrigin, defaultOrigin string, client *domain.Client) (corsOrigin string, allowCredentials bool, allowed bool) {
+	if client != nil && len(client.AllowedOrigins) > 0 {
+		if requestOrigin == "" {
+			return client.AllowedOrigins[0], true, true
+		}
+		for _, allowedOrigin := range client.AllowedOrigins {
+			if strings.EqualFold(strings.TrimSpace(allowedOrigin), requestOrigin) {
+				return requestOrigin, true, true
+			}
+		}
+		return "", false, false
+	}
+
+	rawDefault := strings.TrimSpace(defaultOrigin)
+	if rawDefault == "" {
+		return "", false, requestOrigin == ""
+	}
+	if rawDefault == "*" {
+		return "*", false, true
+	}
+
+	origins := splitOrigins(rawDefault)
+	if requestOrigin == "" {
+		return origins[0], true, true
+	}
+	for _, allowedOrigin := range origins {
+		if strings.EqualFold(allowedOrigin, requestOrigin) {
+			return requestOrigin, true, true
+		}
+	}
+	return "", false, false
+}
+
+func splitOrigins(raw string) []string {
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		o := strings.TrimSpace(part)
+		if o != "" {
+			result = append(result, o)
+		}
+	}
+	if len(result) == 0 {
+		return []string{raw}
+	}
+	return result
 }

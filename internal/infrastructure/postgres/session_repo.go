@@ -53,14 +53,14 @@ func (r *SessionRepo) Create(ctx context.Context, userID, clientID, ip, ua strin
 	return rawToken, nil
 }
 
-func (r *SessionRepo) Validate(ctx context.Context, rawToken string) (string, string, error) {
+func (r *SessionRepo) Validate(ctx context.Context, clientID, rawToken string) (string, string, error) {
 	tokenHash := hashToken(rawToken)
 
 	var userID, sessionID string
 	err := r.db.QueryRowContext(ctx, `
 		SELECT id, user_id FROM sessions
-		WHERE refresh_token = $1 AND revoked = FALSE AND expires_at > NOW()`,
-		tokenHash,
+		WHERE client_id = $1 AND refresh_token = $2 AND revoked = FALSE AND expires_at > NOW()`,
+		clientID, tokenHash,
 	).Scan(&sessionID, &userID)
 	if err == sql.ErrNoRows {
 		return "", "", domain.ErrInvalidToken
@@ -77,15 +77,15 @@ func (r *SessionRepo) Revoke(ctx context.Context, sessionID string) error {
 	return err
 }
 
-func (r *SessionRepo) RevokeByToken(ctx context.Context, rawToken string) error {
+func (r *SessionRepo) RevokeByToken(ctx context.Context, clientID, rawToken string) error {
 	tokenHash := hashToken(rawToken)
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE sessions SET revoked = TRUE WHERE refresh_token = $1`, tokenHash)
+		UPDATE sessions SET revoked = TRUE WHERE client_id = $1 AND refresh_token = $2`, clientID, tokenHash)
 	return err
 }
 
-func (r *SessionRepo) RevokeAllForUser(ctx context.Context, userID string) error {
+func (r *SessionRepo) RevokeAllForUser(ctx context.Context, clientID, userID string) error {
 	_, err := r.db.ExecContext(ctx, `
-		UPDATE sessions SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE`, userID)
+		UPDATE sessions SET revoked = TRUE WHERE client_id = $1 AND user_id = $2 AND revoked = FALSE`, clientID, userID)
 	return err
 }

@@ -135,7 +135,14 @@ func (s *AuthServer) RefreshToken(ctx context.Context, req *RefreshTokenRequest)
 }
 
 func (s *AuthServer) Logout(ctx context.Context, req *LogoutRequest) (*Empty, error) {
-	if err := s.auth.Logout(ctx, req.RefreshToken); err != nil {
+	if req.APIKey == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "api_key is required")
+	}
+	client, err := s.clients.GetClientByAPIKey(ctx, req.APIKey)
+	if err != nil {
+		return nil, domainToGRPCError(err)
+	}
+	if err := s.auth.Logout(ctx, client.ID, req.RefreshToken); err != nil {
 		return nil, domainToGRPCError(err)
 	}
 	return &Empty{}, nil

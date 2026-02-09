@@ -32,9 +32,22 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-func setCorsHeaders(w http.ResponseWriter, origin string) {
-	w.Header().Set("Access-Control-Allow-Origin", origin)
+func setCorsHeaders(w http.ResponseWriter, origin string, allowCredentials bool) {
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Add("Vary", "Origin")
+	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
-	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Admin-Key")
+	if allowCredentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+}
+
+func isTokenSessionMode(r *http.Request, requestedMode string) bool {
+	mode := strings.ToLower(strings.TrimSpace(requestedMode))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("session_mode")))
+	}
+	return mode == "token"
 }

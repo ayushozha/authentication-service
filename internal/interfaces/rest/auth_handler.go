@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -16,11 +17,14 @@ type AuthHandler struct {
 }
 
 type HandlerConfig struct {
-	AllowOrigin   string
-	BaseURL       string
-	BcryptCost    int
-	AccessTTL     time.Duration
-	RefreshTTL    time.Duration
+	AllowOrigin    string
+	BaseURL        string
+	BcryptCost     int
+	AccessTTL      time.Duration
+	RefreshTTL     time.Duration
+	CookieSecure   bool
+	CookieSameSite string
+	CookieDomain   string
 }
 
 func NewAuthHandler(authSvc *application.AuthService, cfg *HandlerConfig) *AuthHandler {
@@ -75,7 +79,11 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req application.LoginRequest
+	var req struct {
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		SessionMode string `json:"session_mode"`
+	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
@@ -84,7 +92,10 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, refreshToken, err := h.authSvc.Login(ctx, client, req, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+	resp, refreshToken, err := h.authSvc.Login(ctx, client, application.LoginRequest{
+		Email:    req.Email,
+		Password: req.Password,
+	}, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
 		switch err {
 		case domain.ErrInvalidPassword:
@@ -102,7 +113,11 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if refreshToken != "" {
-		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL)
+		if isTokenSessionMode(r, req.SessionMode) {
+			resp.RefreshToken = refreshToken
+		} else {
+			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -115,8 +130,27 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie, err := r.Cookie("auth_refresh")
-	if err != nil {
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+		SessionMode  string `json:"session_mode"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil && err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	tokenMode := isTokenSessionMode(r, body.SessionMode)
+
+	rawRefreshToken := ""
+	if tokenMode {
+		rawRefreshToken = body.RefreshToken
+	} else {
+		cookie, err := r.Cookie("auth_refresh")
+		if err == nil {
+			rawRefreshToken = cookie.Value
+		}
+	}
+
+	if rawRefreshToken == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no refresh token"})
 		return
 	}
@@ -124,9 +158,11 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, newRefreshToken, err := h.authSvc.Refresh(ctx, client, cookie.Value, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+	resp, newRefreshToken, err := h.authSvc.Refresh(ctx, client, rawRefreshToken, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
-		ClearRefreshCookie(w)
+		if !tokenMode {
+			ClearRefreshCookie(w, h.cfg)
+		}
 		if err == domain.ErrInvalidToken {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired refresh token"})
 		} else {
@@ -135,18 +171,27 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	SetRefreshCookie(w, newRefreshToken, h.cfg.RefreshTTL)
+	if tokenMode {
+		resp.RefreshToken = newRefreshToken
+	} else {
+		SetRefreshCookie(w, newRefreshToken, h.cfg.RefreshTTL, h.cfg)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
+	client := GetClient(r)
+	if client == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		return
+	}
 	cookie, err := r.Cookie("auth_refresh")
 	if err == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		_ = h.authSvc.Logout(ctx, cookie.Value)
+		_ = h.authSvc.Logout(ctx, client.ID, cookie.Value)
 	}
-	ClearRefreshCookie(w)
+	ClearRefreshCookie(w, h.cfg)
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 

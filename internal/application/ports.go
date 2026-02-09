@@ -19,6 +19,13 @@ type ClientRepository interface {
 	UpdateAPIKeyHash(ctx context.Context, id, newHash string) error
 }
 
+type SigningKeyRepository interface {
+	Create(ctx context.Context, key *domain.SigningKey) error
+	GetActiveByClient(ctx context.Context, clientID string) (*domain.SigningKey, error)
+	GetByClientAndKID(ctx context.Context, clientID, kid string) (*domain.SigningKey, error)
+	ListActiveByClient(ctx context.Context, clientID string) ([]*domain.SigningKey, error)
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, clientID, email, passwordHash, displayName string) (*domain.User, error)
 	CreateOAuth(ctx context.Context, clientID, email, displayName, avatarURL string) (*domain.User, error)
@@ -35,10 +42,10 @@ type UserRepository interface {
 
 type SessionRepository interface {
 	Create(ctx context.Context, userID, clientID, ip, ua string, ttl time.Duration) (rawToken string, err error)
-	Validate(ctx context.Context, rawToken string) (userID, sessionID string, err error)
+	Validate(ctx context.Context, clientID, rawToken string) (userID, sessionID string, err error)
 	Revoke(ctx context.Context, sessionID string) error
-	RevokeByToken(ctx context.Context, rawToken string) error
-	RevokeAllForUser(ctx context.Context, userID string) error
+	RevokeByToken(ctx context.Context, clientID, rawToken string) error
+	RevokeAllForUser(ctx context.Context, clientID, userID string) error
 }
 
 type OAuthRepository interface {
