@@ -1,0 +1,338 @@
+name: Deploy Cascade
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-cascade
+  cancel-in-progress: false
+
+env:
+  COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+  COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+  POLL_INTERVAL: 15
+  POLL_MAX_ATTEMPTS: 40
+  HEALTH_RETRIES: 10
+  HEALTH_RETRY_DELAY: 10
+
+jobs:
+  deploy-auth-service:
+    name: Deploy Auth Service
+    runs-on: ubuntu-latest
+    outputs:
+      healthy: ${{ steps.verify-health.outputs.healthy }}
+    steps:
+      - name: Capture current state for rollback
+        id: capture-state
+        run: |
+          # Get the current commit SHA from Coolify
+          response=$(curl -sf \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/applications/y0sgo0c88wsw4c408ogog0co")
+
+          configured_sha=$(echo "$response" | jq -r '.git_commit_sha // "HEAD"')
+
+          # If SHA is HEAD, we need the actual commit from the running container
+          # Use the push event's before SHA as the known-good rollback point
+          if [ "$configured_sha" = "HEAD" ] || [ -z "$configured_sha" ]; then
+            old_sha="${{ github.event.before }}"
+          else
+            old_sha="$configured_sha"
+          fi
+
+          echo "old_sha=$old_sha" >> "$GITHUB_OUTPUT"
+          echo "Rollback commit: $old_sha"
+
+      - name: Deploy auth-service
+        id: trigger-deploy
+        run: |
+          response=$(curl -sf -X POST \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/applications/y0sgo0c88wsw4c408ogog0co/restart")
+
+          deployment_uuid=$(echo "$response" | jq -r '.deployment_uuid')
+          if [ -z "$deployment_uuid" ] || [ "$deployment_uuid" = "null" ]; then
+            echo "::error::Failed to trigger deployment"
+            echo "$response"
+            exit 1
+          fi
+
+          echo "deployment_uuid=$deployment_uuid" >> "$GITHUB_OUTPUT"
+          echo "Deployment UUID: $deployment_uuid"
+
+      - name: Wait for deployment to finish
+        run: |
+          uuid="${{ steps.trigger-deploy.outputs.deployment_uuid }}"
+          attempt=0
+
+          while [ $attempt -lt $POLL_MAX_ATTEMPTS ]; do
+            attempt=$((attempt + 1))
+            echo "Poll $attempt/$POLL_MAX_ATTEMPTS..."
+
+            status=$(curl -sf \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" \
+              "$COOLIFY_BASE_URL/api/v1/deployments/$uuid" 2>/dev/null \
+              | jq -r '.status // "unknown"') || status="error"
+
+            echo "  Status: $status"
+
+            case "$status" in
+              finished)
+                echo "Deployment finished."
+                exit 0
+                ;;
+              failed|cancelled-by-user)
+                echo "::error::Deployment $status"
+                exit 1
+                ;;
+            esac
+
+            sleep $POLL_INTERVAL
+          done
+
+          echo "::error::Deployment timed out after $((POLL_MAX_ATTEMPTS * POLL_INTERVAL))s"
+          exit 1
+
+      - name: Verify health endpoint
+        id: verify-health
+        run: |
+          attempt=0
+
+          while [ $attempt -lt $HEALTH_RETRIES ]; do
+            attempt=$((attempt + 1))
+            echo "Health check $attempt/$HEALTH_RETRIES..."
+
+            body=$(curl -sf --max-time 5 "https://authservice.ayushojha.com/healthz" 2>/dev/null) || body=""
+
+            if [ -n "$body" ]; then
+              val=$(echo "$body" | jq -r '.status // ""')
+              if [ "$val" = "ok" ]; then
+                echo "healthy=true" >> "$GITHUB_OUTPUT"
+                echo "Auth service is healthy."
+                exit 0
+              fi
+            fi
+
+            echo "  Not healthy yet, retrying in ${HEALTH_RETRY_DELAY}s..."
+            sleep $HEALTH_RETRY_DELAY
+          done
+
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+          echo "::error::Health check failed after $((HEALTH_RETRIES * HEALTH_RETRY_DELAY))s"
+          exit 1
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          old_sha="${{ steps.capture-state.outputs.old_sha }}"
+          echo "::warning::Rolling back auth-service to $old_sha"
+
+          # Pin to old commit
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$COOLIFY_BASE_URL/api/v1/applications/y0sgo0c88wsw4c408ogog0co" \
+            -d "{\"git_commit_sha\": \"$old_sha\"}"
+
+          # Redeploy at old commit
+          response=$(curl -sf -X POST \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/applications/y0sgo0c88wsw4c408ogog0co/restart")
+
+          rollback_uuid=$(echo "$response" | jq -r '.deployment_uuid')
+          echo "Rollback deployment: $rollback_uuid"
+
+          # Wait for rollback
+          attempt=0
+          while [ $attempt -lt $POLL_MAX_ATTEMPTS ]; do
+            attempt=$((attempt + 1))
+            status=$(curl -sf \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" \
+              "$COOLIFY_BASE_URL/api/v1/deployments/$rollback_uuid" 2>/dev/null \
+              | jq -r '.status // "unknown"') || status="error"
+
+            case "$status" in
+              finished)
+                echo "Rollback succeeded."
+                break
+                ;;
+              failed|cancelled-by-user)
+                echo "::error::Rollback also failed — manual intervention required"
+                break
+                ;;
+            esac
+
+            sleep $POLL_INTERVAL
+          done
+
+          # Reset to HEAD for future deployments
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$COOLIFY_BASE_URL/api/v1/applications/y0sgo0c88wsw4c408ogog0co" \
+            -d '{"git_commit_sha": "HEAD"}'
+
+          echo "Reset git_commit_sha to HEAD"
+
+  deploy-dependents:
+    name: Deploy ${{ matrix.service.name }}
+    needs: deploy-auth-service
+    if: needs.deploy-auth-service.outputs.healthy == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        service:
+          - name: "TapDue"
+            uuid: "g8sgoog84w4c8wwc08ckcck8"
+            health_url: "https://tapdue.com/healthz"
+            health_field: "ok"
+            health_value: "true"
+          # To add a new dependent service, append here:
+          # - name: "ServiceName"
+          #   uuid: "coolify-app-uuid"
+          #   health_url: "https://domain.com/healthz"
+          #   health_field: "status"
+          #   health_value: "ok"
+
+    steps:
+      - name: Capture current state for rollback
+        id: capture-state
+        run: |
+          response=$(curl -sf \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/applications/${{ matrix.service.uuid }}")
+
+          configured_sha=$(echo "$response" | jq -r '.git_commit_sha // "HEAD"')
+          echo "old_sha=$configured_sha" >> "$GITHUB_OUTPUT"
+          echo "Current ${{ matrix.service.name }} SHA: $configured_sha"
+
+      - name: Deploy ${{ matrix.service.name }}
+        id: trigger-deploy
+        run: |
+          response=$(curl -sf -X POST \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/applications/${{ matrix.service.uuid }}/restart")
+
+          deployment_uuid=$(echo "$response" | jq -r '.deployment_uuid')
+          if [ -z "$deployment_uuid" ] || [ "$deployment_uuid" = "null" ]; then
+            echo "::error::Failed to trigger ${{ matrix.service.name }} deployment"
+            echo "$response"
+            exit 1
+          fi
+
+          echo "deployment_uuid=$deployment_uuid" >> "$GITHUB_OUTPUT"
+          echo "Deployment UUID: $deployment_uuid"
+
+      - name: Wait for deployment to finish
+        run: |
+          uuid="${{ steps.trigger-deploy.outputs.deployment_uuid }}"
+          attempt=0
+
+          while [ $attempt -lt $POLL_MAX_ATTEMPTS ]; do
+            attempt=$((attempt + 1))
+            echo "Poll $attempt/$POLL_MAX_ATTEMPTS..."
+
+            status=$(curl -sf \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" \
+              "$COOLIFY_BASE_URL/api/v1/deployments/$uuid" 2>/dev/null \
+              | jq -r '.status // "unknown"') || status="error"
+
+            echo "  Status: $status"
+
+            case "$status" in
+              finished)
+                echo "Deployment finished."
+                exit 0
+                ;;
+              failed|cancelled-by-user)
+                echo "::error::${{ matrix.service.name }} deployment $status"
+                exit 1
+                ;;
+            esac
+
+            sleep $POLL_INTERVAL
+          done
+
+          echo "::error::${{ matrix.service.name }} deployment timed out"
+          exit 1
+
+      - name: Verify health endpoint
+        run: |
+          attempt=0
+
+          while [ $attempt -lt $HEALTH_RETRIES ]; do
+            attempt=$((attempt + 1))
+            echo "Health check $attempt/$HEALTH_RETRIES..."
+
+            body=$(curl -sf --max-time 5 "${{ matrix.service.health_url }}" 2>/dev/null) || body=""
+
+            if [ -n "$body" ]; then
+              val=$(echo "$body" | jq -r '.${{ matrix.service.health_field }} // ""')
+              if [ "$val" = "${{ matrix.service.health_value }}" ]; then
+                echo "${{ matrix.service.name }} is healthy."
+                exit 0
+              fi
+            fi
+
+            echo "  Not healthy yet, retrying in ${HEALTH_RETRY_DELAY}s..."
+            sleep $HEALTH_RETRY_DELAY
+          done
+
+          echo "::error::${{ matrix.service.name }} health check failed"
+          exit 1
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          old_sha="${{ steps.capture-state.outputs.old_sha }}"
+          echo "::warning::Rolling back ${{ matrix.service.name }} to $old_sha"
+
+          # Pin to old commit
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$COOLIFY_BASE_URL/api/v1/applications/${{ matrix.service.uuid }}" \
+            -d "{\"git_commit_sha\": \"$old_sha\"}"
+
+          # Redeploy at old commit
+          response=$(curl -sf -X POST \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            "$COOLIFY_BASE_URL/api/v1/applications/${{ matrix.service.uuid }}/restart")
+
+          rollback_uuid=$(echo "$response" | jq -r '.deployment_uuid')
+          echo "Rollback deployment: $rollback_uuid"
+
+          # Wait for rollback
+          attempt=0
+          while [ $attempt -lt $POLL_MAX_ATTEMPTS ]; do
+            attempt=$((attempt + 1))
+            status=$(curl -sf \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" \
+              "$COOLIFY_BASE_URL/api/v1/deployments/$rollback_uuid" 2>/dev/null \
+              | jq -r '.status // "unknown"') || status="error"
+
+            case "$status" in
+              finished)
+                echo "Rollback succeeded."
+                break
+                ;;
+              failed|cancelled-by-user)
+                echo "::error::${{ matrix.service.name }} rollback failed — manual intervention required"
+                break
+                ;;
+            esac
+
+            sleep $POLL_INTERVAL
+          done
+
+          # Reset to HEAD
+          curl -sf -X PATCH \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$COOLIFY_BASE_URL/api/v1/applications/${{ matrix.service.uuid }}" \
+            -d '{"git_commit_sha": "HEAD"}'
+
+          echo "Reset git_commit_sha to HEAD"
