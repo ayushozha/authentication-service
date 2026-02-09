@@ -4,20 +4,49 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 
 ## Features
 
-- **Multi-tenancy** -- Register multiple client applications, each with isolated users, sessions, and a unique JWT signing secret
+- **Multi-tenancy** -- Register multiple client applications with tenant-scoped users, sessions, refresh tokens, and JWT claims enforcement
 - **Email/password authentication** -- Signup and login with bcrypt-hashed passwords (cost 12)
 - **OAuth2 social login** -- Google, GitHub, Microsoft, and Apple identity providers
 - **Magic links** -- Passwordless email-based authentication
 - **Passkeys (WebAuthn/FIDO2)** -- Browser-native passwordless login with hardware or platform authenticators
 - **TOTP two-factor authentication** -- Time-based one-time password support with setup/enable/verify/disable lifecycle
-- **JWT access tokens** -- HS256-signed, per-client secrets, short-lived (15 min default)
-- **Refresh token rotation** -- Single-use refresh tokens stored as SHA-256 hashes, delivered via HttpOnly cookies
+- **JWT access tokens** -- Per-client token modes (`v1_hs256` legacy and `v2_jwks` RS256), short-lived (15 min default)
+- **JWKS support** -- Client-scoped JWKS endpoint for RS256 verification (`/.well-known/jwks.json`)
+- **Refresh token rotation** -- Single-use refresh tokens stored as SHA-256 hashes with hybrid delivery (HttpOnly cookie or explicit token mode)
 - **Email verification** -- Token-based email address verification via Resend
 - **Password reset** -- Secure token-based password reset flow
 - **Rate limiting** -- Redis-backed sliding window rate limits and account lockout
 - **Audit logging** -- Every authentication event is logged with IP, user agent, and metadata
 - **REST + gRPC** -- Dual protocol support for flexibility
 - **JWT Validator package** -- Importable Go package (`pkg/jwtvalidator`) for downstream services
+- **Security hardening** -- Client ownership checks across auth flows, password-change/reset session revocation, stricter CORS/origin behavior, and secret scanning hooks
+
+## Major Updates (Latest Hardening Pass)
+
+- Enforced stricter tenant isolation:
+  - Refresh/logout/session validation is now client-bound.
+  - JWT middleware rejects tokens whose `client_id` does not match request client context.
+  - Magic link, TOTP verification, and passkey login/operations enforce client ownership.
+- Restructured route middleware so browser/email/provider redirect flows work without impossible headers:
+  - Public routes now include verify-email, reset-password, magic-link verify, and OAuth callbacks.
+  - App-initiated routes still require `X-API-Key`.
+- Added cross-site session controls:
+  - `COOKIE_SECURE`, `COOKIE_SAMESITE`, `COOKIE_DOMAIN`.
+  - `session_mode=token` support to return `refresh_token` in response JSON.
+- Completed passkey service orchestration in the application layer:
+  - Registration and login begin/finish flows are Redis-backed and client-scoped.
+  - Canonical delete endpoint `DELETE /api/auth/passkeys/{id}` added, with root-delete backward compatibility.
+  - Per-client WebAuthn overrides supported via client settings.
+- Hardened OAuth:
+  - PKCE + signed/encoded state payload includes `client_id`, `provider`, nonce, verifier.
+  - Callback validates cached state and fails safely if state is missing/invalid.
+  - Apple flow validates `id_token`; GitHub fallback fetches verified primary email.
+- Added JWKS migration foundation:
+  - New signing-key persistence (`client_signing_keys`) and per-client `token_mode`.
+  - RS256 issuance/validation and JWKS publishing are implemented while preserving HS256 compatibility.
+- Improved operations/security hygiene:
+  - Sanitized committed sample secrets in docs/env templates.
+  - Added CI secret scanning and pre-commit gitleaks hook.
 
 ## Quick Start (Docker Compose)
 
@@ -44,7 +73,7 @@ curl http://localhost:8080/healthz
 
 - Go 1.24+
 - PostgreSQL (local or remote)
-- Redis (optional but recommended -- required for magic links, passkeys, 2FA, and rate limiting)
+- Redis (optional for basic email/password login, but required for OAuth state, magic links, passkeys, 2FA, and rate limiting)
 
 ### Setup
 
@@ -87,9 +116,9 @@ go run ./cmd/server
 | `GRPC_PORT` | `9090` | No | gRPC server port |
 | `PUBLIC_DIR` | `./public` | No | Directory for static frontend files |
 | `SERVE_FRONTEND` | `true` | No | Serve static files from `PUBLIC_DIR` |
-| `ALLOW_ORIGIN` | `*` | No | Default CORS allowed origin |
+| `ALLOW_ORIGIN` | `*` | No | Default CORS allowed origin (single origin or comma-separated origins) |
 | `DATABASE_URL` | -- | **Yes** | PostgreSQL connection string |
-| `REDIS_URL` | -- | No | Redis connection string (with ACL credentials) |
+| `REDIS_URL` | -- | No | Redis connection string (required for OAuth, magic links, passkeys, 2FA, rate limiting) |
 | `REDIS_KEY_PREFIX` | `auth:` | No | Prefix for all Redis keys |
 | `ADMIN_API_KEY` | -- | **Yes** | Master admin API key for client management endpoints |
 | `BASE_URL` | `http://localhost:8080` | No | Public base URL (used in email links) |
@@ -117,9 +146,16 @@ go run ./cmd/server
 | `WEBAUTHN_RP_ORIGIN` | `http://localhost:8080` | No | WebAuthn relying party origin |
 | `WEBAUTHN_DISPLAY_NAME` | `Auth Service` | No | WebAuthn display name shown to users |
 
+Per-client WebAuthn overrides can be set in `client.settings` (if present): `webauthn_display_name`, `webauthn_rp_id`, `webauthn_rp_origin`.
+
 ## API Reference
 
-All auth endpoints require the `X-API-Key` header. Admin endpoints require the `X-Admin-Key` header.
+Route access requirements:
+
+- `X-API-Key` required for app-initiated auth routes under `/api/auth/*` (signup/login/refresh/logout/profile/totp setup+verify, magic-link send, OAuth begin, passkey begin/finish routes, etc.).
+- Public auth routes (no API key): `POST /api/auth/verify-email`, `POST /api/auth/reset-password`, `GET /api/auth/magic-link/verify`, `GET|POST /api/auth/oauth/{provider}/callback`.
+- User-protected routes additionally require `Authorization: Bearer <access_token>`.
+- Admin routes require `X-Admin-Key`.
 
 ### Authentication
 
@@ -129,7 +165,7 @@ POST /api/auth/login               Login with email and password
 POST /api/auth/refresh             Refresh access token (uses auth_refresh cookie)
 POST /api/auth/logout              Revoke the current session
 GET  /api/auth/me                  Get the authenticated user profile
-PUT  /api/auth/me                  Update the authenticated user profile
+PATCH /api/auth/me                 Update the authenticated user profile
 POST /api/auth/change-password     Change password (requires current password)
 ```
 
@@ -142,12 +178,16 @@ POST /api/auth/forgot-password     Request a password reset email
 POST /api/auth/reset-password      Reset password with token
 ```
 
+`verify-email` and `reset-password` are public token endpoints (no `X-API-Key` required).
+
 ### Magic Links
 
 ```
 POST /api/auth/magic-link/send     Send a magic link to an email address
-POST /api/auth/magic-link/verify   Verify magic link token and authenticate
+GET  /api/auth/magic-link/verify   Verify magic link token and authenticate
 ```
+
+`magic-link/verify` accepts `token` as a query parameter and supports browser redirect or JSON response.
 
 ### TOTP Two-Factor Authentication
 
@@ -163,9 +203,12 @@ POST /api/auth/totp/disable        Disable TOTP on the account (requires auth)
 ```
 GET  /api/auth/oauth/{provider}           Begin OAuth flow (redirects to provider)
 GET  /api/auth/oauth/{provider}/callback   OAuth callback handler
+POST /api/auth/oauth/{provider}/callback   OAuth callback handler (provider form-post compatible)
 ```
 
 Supported providers: `google`, `github`, `microsoft`, `apple`
+
+`oauth/{provider}` begin requires `X-API-Key` so tenant context is known. Callback routes are public and tenant is recovered from validated OAuth state.
 
 ### Passkeys (WebAuthn)
 
@@ -179,6 +222,8 @@ DELETE /api/auth/passkeys                  Delete a passkey (requires auth)
 DELETE /api/auth/passkeys/{id}             Delete a passkey by ID (canonical path)
 ```
 
+`passkey/login/finish` requires `session_id` query param from login begin response.
+
 ### Admin (Client Management)
 
 ```
@@ -187,6 +232,8 @@ GET  /api/admin/clients                       List all clients
 GET  /api/admin/clients/{id}                  Get client by ID
 POST /api/admin/clients/{id}/rotate-secret    Rotate client JWT secret
 POST /api/admin/clients/{id}/rotate-api-key   Rotate client API key
+POST /api/admin/clients/{id}/rotate-jwt       Alias for rotate-secret
+POST /api/admin/clients/{id}/rotate-key       Alias for rotate-api-key
 ```
 
 ### Health
@@ -196,7 +243,13 @@ GET /healthz    Health check (returns {"status": "ok"})
 GET /.well-known/jwks.json    Client JWKS (requires `X-API-Key` or `client_id`)
 ```
 
-`session_mode=token` is supported on `login`, `refresh`, `totp/verify`, `magic-link/verify`, and `passkey/login/finish` to return `refresh_token` in the JSON response instead of setting an HttpOnly cookie.
+Hybrid session mode:
+
+- Default: refresh token is stored in HttpOnly `auth_refresh` cookie.
+- Token mode: use `session_mode=token` to receive `refresh_token` in JSON instead of cookie.
+- Supported endpoints:
+  - Body/query: `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/totp/verify`
+  - Query only: `GET /api/auth/magic-link/verify`, `POST /api/auth/passkey/login/finish`
 
 ## Multi-Tenancy Guide
 
@@ -238,7 +291,7 @@ Response:
 
 ### Using API Keys
 
-All auth endpoints require the client API key in the `X-API-Key` header:
+Client API key (`X-API-Key`) is required for app-initiated auth endpoints. Public token/callback endpoints are intentionally unauthenticated (verify/reset/magic-link verify/OAuth callback).
 
 ```bash
 # Example: signup a user under your client
@@ -261,6 +314,13 @@ curl -X POST http://localhost:8080/api/admin/clients/{id}/rotate-secret \
   -H "X-Admin-Key: your-admin-api-key"
 ```
 
+Alias route also supported:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/clients/{id}/rotate-jwt \
+  -H "X-Admin-Key: your-admin-api-key"
+```
+
 Rotate the API key (invalidates the current API key, returns a new one):
 
 ```bash
@@ -268,9 +328,19 @@ curl -X POST http://localhost:8080/api/admin/clients/{id}/rotate-api-key \
   -H "X-Admin-Key: your-admin-api-key"
 ```
 
+Alias route also supported:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/clients/{id}/rotate-key \
+  -H "X-Admin-Key: your-admin-api-key"
+```
+
 ## JWT Validator Package
 
-The `pkg/jwtvalidator` package allows downstream Go services to validate access tokens issued by this authentication service without making network calls.
+The `pkg/jwtvalidator` package allows downstream Go services to validate access tokens issued by this authentication service.
+
+- HS256 mode: validate with client secret.
+- RS256/JWKS mode: validate with `JWKSURL` and optional `ClientID` match enforcement.
 
 ### Installation
 
@@ -292,7 +362,7 @@ import (
 )
 
 func main() {
-    // Create a validator with your client's JWT secret
+    // HS256 mode (legacy clients)
     validator := jwtvalidator.New(jwtvalidator.Config{
         Secret: os.Getenv("AUTH_JWT_SECRET"),
     })
@@ -319,6 +389,16 @@ func main() {
     // Wrap your handler with the validator middleware
     http.ListenAndServe(":3000", validator.Middleware(mux))
 }
+```
+
+JWKS/RS256 mode example:
+
+```go
+jwksValidator := jwtvalidator.New(jwtvalidator.Config{
+    JWKSURL:         "https://auth.example.com/.well-known/jwks.json?client_id=<client-id>",
+    ClientID:        "<client-id>", // optional but recommended
+    RefreshInterval: 5 * time.Minute,
+})
 ```
 
 ### Claims Structure
@@ -357,6 +437,8 @@ The service exposes gRPC services on port `9090` (configurable via `GRPC_PORT`).
 
 Passkey/WebAuthn operations are currently exposed via REST endpoints.
 
+`AuthService.Logout` now requires `api_key` in addition to `refresh_token` to enforce client-bound session revocation.
+
 ### Token Validation (Service-to-Service)
 
 Other microservices can validate tokens via gRPC without needing the JWT secret:
@@ -390,7 +472,7 @@ The service follows Clean Architecture (Hexagonal Architecture) with four layers
 internal/
   domain/           Entity definitions and domain errors (zero dependencies)
   application/      Use cases, business logic, port interfaces
-  infrastructure/   PostgreSQL repos, Redis client, Resend email client
+  infrastructure/   PostgreSQL repos (including signing keys), Redis client, Resend email client
   interfaces/       REST handlers + gRPC handlers, middleware
 pkg/
   jwtvalidator/     Public Go package for downstream JWT validation
@@ -410,6 +492,7 @@ authentication-service/
   internal/
     domain/                     Domain entities and errors
       client.go                 Client (tenant) entity
+      signing_key.go            Per-client asymmetric signing key entity (JWKS)
       user.go                   User entity
       session.go                Session entity
       oauth_account.go          OAuth account entity
@@ -420,6 +503,7 @@ authentication-service/
     application/                Business logic and port interfaces
       ports.go                  Repository and service interfaces
       auth_service.go           Core auth logic (signup, login, refresh, logout)
+      auth_tokens_test.go       Token mode/JWKS validation tests
       client_service.go         Client management logic
       email_verify_service.go   Email verification logic
       password_reset_service.go Password reset logic
@@ -430,12 +514,15 @@ authentication-service/
     infrastructure/
       postgres/                 PostgreSQL repository implementations
         migrations/             SQL migration files (auto-run on startup)
+          008_add_jwks_signing_keys.sql   token_mode + signing key tables
+        signing_key_repo.go     Signing key persistence for JWKS/RS256
       redis/                    Redis client and rate limiter
       email/                    Resend email client
     interfaces/
       rest/                     HTTP REST handlers and middleware
         router.go               Route registration and middleware wiring
-        middleware.go            API key, JWT auth, CORS, security middleware
+        middleware.go           API key, JWT auth, CORS, security middleware
+        middleware_test.go      CORS/session mode tests
         auth_handler.go         Signup, login, refresh, logout, profile handlers
         verify_handler.go       Email verification and password reset handlers
         magic_link_handler.go   Magic link handlers
@@ -456,6 +543,8 @@ authentication-service/
   docker-compose.yml            Production deployment configuration
   Dockerfile                    Multi-stage Docker build
   .env.example                  Environment variable template
+  .github/workflows/secret-scan.yml   CI secret scanning (gitleaks)
+  .pre-commit-config.yaml       Local secret scanning hook
 ```
 
 ## License
