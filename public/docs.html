@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auth Service - API Documentation</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface-2: #1a1a26;
+    --border: #2a2a3a;
+    --text: #e4e4ef;
+    --text-muted: #8888a0;
+    --accent: #6366f1;
+    --accent-light: #818cf8;
+    --green: #22c55e;
+    --green-bg: rgba(34,197,94,0.1);
+    --blue: #3b82f6;
+    --blue-bg: rgba(59,130,246,0.1);
+    --yellow: #eab308;
+    --yellow-bg: rgba(234,179,8,0.1);
+    --red: #ef4444;
+    --red-bg: rgba(239,68,68,0.1);
+    --orange: #f97316;
+    --orange-bg: rgba(249,115,22,0.1);
+    --purple: #a855f7;
+    --purple-bg: rgba(168,85,247,0.1);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+  a { color: var(--accent-light); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--surface-2);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    color: var(--accent-light);
+  }
+
+  /* Layout */
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 280px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    overflow-y: auto;
+    z-index: 100;
+    padding: 24px 0;
+  }
+  .sidebar-logo {
+    padding: 0 24px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .sidebar-logo h2 { font-size: 18px; font-weight: 700; }
+  .sidebar-logo span { color: var(--accent-light); }
+  .sidebar-logo p { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .sidebar nav { padding: 0 12px; }
+  .sidebar nav .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    padding: 16px 12px 6px;
+    font-weight: 600;
+  }
+  .sidebar nav a {
+    display: block;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .sidebar nav a:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+  .sidebar nav a.active { background: var(--accent); color: #fff; }
+
+  .main { margin-left: 280px; flex: 1; max-width: 900px; padding: 40px 48px 120px; }
+
+  /* Mobile */
+  .menu-toggle { display: none; position: fixed; top: 16px; left: 16px; z-index: 200; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); cursor: pointer; font-size: 18px; }
+  @media (max-width: 860px) {
+    .sidebar { transform: translateX(-100%); transition: transform 0.3s; }
+    .sidebar.open { transform: translateX(0); }
+    .menu-toggle { display: block; }
+    .main { margin-left: 0; padding: 40px 20px 120px; }
+  }
+
+  /* Typography */
+  h1 { font-size: 32px; font-weight: 800; margin-bottom: 8px; }
+  h2 { font-size: 24px; font-weight: 700; margin: 48px 0 16px; padding-top: 24px; border-top: 1px solid var(--border); }
+  h3 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; }
+  h4 { font-size: 15px; font-weight: 600; margin: 20px 0 8px; color: var(--text-muted); }
+  p { margin-bottom: 12px; }
+  .subtitle { color: var(--text-muted); font-size: 16px; margin-bottom: 32px; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+
+  /* Feature grid */
+  .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin: 16px 0 24px; }
+  .feature {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .feature h4 { margin: 0 0 4px; color: var(--text); font-size: 14px; }
+  .feature p { color: var(--text-muted); font-size: 13px; margin: 0; line-height: 1.5; }
+
+  /* Method badges */
+  .method {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: 'SF Mono', monospace;
+    vertical-align: middle;
+    min-width: 52px;
+    text-align: center;
+  }
+  .method-get { background: var(--blue-bg); color: var(--blue); }
+  .method-post { background: var(--green-bg); color: var(--green); }
+  .method-patch { background: var(--yellow-bg); color: var(--yellow); }
+  .method-delete { background: var(--red-bg); color: var(--red); }
+
+  /* Endpoint table */
+  .endpoint-table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; }
+  .endpoint-table th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .endpoint-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .endpoint-table td:nth-child(2) { font-family: 'SF Mono', monospace; font-size: 13px; }
+  .endpoint-table tr:hover { background: var(--surface-2); }
+
+  /* Code blocks */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  pre .comment { color: #6a6a80; }
+  pre .key { color: var(--accent-light); }
+  pre .string { color: var(--green); }
+  pre .number { color: var(--orange); }
+  pre .bool { color: var(--yellow); }
+  pre .keyword { color: var(--purple); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 2px; background: var(--surface-2); border-radius: 8px 8px 0 0; padding: 4px 4px 0; overflow-x: auto; }
+  .tab {
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 6px 6px 0 0;
+    color: var(--text-muted);
+    border: none;
+    background: none;
+    font-family: inherit;
+    white-space: nowrap;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--surface); color: var(--text); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  .tabbed-block pre { border-radius: 0 0 10px 10px; margin-top: 0; border-top: none; }
+
+  /* Callouts */
+  .callout {
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 16px 0;
+    font-size: 14px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .callout-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+  .callout-info { background: var(--blue-bg); border: 1px solid rgba(59,130,246,0.25); }
+  .callout-warn { background: var(--yellow-bg); border: 1px solid rgba(234,179,8,0.25); }
+  .callout-success { background: var(--green-bg); border: 1px solid rgba(34,197,94,0.25); }
+  .callout-danger { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.25); }
+
+  /* Steps */
+  .steps { counter-reset: step; }
+  .step { display: flex; gap: 16px; margin-bottom: 24px; }
+  .step::before {
+    counter-increment: step;
+    content: counter(step);
+    background: var(--accent);
+    color: #fff;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .step-content { flex: 1; }
+  .step-content h4 { margin-top: 0; color: var(--text); }
+
+  /* Auth badge */
+  .auth-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .auth-apikey { background: var(--purple-bg); color: var(--purple); }
+  .auth-bearer { background: var(--orange-bg); color: var(--orange); }
+  .auth-admin { background: var(--red-bg); color: var(--red); }
+  .auth-none { background: var(--surface-2); color: var(--text-muted); }
+
+  /* Details/Accordions */
+  details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+  }
+  details summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  details summary::before { content: '\25B6'; font-size: 10px; transition: transform 0.2s; color: var(--text-muted); }
+  details[open] summary::before { transform: rotate(90deg); }
+  details .detail-body { padding: 0 20px 20px; }
+  details pre { margin: 8px 0; }
+
+  ul, ol { margin: 8px 0 16px 24px; }
+  li { margin-bottom: 4px; font-size: 14px; }
+
+  .divider { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+  /* Scroll margins */
+  [id] { scroll-margin-top: 24px; }
+
+  /* Back to top */
+  .back-top {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    background: var(--accent);
+    color: #fff;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.3s;
+    border: none;
+    z-index: 50;
+  }
+  .back-top.visible { opacity: 1; }
+</style>
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<div class="layout">
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <h2><span>Auth</span> Service</h2>
+    <p>Multi-tenant authentication API</p>
+  </div>
+  <nav>
+    <div class="section-label">Getting Started</div>
+    <a href="#overview">Overview</a>
+    <a href="#quickstart">Quick Start</a>
+    <a href="#base-url">Base URL</a>
+    <a href="#authentication">Authentication Headers</a>
+
+    <div class="section-label">Client Management</div>
+    <a href="#register-client">Register a Client</a>
+    <a href="#manage-clients">Manage Clients</a>
+
+    <div class="section-label">Auth Endpoints</div>
+    <a href="#signup">Signup</a>
+    <a href="#login">Login</a>
+    <a href="#refresh">Refresh Token</a>
+    <a href="#logout">Logout</a>
+    <a href="#me">Get / Update Profile</a>
+    <a href="#change-password">Change Password</a>
+
+    <div class="section-label">Email &amp; Password Reset</div>
+    <a href="#verify-email">Verify Email</a>
+    <a href="#forgot-password">Forgot Password</a>
+    <a href="#reset-password">Reset Password</a>
+
+    <div class="section-label">Magic Links</div>
+    <a href="#magic-link">Magic Link Auth</a>
+
+    <div class="section-label">OAuth2 Social Login</div>
+    <a href="#oauth">OAuth2 Providers</a>
+
+    <div class="section-label">Two-Factor Auth</div>
+    <a href="#totp">TOTP (2FA)</a>
+
+    <div class="section-label">Passkeys / WebAuthn</div>
+    <a href="#passkeys">Passkeys</a>
+
+    <div class="section-label">Backend Integration</div>
+    <a href="#jwt-validation">JWT Validation</a>
+    <a href="#jwks">JWKS Endpoint</a>
+    <a href="#grpc">gRPC API</a>
+
+    <div class="section-label">Reference</div>
+    <a href="#session-modes">Session Modes</a>
+    <a href="#rate-limits">Rate Limits</a>
+    <a href="#error-format">Error Format</a>
+    <a href="#env-vars">Environment Variables</a>
+    <a href="#all-endpoints">Endpoint Reference</a>
+  </nav>
+</aside>
+
+<main class="main">
+
+<!-- ============================================================ -->
+<h1 id="overview">Auth Service API</h1>
+<p class="subtitle">Multi-tenant authentication microservice with email/password, OAuth2, magic links, passkeys, TOTP 2FA, and JWT session management.</p>
+
+<div class="features">
+  <div class="feature"><h4>Multi-tenant</h4><p>Complete user/session isolation per client. One instance serves many apps.</p></div>
+  <div class="feature"><h4>Email / Password</h4><p>Signup and login with bcrypt (cost 12), email verification, password reset.</p></div>
+  <div class="feature"><h4>OAuth2</h4><p>Google, GitHub, Microsoft, Apple with PKCE-secured flows.</p></div>
+  <div class="feature"><h4>Magic Links</h4><p>Passwordless email-based login. Creates accounts on first use.</p></div>
+  <div class="feature"><h4>Passkeys</h4><p>WebAuthn/FIDO2 browser-native passwordless authentication.</p></div>
+  <div class="feature"><h4>TOTP 2FA</h4><p>Time-based one-time passwords (RFC 6238) with QR setup.</p></div>
+  <div class="feature"><h4>JWT Tokens</h4><p>HS256 or RS256 (JWKS). 15-min access + 7-day refresh rotation.</p></div>
+  <div class="feature"><h4>REST + gRPC</h4><p>Dual protocol support. Go validator package for downstream services.</p></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="quickstart">Quick Start Integration</h2>
+<p>Get your app authenticated in 4 steps:</p>
+
+<div class="steps">
+  <div class="step">
+    <div class="step-content">
+      <h4>Register your app as a client</h4>
+      <p>Call the admin API to create a new tenant. Save the returned <code>api_key</code> and <code>jwt_secret</code>.</p>
+<pre>curl -X POST https://authservice.ayushojha.com/api/admin/clients \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_KEY" \
+  -d '{
+    "name": "My App",
+    "slug": "my-app",
+    "allowed_origins": ["https://myapp.com"]
+  }'</pre>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-content">
+      <h4>Add auth to your frontend</h4>
+      <p>Send requests to the auth endpoints with the <code>X-API-Key</code> header.</p>
+<pre><span class="comment">// Signup</span>
+<span class="keyword">const</span> res = <span class="keyword">await</span> fetch(<span class="string">"https://authservice.ayushojha.com/api/auth/signup"</span>, {
+  method: <span class="string">"POST"</span>,
+  headers: {
+    <span class="string">"Content-Type"</span>: <span class="string">"application/json"</span>,
+    <span class="string">"X-API-Key"</span>: <span class="string">"YOUR_API_KEY"</span>,
+  },
+  credentials: <span class="string">"include"</span>,  <span class="comment">// for cookie-based refresh tokens</span>
+  body: JSON.stringify({
+    email: <span class="string">"user@example.com"</span>,
+    password: <span class="string">"securepassword123"</span>,
+    display_name: <span class="string">"Jane Doe"</span>
+  })
+});
+<span class="keyword">const</span> { access_token, user } = <span class="keyword">await</span> res.json();</pre>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-content">
+      <h4>Validate JWTs in your backend</h4>
+      <p>Use the <code>jwt_secret</code> to validate tokens locally. No network call to the auth service needed.</p>
+
+      <div class="tabs" data-group="backend">
+        <button class="tab active" data-tab="go">Go</button>
+        <button class="tab" data-tab="node">Node.js</button>
+        <button class="tab" data-tab="python">Python</button>
+      </div>
+      <div class="tabbed-block">
+        <div class="tab-content active" data-tab="go">
+<pre><span class="keyword">import</span> <span class="string">"github.com/Ayush10/authentication-service/pkg/jwtvalidator"</span>
+
+validator := jwtvalidator.New(jwtvalidator.Config{
+    Secret: os.Getenv(<span class="string">"AUTH_JWT_SECRET"</span>),
+})
+
+<span class="comment">// Use as middleware</span>
+http.Handle(<span class="string">"/api/"</span>, validator.Middleware(apiRouter))
+
+<span class="comment">// Or validate manually</span>
+claims, err := validator.Validate(tokenString)
+<span class="keyword">if</span> err != <span class="keyword">nil</span> {
+    <span class="comment">// invalid or expired token</span>
+}
+userID := claims.UserID()  <span class="comment">// sub claim</span>
+email := claims.Email
+role := claims.Role</pre>
+        </div>
+        <div class="tab-content" data-tab="node">
+<pre><span class="keyword">const</span> jwt = require(<span class="string">"jsonwebtoken"</span>);
+
+<span class="keyword">function</span> validateToken(token) {
+  <span class="keyword">try</span> {
+    <span class="keyword">return</span> jwt.verify(token, process.env.AUTH_JWT_SECRET, {
+      algorithms: [<span class="string">"HS256"</span>],
+    });
+  } <span class="keyword">catch</span> (err) {
+    <span class="keyword">return</span> <span class="keyword">null</span>;
+  }
+}
+
+<span class="comment">// Express middleware</span>
+<span class="keyword">function</span> authMiddleware(req, res, next) {
+  <span class="keyword">const</span> auth = req.headers.authorization;
+  <span class="keyword">if</span> (!auth?.startsWith(<span class="string">"Bearer "</span>)) <span class="keyword">return</span> res.status(<span class="number">401</span>).json({ error: <span class="string">"missing token"</span> });
+  <span class="keyword">const</span> claims = validateToken(auth.slice(<span class="number">7</span>));
+  <span class="keyword">if</span> (!claims) <span class="keyword">return</span> res.status(<span class="number">401</span>).json({ error: <span class="string">"invalid token"</span> });
+  req.user = claims;
+  next();
+}</pre>
+        </div>
+        <div class="tab-content" data-tab="python">
+<pre><span class="keyword">import</span> jwt, os
+
+JWT_SECRET = os.environ[<span class="string">"AUTH_JWT_SECRET"</span>]
+
+<span class="keyword">def</span> validate_token(token: str) -> dict | None:
+    <span class="keyword">try</span>:
+        <span class="keyword">return</span> jwt.decode(token, JWT_SECRET, algorithms=[<span class="string">"HS256"</span>])
+    <span class="keyword">except</span> jwt.InvalidTokenError:
+        <span class="keyword">return</span> None
+
+<span class="comment"># FastAPI dependency</span>
+<span class="keyword">async def</span> get_current_user(authorization: str = Header(...)):
+    <span class="keyword">if not</span> authorization.startswith(<span class="string">"Bearer "</span>):
+        <span class="keyword">raise</span> HTTPException(<span class="number">401</span>)
+    claims = validate_token(authorization[<span class="number">7</span>:])
+    <span class="keyword">if not</span> claims:
+        <span class="keyword">raise</span> HTTPException(<span class="number">401</span>)
+    <span class="keyword">return</span> claims</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="step-content">
+      <h4>Set the JWT secret in your backend environment</h4>
+<pre>AUTH_JWT_SECRET=your_jwt_secret_from_step_1</pre>
+      <p>That's it. Your backend validates tokens locally with zero latency. No calls back to the auth service.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="base-url">Base URL</h2>
+<pre>https://authservice.ayushojha.com</pre>
+<p>All endpoints below are relative to this base URL.</p>
+
+<!-- ============================================================ -->
+<h2 id="authentication">Authentication Headers</h2>
+
+<div class="card">
+  <table class="endpoint-table" style="margin:0">
+    <thead><tr><th>Header</th><th>Value</th><th>Used By</th></tr></thead>
+    <tbody>
+      <tr><td><code>X-API-Key</code></td><td>Your client API key</td><td>All <code>/api/auth/*</code> endpoints</td></tr>
+      <tr><td><code>Authorization</code></td><td><code>Bearer &lt;access_token&gt;</code></td><td>Protected endpoints (profile, 2FA setup, passkeys)</td></tr>
+      <tr><td><code>X-Admin-Key</code></td><td>Admin API key</td><td>All <code>/api/admin/*</code> endpoints</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout callout-info">
+  <span class="callout-icon">&#8505;</span>
+  <div><strong>CORS:</strong> The service respects your client's <code>allowed_origins</code>. Set <code>credentials: "include"</code> in fetch calls if using cookie-based sessions. For cross-origin setups, ensure your domain is listed in allowed origins.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="register-client">Register a Client (Tenant)</h2>
+<p>Every app that uses the auth service must register as a client. This creates isolated user pools, sessions, and JWT signing keys.</p>
+
+<p><span class="method method-post">POST</span> <code>/api/admin/clients</code> <span class="auth-badge auth-admin">X-Admin-Key</span></p>
+
+<h4>Request Body</h4>
+<pre>{
+  <span class="key">"name"</span>: <span class="string">"My Application"</span>,
+  <span class="key">"slug"</span>: <span class="string">"my-app"</span>,                         <span class="comment">// unique, URL-safe identifier</span>
+  <span class="key">"allowed_origins"</span>: [<span class="string">"https://myapp.com"</span>],  <span class="comment">// CORS origins</span>
+  <span class="key">"webhook_url"</span>: <span class="string">"https://myapp.com/hooks"</span>    <span class="comment">// optional event webhook</span>
+}</pre>
+
+<h4>Response <code>201 Created</code></h4>
+<pre>{
+  <span class="key">"client"</span>: {
+    <span class="key">"id"</span>: <span class="string">"fe24972b-68fd-4670-904c-55496033d079"</span>,
+    <span class="key">"name"</span>: <span class="string">"My Application"</span>,
+    <span class="key">"slug"</span>: <span class="string">"my-app"</span>,
+    <span class="key">"allowed_origins"</span>: [<span class="string">"https://myapp.com"</span>],
+    <span class="key">"status"</span>: <span class="string">"active"</span>,
+    <span class="key">"created_at"</span>: <span class="string">"2025-01-15T10:30:00Z"</span>,
+    <span class="key">"updated_at"</span>: <span class="string">"2025-01-15T10:30:00Z"</span>
+  },
+  <span class="key">"api_key"</span>: <span class="string">"77f61b0b47df7c..."</span>,    <span class="comment">// shown ONCE - save this!</span>
+  <span class="key">"jwt_secret"</span>: <span class="string">"f41deb9c1476..."</span>  <span class="comment">// shown ONCE - save this!</span>
+}</pre>
+
+<div class="callout callout-warn">
+  <span class="callout-icon">&#9888;</span>
+  <div><strong>Save both values immediately.</strong> The <code>api_key</code> and <code>jwt_secret</code> are only returned once. The API key is stored as a SHA-256 hash and cannot be retrieved later. If lost, you must rotate.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="manage-clients">Manage Clients</h2>
+
+<table class="endpoint-table">
+  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/admin/clients</code></td><td>List all clients</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/admin/clients/{id}</code></td><td>Get client by ID</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/admin/clients/{id}/rotate-api-key</code></td><td>Rotate API key (returns new key once)</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/admin/clients/{id}/rotate-jwt</code></td><td>Rotate JWT signing secret</td></tr>
+  </tbody>
+</table>
+<p>All admin endpoints require the <span class="auth-badge auth-admin">X-Admin-Key</span> header.</p>
+
+<!-- ============================================================ -->
+<h2 id="signup">Signup</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/signup</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+
+<h4>Request</h4>
+<pre>{
+  <span class="key">"email"</span>: <span class="string">"user@example.com"</span>,
+  <span class="key">"password"</span>: <span class="string">"securepassword123"</span>,   <span class="comment">// 8-72 characters</span>
+  <span class="key">"display_name"</span>: <span class="string">"Jane Doe"</span>          <span class="comment">// optional</span>
+}</pre>
+
+<h4>Response <code>201 Created</code></h4>
+<pre>{
+  <span class="key">"access_token"</span>: <span class="string">"eyJhbGciOiJIUzI1NiIs..."</span>,
+  <span class="key">"token_type"</span>: <span class="string">"Bearer"</span>,
+  <span class="key">"expires_in"</span>: <span class="number">900</span>,
+  <span class="key">"user"</span>: {
+    <span class="key">"id"</span>: <span class="string">"a1b2c3d4-..."</span>,
+    <span class="key">"email"</span>: <span class="string">"user@example.com"</span>,
+    <span class="key">"display_name"</span>: <span class="string">"Jane Doe"</span>,
+    <span class="key">"email_verified"</span>: <span class="bool">false</span>,
+    <span class="key">"totp_enabled"</span>: <span class="bool">false</span>,
+    <span class="key">"role"</span>: <span class="string">"user"</span>,
+    <span class="key">"created_at"</span>: <span class="string">"2025-01-15T10:30:00Z"</span>,
+    <span class="key">"updated_at"</span>: <span class="string">"2025-01-15T10:30:00Z"</span>
+  }
+}</pre>
+<p>A verification email is sent automatically if the email provider (Resend) is configured. The refresh token is set as an <code>HttpOnly</code> cookie named <code>auth_refresh</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="login">Login</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/login</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+
+<h4>Request</h4>
+<pre>{
+  <span class="key">"email"</span>: <span class="string">"user@example.com"</span>,
+  <span class="key">"password"</span>: <span class="string">"securepassword123"</span>
+}</pre>
+
+<h4>Response <code>200 OK</code></h4>
+<p>Same format as signup response. If the user has TOTP enabled, you'll get a 2FA challenge instead:</p>
+
+<pre>{
+  <span class="key">"requires_2fa"</span>: <span class="bool">true</span>,
+  <span class="key">"two_factor_token"</span>: <span class="string">"temp-2fa-token-uuid"</span>,
+  <span class="key">"two_factor_methods"</span>: [<span class="string">"totp"</span>]
+}</pre>
+<p>When you receive this, prompt the user for their TOTP code and call <a href="#totp-verify">TOTP Verify</a> to complete login.</p>
+
+<!-- ============================================================ -->
+<h2 id="refresh">Refresh Token</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/refresh</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+
+<p>Rotates the refresh token and returns a new access token. Send the request with <code>credentials: "include"</code> so the <code>auth_refresh</code> cookie is sent automatically.</p>
+
+<h4>Response <code>200 OK</code></h4>
+<pre>{
+  <span class="key">"access_token"</span>: <span class="string">"eyJhbGciOiJIUzI1NiIs..."</span>,
+  <span class="key">"token_type"</span>: <span class="string">"Bearer"</span>,
+  <span class="key">"expires_in"</span>: <span class="number">900</span>
+}</pre>
+
+<div class="callout callout-info">
+  <span class="callout-icon">&#8505;</span>
+  <div><strong>Token rotation:</strong> Each refresh token is single-use. Using it issues a new refresh token and revokes the old one. If a revoked token is reused, the entire session is invalidated as a security measure.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="logout">Logout</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/logout</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+<p>Revokes the session and clears the <code>auth_refresh</code> cookie. Send with <code>credentials: "include"</code>.</p>
+
+<h4>Response <code>200 OK</code></h4>
+<pre>{ <span class="key">"message"</span>: <span class="string">"logged out"</span> }</pre>
+
+<!-- ============================================================ -->
+<h2 id="me">Get / Update Profile</h2>
+
+<p><span class="method method-get">GET</span> <code>/api/auth/me</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+<p>Returns the authenticated user's profile.</p>
+
+<h4>Response <code>200 OK</code></h4>
+<pre>{
+  <span class="key">"id"</span>: <span class="string">"a1b2c3d4-..."</span>,
+  <span class="key">"email"</span>: <span class="string">"user@example.com"</span>,
+  <span class="key">"display_name"</span>: <span class="string">"Jane Doe"</span>,
+  <span class="key">"email_verified"</span>: <span class="bool">true</span>,
+  <span class="key">"totp_enabled"</span>: <span class="bool">false</span>,
+  <span class="key">"role"</span>: <span class="string">"user"</span>,
+  <span class="key">"created_at"</span>: <span class="string">"2025-01-15T10:30:00Z"</span>,
+  <span class="key">"updated_at"</span>: <span class="string">"2025-01-15T10:30:00Z"</span>
+}</pre>
+
+<hr class="divider">
+
+<p><span class="method method-patch">PATCH</span> <code>/api/auth/me</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+<p>Update profile fields.</p>
+
+<h4>Request</h4>
+<pre>{
+  <span class="key">"display_name"</span>: <span class="string">"Jane Smith"</span>,
+  <span class="key">"timezone"</span>: <span class="string">"America/New_York"</span>
+}</pre>
+
+<!-- ============================================================ -->
+<h2 id="change-password">Change Password</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/change-password</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+
+<h4>Request</h4>
+<pre>{
+  <span class="key">"old_password"</span>: <span class="string">"currentPassword123"</span>,
+  <span class="key">"new_password"</span>: <span class="string">"newSecurePassword456"</span>
+}</pre>
+<p>All other sessions for this user are revoked after a successful password change.</p>
+
+<!-- ============================================================ -->
+<h2 id="verify-email">Email Verification</h2>
+
+<p><span class="method method-post">POST</span> <code>/api/auth/verify-email</code> <span class="auth-badge auth-none">Public</span></p>
+<h4>Request</h4>
+<pre>{ <span class="key">"token"</span>: <span class="string">"verification-token-from-email"</span> }</pre>
+
+<hr class="divider">
+
+<p><span class="method method-post">POST</span> <code>/api/auth/resend-verification</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+<p>Resends the verification email to the authenticated user.</p>
+
+<!-- ============================================================ -->
+<h2 id="forgot-password">Forgot Password</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/forgot-password</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+
+<h4>Request</h4>
+<pre>{ <span class="key">"email"</span>: <span class="string">"user@example.com"</span> }</pre>
+<p>Always returns <code>200</code> regardless of whether the email exists (to prevent enumeration).</p>
+
+<!-- ============================================================ -->
+<h2 id="reset-password">Reset Password</h2>
+<p><span class="method method-post">POST</span> <code>/api/auth/reset-password</code> <span class="auth-badge auth-none">Public</span></p>
+
+<h4>Request</h4>
+<pre>{
+  <span class="key">"token"</span>: <span class="string">"reset-token-from-email"</span>,
+  <span class="key">"new_password"</span>: <span class="string">"newSecurePassword456"</span>
+}</pre>
+<p>All sessions are revoked after a successful password reset.</p>
+
+<!-- ============================================================ -->
+<h2 id="magic-link">Magic Link Authentication</h2>
+<p>Passwordless login via email. If the user doesn't exist, an account is created automatically.</p>
+
+<h3>Send Magic Link</h3>
+<p><span class="method method-post">POST</span> <code>/api/auth/magic-link/send</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+
+<h4>Request</h4>
+<pre>{ <span class="key">"email"</span>: <span class="string">"user@example.com"</span> }</pre>
+<p>Rate limited to 5 per hour per IP. Token expires in 15 minutes.</p>
+
+<h3>Verify Magic Link</h3>
+<p><span class="method method-get">GET</span> <code>/api/auth/magic-link/verify?token=TOKEN</code> <span class="auth-badge auth-none">Public</span></p>
+<p>The user clicks this link from their email. The service authenticates them and either:</p>
+<ul>
+  <li>Returns JSON with <code>access_token</code> (API client), or</li>
+  <li>Redirects to your app's login page with <code>?access_token=TOKEN</code> (browser flow)</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="oauth">OAuth2 Social Login</h2>
+<p>Supported providers: <code>google</code>, <code>github</code>, <code>microsoft</code>, <code>apple</code></p>
+
+<div class="callout callout-info">
+  <span class="callout-icon">&#8505;</span>
+  <div>OAuth providers must be configured with their respective client IDs and secrets in the auth service's environment. Only configured providers will be available.</div>
+</div>
+
+<h3>Begin OAuth Flow</h3>
+<p><span class="method method-get">GET</span> <code>/api/auth/oauth/{provider}</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+<p>Redirects the user to the provider's consent screen. The flow uses PKCE with a signed state payload for security.</p>
+
+<h4>Frontend Example</h4>
+<pre><span class="comment">// Redirect user to OAuth provider</span>
+window.location.href =
+  <span class="string">"https://authservice.ayushojha.com/api/auth/oauth/google"</span>
+  + <span class="string">"?api_key=YOUR_API_KEY"</span>;</pre>
+
+<div class="callout callout-warn">
+  <span class="callout-icon">&#9888;</span>
+  <div>For OAuth, you can pass the API key as a query parameter <code>?api_key=...</code> since redirect flows can't set custom headers.</div>
+</div>
+
+<h3>OAuth Callback</h3>
+<p><span class="method method-get">GET</span> <code>/api/auth/oauth/{provider}/callback</code> <span class="auth-badge auth-none">Public</span></p>
+<p>Handled automatically. After successful authentication, the user is redirected to your app:</p>
+<pre>https://yourapp.com/login?access_token=eyJhbGci...</pre>
+<p>The <code>auth_refresh</code> cookie is also set. If the OAuth email matches an existing user, accounts are linked automatically.</p>
+
+<!-- ============================================================ -->
+<h2 id="totp">TOTP Two-Factor Authentication</h2>
+
+<h3>Setup TOTP</h3>
+<p><span class="method method-post">POST</span> <code>/api/auth/totp/setup</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+<p>Generates a TOTP secret. Show the QR code to the user in their authenticator app.</p>
+
+<h4>Response</h4>
+<pre>{
+  <span class="key">"secret"</span>: <span class="string">"JBSWY3DPEHPK3PXP"</span>,
+  <span class="key">"uri"</span>: <span class="string">"otpauth://totp/AuthService:user@example.com?secret=..."</span>,
+  <span class="key">"qr"</span>: <span class="string">"data:image/png;base64,iVBOR..."</span>
+}</pre>
+
+<h3>Enable TOTP</h3>
+<p><span class="method method-post">POST</span> <code>/api/auth/totp/enable</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+<p>Confirm setup with a valid code from the authenticator app.</p>
+<pre>{ <span class="key">"code"</span>: <span class="string">"123456"</span> }</pre>
+
+<h3 id="totp-verify">Verify TOTP (Complete Login)</h3>
+<p><span class="method method-post">POST</span> <code>/api/auth/totp/verify</code> <span class="auth-badge auth-apikey">X-API-Key</span></p>
+<p>Called after login returns <code>requires_2fa: true</code>.</p>
+<pre>{
+  <span class="key">"two_factor_token"</span>: <span class="string">"temp-2fa-token-uuid"</span>,
+  <span class="key">"code"</span>: <span class="string">"123456"</span>
+}</pre>
+<p>Returns the standard login response with <code>access_token</code> and user profile.</p>
+
+<h3>Disable TOTP</h3>
+<p><span class="method method-post">POST</span> <code>/api/auth/totp/disable</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></p>
+<pre>{ <span class="key">"code"</span>: <span class="string">"123456"</span> }</pre>
+
+<!-- ============================================================ -->
+<h2 id="passkeys">Passkeys (WebAuthn / FIDO2)</h2>
+<p>Browser-native passwordless authentication using platform authenticators (Touch ID, Windows Hello) or security keys.</p>
+
+<h3>Register a Passkey</h3>
+
+<details>
+  <summary><span class="method method-post">POST</span> <code>/api/auth/passkey/register/begin</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></summary>
+  <div class="detail-body">
+    <p>Returns WebAuthn creation options. Pass these to <code>navigator.credentials.create()</code>.</p>
+    <h4>Request</h4>
+    <pre>{ <span class="key">"name"</span>: <span class="string">"My MacBook"</span> }  <span class="comment">// optional friendly name</span></pre>
+  </div>
+</details>
+
+<details>
+  <summary><span class="method method-post">POST</span> <code>/api/auth/passkey/register/finish</code> <span class="auth-badge auth-apikey">X-API-Key</span> <span class="auth-badge auth-bearer">Bearer Token</span></summary>
+  <div class="detail-body">
+    <p>Send the attestation response from the browser back to the server to complete registration.</p>
+  </div>
+</details>
+
+<h3>Login with Passkey</h3>
+
+<details>
+  <summary><span class="method method-post">POST</span> <code>/api/auth/passkey/login/begin</code> <span class="auth-badge auth-apikey">X-API-Key</span></summary>
+  <div class="detail-body">
+    <p>Returns assertion options. Pass these to <code>navigator.credentials.get()</code>.</p>
+    <h4>Request (optional)</h4>
+    <pre>{ <span class="key">"email"</span>: <span class="string">"user@example.com"</span> }  <span class="comment">// optional, narrows allowed credentials</span></pre>
+  </div>
+</details>
+
+<details>
+  <summary><span class="method method-post">POST</span> <code>/api/auth/passkey/login/finish</code> <span class="auth-badge auth-apikey">X-API-Key</span></summary>
+  <div class="detail-body">
+    <p>Send the assertion response from the browser. Returns standard login response with <code>access_token</code>.</p>
+  </div>
+</details>
+
+<h3>Manage Passkeys</h3>
+<table class="endpoint-table">
+  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/auth/passkeys</code></td><td>List user's registered passkeys</td></tr>
+    <tr><td><span class="method method-delete">DELETE</span></td><td><code>/api/auth/passkeys/{id}</code></td><td>Delete a passkey by ID</td></tr>
+  </tbody>
+</table>
+
+<h4>Frontend Passkey Flow Example</h4>
+<pre><span class="keyword">const</span> API = <span class="string">"https://authservice.ayushojha.com"</span>;
+<span class="keyword">const</span> headers = {
+  <span class="string">"X-API-Key"</span>: API_KEY,
+  <span class="string">"Content-Type"</span>: <span class="string">"application/json"</span>,
+};
+
+<span class="comment">// 1. Begin login</span>
+<span class="keyword">const</span> opts = <span class="keyword">await</span> fetch(<span class="string">`${API}/api/auth/passkey/login/begin`</span>, {
+  method: <span class="string">"POST"</span>, headers, credentials: <span class="string">"include"</span>,
+  body: JSON.stringify({})
+}).then(r => r.json());
+
+<span class="comment">// 2. Browser authenticator prompt</span>
+<span class="keyword">const</span> credential = <span class="keyword">await</span> navigator.credentials.get({
+  publicKey: opts.publicKey
+});
+
+<span class="comment">// 3. Finish login</span>
+<span class="keyword">const</span> result = <span class="keyword">await</span> fetch(<span class="string">`${API}/api/auth/passkey/login/finish`</span>, {
+  method: <span class="string">"POST"</span>, headers, credentials: <span class="string">"include"</span>,
+  body: JSON.stringify(credential)
+}).then(r => r.json());
+
+console.log(result.access_token);</pre>
+
+<!-- ============================================================ -->
+<h2 id="jwt-validation">JWT Validation (Backend Integration)</h2>
+<p>The auth service issues JWTs that your backend validates <strong>locally</strong>. No network call to the auth service is needed.</p>
+
+<h3>Access Token Claims</h3>
+<pre>{
+  <span class="key">"sub"</span>: <span class="string">"user-uuid"</span>,          <span class="comment">// user ID</span>
+  <span class="key">"email"</span>: <span class="string">"user@example.com"</span>,
+  <span class="key">"email_verified"</span>: <span class="bool">true</span>,
+  <span class="key">"role"</span>: <span class="string">"user"</span>,
+  <span class="key">"client_id"</span>: <span class="string">"client-uuid"</span>,  <span class="comment">// tenant ID</span>
+  <span class="key">"jti"</span>: <span class="string">"unique-token-id"</span>,
+  <span class="key">"iat"</span>: <span class="number">1700000000</span>,
+  <span class="key">"exp"</span>: <span class="number">1700000900</span>            <span class="comment">// 15 minutes</span>
+}</pre>
+
+<h3>Token Modes</h3>
+<div class="card">
+  <table class="endpoint-table" style="margin:0">
+    <thead><tr><th>Mode</th><th>Algorithm</th><th>Validation</th><th>Best For</th></tr></thead>
+    <tbody>
+      <tr><td><code>v1_hs256</code></td><td>HMAC-SHA256</td><td>Shared <code>jwt_secret</code></td><td>Private backends, microservices</td></tr>
+      <tr><td><code>v2_jwks</code></td><td>RSA RS256</td><td>JWKS endpoint (public key)</td><td>Public APIs, third-party integrations</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>Go: Using the jwtvalidator Package</h3>
+<pre><span class="keyword">go</span> get github.com/Ayush10/authentication-service/pkg/jwtvalidator</pre>
+
+<h4>HS256 Mode (default)</h4>
+<pre><span class="keyword">import</span> <span class="string">"github.com/Ayush10/authentication-service/pkg/jwtvalidator"</span>
+
+validator := jwtvalidator.New(jwtvalidator.Config{
+    Secret: os.Getenv(<span class="string">"AUTH_JWT_SECRET"</span>),  <span class="comment">// jwt_secret from client registration</span>
+})
+
+<span class="comment">// As HTTP middleware (injects claims into context)</span>
+protectedMux := http.NewServeMux()
+protectedMux.HandleFunc(<span class="string">"/api/profile"</span>, profileHandler)
+http.Handle(<span class="string">"/api/"</span>, validator.Middleware(protectedMux))
+
+<span class="comment">// Manual validation</span>
+claims, err := validator.Validate(tokenString)
+<span class="keyword">if</span> err != <span class="keyword">nil</span> {
+    <span class="comment">// token invalid, expired, or tampered</span>
+    http.Error(w, <span class="string">"unauthorized"</span>, <span class="number">401</span>)
+    <span class="keyword">return</span>
+}
+
+<span class="comment">// Access claims</span>
+userID := claims.UserID()       <span class="comment">// sub</span>
+email := claims.Email           <span class="comment">// email</span>
+role := claims.Role             <span class="comment">// role</span>
+verified := claims.EmailVerified
+clientID := claims.ClientID</pre>
+
+<h4>RS256 Mode (JWKS)</h4>
+<pre>validator := jwtvalidator.New(jwtvalidator.Config{
+    JWKSURL:         <span class="string">"https://authservice.ayushojha.com/.well-known/jwks.json?client_id=YOUR_ID"</span>,
+    ClientID:        <span class="string">"your-client-uuid"</span>,
+    RefreshInterval: <span class="number">5</span> * time.Minute,  <span class="comment">// how often to refresh JWKS</span>
+})</pre>
+
+<h3>Other Languages</h3>
+<p>Use any JWT library that supports HS256. The validation logic is the same:</p>
+<ol>
+  <li>Extract the <code>Bearer</code> token from the <code>Authorization</code> header</li>
+  <li>Verify the signature using your <code>jwt_secret</code> with HS256</li>
+  <li>Check that <code>exp</code> has not passed</li>
+  <li>Read <code>sub</code> (user ID), <code>email</code>, <code>role</code>, <code>client_id</code> from claims</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="jwks">JWKS Endpoint</h2>
+<p><span class="method method-get">GET</span> <code>/.well-known/jwks.json</code></p>
+<p>Returns the JSON Web Key Set for RS256 token validation. Requires either:</p>
+<ul>
+  <li><code>X-API-Key</code> header, or</li>
+  <li><code>?client_id=UUID</code> query parameter</li>
+</ul>
+
+<h4>Response</h4>
+<pre>{
+  <span class="key">"keys"</span>: [
+    {
+      <span class="key">"kty"</span>: <span class="string">"RSA"</span>,
+      <span class="key">"kid"</span>: <span class="string">"key-id"</span>,
+      <span class="key">"use"</span>: <span class="string">"sig"</span>,
+      <span class="key">"alg"</span>: <span class="string">"RS256"</span>,
+      <span class="key">"n"</span>: <span class="string">"modulus..."</span>,
+      <span class="key">"e"</span>: <span class="string">"AQAB"</span>
+    }
+  ]
+}</pre>
+
+<!-- ============================================================ -->
+<h2 id="grpc">gRPC API</h2>
+<p>The auth service exposes a gRPC API on port <code>9090</code> for service-to-service communication.</p>
+
+<h3>Services</h3>
+<table class="endpoint-table">
+  <thead><tr><th>Service</th><th>Methods</th></tr></thead>
+  <tbody>
+    <tr><td><code>AuthService</code></td><td>Signup, Login, RefreshToken, Logout, GetUser, UpdateUser, ChangePassword, VerifyEmail, ResendVerification, ForgotPassword, ResetPassword, SendMagicLink, VerifyMagicLink</td></tr>
+    <tr><td><code>TokenService</code></td><td>ValidateToken (verify JWT without knowing the secret)</td></tr>
+    <tr><td><code>AdminService</code></td><td>CreateClient, GetClient, ListClients, RotateJWTSecret, RotateAPIKey</td></tr>
+  </tbody>
+</table>
+
+<h4>Token Validation via gRPC</h4>
+<p>If you can't use the JWT secret directly (e.g., non-Go services that need the auth service to validate), you can call the <code>TokenService</code>:</p>
+<pre><span class="comment">// Proto definition</span>
+<span class="keyword">message</span> ValidateTokenRequest {
+  <span class="keyword">string</span> access_token = <span class="number">1</span>;
+  <span class="keyword">string</span> api_key = <span class="number">2</span>;
+}
+
+<span class="keyword">message</span> ValidateTokenResponse {
+  <span class="keyword">bool</span> valid = <span class="number">1</span>;
+  <span class="keyword">string</span> user_id = <span class="number">2</span>;
+  <span class="keyword">string</span> email = <span class="number">3</span>;
+  <span class="keyword">string</span> role = <span class="number">4</span>;
+  <span class="keyword">bool</span> email_verified = <span class="number">5</span>;
+  <span class="keyword">string</span> client_id = <span class="number">6</span>;
+  <span class="keyword">string</span> error = <span class="number">7</span>;
+}</pre>
+
+<!-- ============================================================ -->
+<h2 id="session-modes">Session Modes</h2>
+<p>The auth service supports two ways to deliver refresh tokens:</p>
+
+<div class="card">
+  <h4>Cookie Mode (default)</h4>
+  <p>The refresh token is set as an <code>HttpOnly</code>, <code>Secure</code> cookie named <code>auth_refresh</code>. Best for browser-based apps.</p>
+  <ul>
+    <li>Automatically sent with <code>credentials: "include"</code></li>
+    <li>Protected from XSS (JavaScript can't access it)</li>
+    <li>Requires proper CORS/origin configuration</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h4>Token Mode</h4>
+  <p>Pass <code>?session_mode=token</code> on login/signup to receive the refresh token in the JSON response body instead of a cookie.</p>
+  <p>Best for mobile apps, CLI tools, or environments without cookie support.</p>
+  <pre><span class="keyword">POST</span> /api/auth/login?session_mode=token</pre>
+  <p>The response will include:</p>
+  <pre>{ ..., <span class="key">"refresh_token"</span>: <span class="string">"abc123..."</span> }</pre>
+  <p>Send it back in subsequent refresh calls as:</p>
+  <pre>{ <span class="key">"refresh_token"</span>: <span class="string">"abc123..."</span> }</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="rate-limits">Rate Limits</h2>
+<p>Redis-backed sliding window rate limits protect against abuse:</p>
+
+<div class="card">
+  <table class="endpoint-table" style="margin:0">
+    <thead><tr><th>Action</th><th>Limit</th><th>Window</th><th>Key</th></tr></thead>
+    <tbody>
+      <tr><td>Signup</td><td>5 requests</td><td>1 hour</td><td>Per IP</td></tr>
+      <tr><td>Login</td><td>10 requests</td><td>15 minutes</td><td>Per IP</td></tr>
+      <tr><td>Magic Link Send</td><td>5 requests</td><td>1 hour</td><td>Per IP</td></tr>
+      <tr><td>Failed Logins</td><td>Account lockout</td><td>Progressive</td><td>Per email + client</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>When rate limited, the response is <code>429 Too Many Requests</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="error-format">Error Format</h2>
+<p>All errors follow a consistent JSON format:</p>
+<pre>{
+  <span class="key">"error"</span>: <span class="string">"descriptive error message"</span>
+}</pre>
+
+<div class="card">
+  <table class="endpoint-table" style="margin:0">
+    <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>400</code></td><td>Bad request (invalid input, missing fields)</td></tr>
+      <tr><td><code>401</code></td><td>Unauthorized (missing/invalid API key, expired token)</td></tr>
+      <tr><td><code>403</code></td><td>Forbidden (wrong client, insufficient permissions)</td></tr>
+      <tr><td><code>404</code></td><td>Resource not found</td></tr>
+      <tr><td><code>409</code></td><td>Conflict (user already exists)</td></tr>
+      <tr><td><code>429</code></td><td>Rate limited</td></tr>
+      <tr><td><code>500</code></td><td>Internal server error</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="env-vars">Environment Variables</h2>
+<p>For self-hosted deployments or development:</p>
+
+<details>
+  <summary>Server &amp; Database</summary>
+  <div class="detail-body">
+    <table class="endpoint-table">
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>PORT</code></td><td>8080</td><td>HTTP server port</td></tr>
+        <tr><td><code>GRPC_PORT</code></td><td>9090</td><td>gRPC server port</td></tr>
+        <tr><td><code>DATABASE_URL</code></td><td><em>required</em></td><td>PostgreSQL connection string</td></tr>
+        <tr><td><code>REDIS_URL</code></td><td><em>optional</em></td><td>Redis URL (for rate limits, OAuth state, 2FA)</td></tr>
+        <tr><td><code>REDIS_KEY_PREFIX</code></td><td>auth:</td><td>Redis key namespace</td></tr>
+        <tr><td><code>ADMIN_API_KEY</code></td><td><em>required</em></td><td>Master admin key for client management</td></tr>
+        <tr><td><code>BASE_URL</code></td><td></td><td>Public URL for email links</td></tr>
+      </tbody>
+    </table>
+  </div>
+</details>
+
+<details>
+  <summary>Authentication &amp; Security</summary>
+  <div class="detail-body">
+    <table class="endpoint-table">
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>JWT_ACCESS_TTL</code></td><td>15m</td><td>Access token lifetime</td></tr>
+        <tr><td><code>JWT_REFRESH_TTL</code></td><td>168h</td><td>Refresh token lifetime (7 days)</td></tr>
+        <tr><td><code>BCRYPT_COST</code></td><td>12</td><td>Password hashing cost (10-16)</td></tr>
+        <tr><td><code>COOKIE_SECURE</code></td><td>false</td><td>HTTPS-only cookies</td></tr>
+        <tr><td><code>COOKIE_SAMESITE</code></td><td>lax</td><td>Cookie SameSite policy</td></tr>
+        <tr><td><code>COOKIE_DOMAIN</code></td><td></td><td>Cookie domain override</td></tr>
+        <tr><td><code>ALLOW_ORIGIN</code></td><td>*</td><td>Global CORS origin</td></tr>
+      </tbody>
+    </table>
+  </div>
+</details>
+
+<details>
+  <summary>Email &amp; OAuth</summary>
+  <div class="detail-body">
+    <table class="endpoint-table">
+      <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>RESEND_API_KEY</code></td><td>Resend API key for transactional emails</td></tr>
+        <tr><td><code>EMAIL_FROM</code></td><td>Sender address (default: Auth Service &lt;noreply@example.com&gt;)</td></tr>
+        <tr><td><code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code>, <code>GOOGLE_REDIRECT_URL</code></td><td>Google OAuth</td></tr>
+        <tr><td><code>GITHUB_CLIENT_ID</code>, <code>GITHUB_CLIENT_SECRET</code>, <code>GITHUB_REDIRECT_URL</code></td><td>GitHub OAuth</td></tr>
+        <tr><td><code>MICROSOFT_CLIENT_ID</code>, <code>MICROSOFT_CLIENT_SECRET</code>, <code>MICROSOFT_TENANT_ID</code>, <code>MICROSOFT_REDIRECT_URL</code></td><td>Microsoft OAuth</td></tr>
+        <tr><td><code>APPLE_CLIENT_ID</code>, <code>APPLE_REDIRECT_URL</code></td><td>Apple Sign-In</td></tr>
+      </tbody>
+    </table>
+  </div>
+</details>
+
+<details>
+  <summary>WebAuthn (Passkeys)</summary>
+  <div class="detail-body">
+    <table class="endpoint-table">
+      <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>WEBAUTHN_RP_ID</code></td><td>localhost</td><td>Relying Party ID (your domain)</td></tr>
+        <tr><td><code>WEBAUTHN_RP_ORIGIN</code></td><td>http://localhost:8080</td><td>Relying Party origin</td></tr>
+        <tr><td><code>WEBAUTHN_DISPLAY_NAME</code></td><td>Auth Service</td><td>Display name shown in browser prompts</td></tr>
+      </tbody>
+    </table>
+  </div>
+</details>
+
+<!-- ============================================================ -->
+<h2 id="all-endpoints">Complete Endpoint Reference</h2>
+
+<table class="endpoint-table">
+  <thead><tr><th>Method</th><th>Endpoint</th><th>Auth</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">Authentication</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/signup</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Register new user</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/login</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Login with email/password</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/refresh</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Refresh access token</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/logout</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Revoke session</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/auth/me</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Get user profile</td></tr>
+    <tr><td><span class="method method-patch">PATCH</span></td><td><code>/api/auth/me</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Update user profile</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/change-password</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Change password</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">Email &amp; Password Reset</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/verify-email</code></td><td><span class="auth-badge auth-none">Public</span></td><td>Verify email with token</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/resend-verification</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Resend verification email</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/forgot-password</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Request password reset</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/reset-password</code></td><td><span class="auth-badge auth-none">Public</span></td><td>Reset password with token</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">Magic Links</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/magic-link/send</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Send magic link email</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/auth/magic-link/verify</code></td><td><span class="auth-badge auth-none">Public</span></td><td>Verify magic link</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">OAuth2</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/auth/oauth/{provider}</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Begin OAuth flow</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/auth/oauth/{provider}/callback</code></td><td><span class="auth-badge auth-none">Public</span></td><td>OAuth callback</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">TOTP 2FA</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/totp/setup</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Generate TOTP secret &amp; QR</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/totp/enable</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Confirm TOTP setup</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/totp/verify</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Complete 2FA login</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/totp/disable</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Disable TOTP</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">Passkeys (WebAuthn)</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/passkey/register/begin</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Start passkey registration</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/passkey/register/finish</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Complete passkey registration</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/passkey/login/begin</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Start passkey login</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/auth/passkey/login/finish</code></td><td><span class="auth-badge auth-apikey">API Key</span></td><td>Complete passkey login</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/auth/passkeys</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>List user's passkeys</td></tr>
+    <tr><td><span class="method method-delete">DELETE</span></td><td><code>/api/auth/passkeys/{id}</code></td><td><span class="auth-badge auth-bearer">Bearer</span></td><td>Delete a passkey</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">Admin</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/admin/clients</code></td><td><span class="auth-badge auth-admin">Admin</span></td><td>Create client</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/admin/clients</code></td><td><span class="auth-badge auth-admin">Admin</span></td><td>List clients</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/api/admin/clients/{id}</code></td><td><span class="auth-badge auth-admin">Admin</span></td><td>Get client</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/admin/clients/{id}/rotate-api-key</code></td><td><span class="auth-badge auth-admin">Admin</span></td><td>Rotate API key</td></tr>
+    <tr><td><span class="method method-post">POST</span></td><td><code>/api/admin/clients/{id}/rotate-jwt</code></td><td><span class="auth-badge auth-admin">Admin</span></td><td>Rotate JWT secret</td></tr>
+
+    <tr><td colspan="4" style="font-weight:700; color:var(--text-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.5px; padding-top:16px;">System</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/healthz</code></td><td><span class="auth-badge auth-none">Public</span></td><td>Health check</td></tr>
+    <tr><td><span class="method method-get">GET</span></td><td><code>/.well-known/jwks.json</code></td><td><span class="auth-badge auth-apikey">API Key</span> or <code>?client_id</code></td><td>JWKS public keys</td></tr>
+  </tbody>
+</table>
+
+</main>
+</div>
+
+<button class="back-top" onclick="window.scrollTo({top:0,behavior:'smooth'})">&#8593;</button>
+
+<script>
+// Tabs
+document.querySelectorAll('.tabs').forEach(tabBar => {
+  tabBar.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const group = tabBar.closest('.step-content') || tabBar.parentElement;
+      group.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      group.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+      tab.classList.add('active');
+      group.querySelectorAll(`.tab-content[data-tab="${tab.dataset.tab}"]`).forEach(tc => tc.classList.add('active'));
+    });
+  });
+});
+
+// Active sidebar link
+const links = document.querySelectorAll('.sidebar nav a');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      links.forEach(l => l.classList.remove('active'));
+      const link = document.querySelector(`.sidebar nav a[href="#${entry.target.id}"]`);
+      if (link) link.classList.add('active');
+    }
+  });
+}, { rootMargin: '-80px 0px -70% 0px' });
+document.querySelectorAll('[id]').forEach(el => { if (el.id) observer.observe(el); });
+
+// Back to top
+const btn = document.querySelector('.back-top');
+window.addEventListener('scroll', () => {
+  btn.classList.toggle('visible', window.scrollY > 400);
+});
+
+// Mobile sidebar close on link click
+links.forEach(l => l.addEventListener('click', () => {
+  document.querySelector('.sidebar').classList.remove('open');
+}));
+</script>
+
+</body>
+</html>
