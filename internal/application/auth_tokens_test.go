@@ -41,6 +41,18 @@ func (s *signingKeyRepoStub) GetByClientAndKID(ctx context.Context, clientID, ki
 	return nil, domain.ErrNotFound
 }
 
+func (s *signingKeyRepoStub) ListActive(ctx context.Context) ([]*domain.SigningKey, error) {
+	out := make([]*domain.SigningKey, 0)
+	for _, list := range s.keys {
+		for _, key := range list {
+			if key.Status == "active" {
+				out = append(out, key)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *signingKeyRepoStub) ListActiveByClient(ctx context.Context, clientID string) ([]*domain.SigningKey, error) {
 	list := s.keys[clientID]
 	out := make([]*domain.SigningKey, 0)
@@ -122,5 +134,57 @@ func TestCreateAndValidateAccessTokenJWKS(t *testing.T) {
 	keys, ok := jwks["keys"].([]map[string]interface{})
 	if ok && len(keys) == 0 {
 		t.Fatalf("expected at least one jwk")
+	}
+}
+
+func TestJWKSReturnsAllActiveKeysAcrossClients(t *testing.T) {
+	ctx := context.Background()
+	repo := &signingKeyRepoStub{}
+	SetSigningKeyRepository(repo)
+	t.Cleanup(func() { SetSigningKeyRepository(nil) })
+
+	clientA := &domain.Client{ID: "client-a", TokenMode: "v2_jwks"}
+	clientB := &domain.Client{ID: "client-b", TokenMode: "v2_jwks"}
+
+	for _, tc := range []struct {
+		client *domain.Client
+		user   *domain.User
+	}{
+		{
+			client: clientA,
+			user: &domain.User{
+				ID:            "user-a",
+				ClientID:      clientA.ID,
+				Email:         "a@example.com",
+				Role:          "user",
+				EmailVerified: true,
+			},
+		},
+		{
+			client: clientB,
+			user: &domain.User{
+				ID:            "user-b",
+				ClientID:      clientB.ID,
+				Email:         "b@example.com",
+				Role:          "user",
+				EmailVerified: true,
+			},
+		},
+	} {
+		if _, err := CreateAccessToken(ctx, tc.client, 5*time.Minute, tc.user); err != nil {
+			t.Fatalf("create token for %s: %v", tc.client.ID, err)
+		}
+	}
+
+	jwks, err := JWKS(ctx)
+	if err != nil {
+		t.Fatalf("jwks: %v", err)
+	}
+	keys, ok := jwks["keys"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected jwks payload type")
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(keys))
 	}
 }

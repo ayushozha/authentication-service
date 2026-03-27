@@ -468,6 +468,21 @@ func ClientJWKS(ctx context.Context, clientID string) (map[string]interface{}, e
 	if err != nil {
 		return nil, err
 	}
+	return buildJWKS(keys)
+}
+
+func JWKS(ctx context.Context) (map[string]interface{}, error) {
+	if signingKeys == nil {
+		return nil, fmt.Errorf("signing key repository is not configured")
+	}
+	keys, err := signingKeys.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return buildJWKS(keys)
+}
+
+func buildJWKS(keys []*domain.SigningKey) (map[string]interface{}, error) {
 	jwkKeys := make([]map[string]interface{}, 0, len(keys))
 	for _, key := range keys {
 		pub, err := parseRSAPublicKey(key.PublicKeyPEM)

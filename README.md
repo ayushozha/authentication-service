@@ -11,7 +11,7 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 - **Passkeys (WebAuthn/FIDO2)** -- Browser-native passwordless login with hardware or platform authenticators
 - **TOTP two-factor authentication** -- Time-based one-time password support with setup/enable/verify/disable lifecycle
 - **JWT access tokens** -- Per-client token modes (`v1_hs256` legacy and `v2_jwks` RS256), short-lived (15 min default)
-- **JWKS support** -- Client-scoped JWKS endpoint for RS256 verification (`/.well-known/jwks.json`)
+- **JWKS support** -- Issuer-level JWKS endpoint for RS256 verification with optional client-scoped lookup (`/.well-known/jwks.json`)
 - **Refresh token rotation** -- Single-use refresh tokens stored as SHA-256 hashes with hybrid delivery (HttpOnly cookie or explicit token mode)
 - **Email verification** -- Token-based email address verification via Resend
 - **Password reset** -- Secure token-based password reset flow
@@ -240,7 +240,7 @@ POST /api/admin/clients/{id}/rotate-key       Alias for rotate-api-key
 
 ```
 GET /healthz    Health check (returns {"status": "ok"})
-GET /.well-known/jwks.json    Client JWKS (requires `X-API-Key` or `client_id`)
+GET /.well-known/jwks.json    Public issuer JWKS (`X-API-Key` or `client_id` optionally narrows to one client)
 ```
 
 Hybrid session mode:
@@ -395,7 +395,7 @@ JWKS/RS256 mode example:
 
 ```go
 jwksValidator := jwtvalidator.New(jwtvalidator.Config{
-    JWKSURL:         "https://auth.example.com/.well-known/jwks.json?client_id=<client-id>",
+    JWKSURL:         "https://auth.example.com/.well-known/jwks.json",
     ClientID:        "<client-id>", // optional but recommended
     RefreshInterval: 5 * time.Minute,
 })

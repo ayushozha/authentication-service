@@ -23,6 +23,7 @@ type SigningKeyRepository interface {
 	Create(ctx context.Context, key *domain.SigningKey) error
 	GetActiveByClient(ctx context.Context, clientID string) (*domain.SigningKey, error)
 	GetByClientAndKID(ctx context.Context, clientID, kid string) (*domain.SigningKey, error)
+	ListActive(ctx context.Context) ([]*domain.SigningKey, error)
 	ListActiveByClient(ctx context.Context, clientID string) ([]*domain.SigningKey, error)
 }
 

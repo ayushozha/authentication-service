@@ -42,6 +42,32 @@ func (r *SigningKeyRepo) GetByClientAndKID(ctx context.Context, clientID, kid st
 		LIMIT 1`, clientID, kid))
 }
 
+func (r *SigningKeyRepo) ListActive(ctx context.Context) ([]*domain.SigningKey, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, client_id, kid, alg, public_key_pem, private_key_pem, status, created_at, rotated_at
+		FROM client_signing_keys
+		WHERE status = 'active'
+		ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	keys := make([]*domain.SigningKey, 0)
+	for rows.Next() {
+		key := &domain.SigningKey{}
+		if err := rows.Scan(
+			&key.ID, &key.ClientID, &key.KID, &key.Algorithm,
+			&key.PublicKeyPEM, &key.PrivateKeyPEM, &key.Status,
+			&key.CreatedAt, &key.RotatedAt,
+		); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
 func (r *SigningKeyRepo) ListActiveByClient(ctx context.Context, clientID string) ([]*domain.SigningKey, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, client_id, kid, alg, public_key_pem, private_key_pem, status, created_at, rotated_at

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/application"
-	"github.com/Ayush10/authentication-service/internal/domain"
 )
 
 type Router struct {
@@ -84,29 +83,39 @@ func NewRouter(
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		var (
-			client *domain.Client
-			err    error
-		)
 		apiKey := r.Header.Get("X-API-Key")
 		if apiKey != "" {
-			c, e := clientSvc.GetClientByAPIKey(ctx, apiKey)
-			client, err = c, e
-		} else {
-			clientID := r.URL.Query().Get("client_id")
-			if clientID == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "either X-API-Key or client_id is required"})
+			client, err := clientSvc.GetClientByAPIKey(ctx, apiKey)
+			if err != nil || client == nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid client"})
 				return
 			}
-			c, e := clientSvc.GetClient(ctx, clientID)
-			client, err = c, e
-		}
-		if err != nil || client == nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid client"})
+			jwks, err := application.ClientJWKS(ctx, client.ID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load jwks"})
+				return
+			}
+			writeJSON(w, http.StatusOK, jwks)
 			return
 		}
 
-		jwks, err := application.ClientJWKS(ctx, client.ID)
+		clientID := r.URL.Query().Get("client_id")
+		if clientID != "" {
+			client, err := clientSvc.GetClient(ctx, clientID)
+			if err != nil || client == nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid client"})
+				return
+			}
+			jwks, err := application.ClientJWKS(ctx, client.ID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load jwks"})
+				return
+			}
+			writeJSON(w, http.StatusOK, jwks)
+			return
+		}
+
+		jwks, err := application.JWKS(ctx)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load jwks"})
 			return
