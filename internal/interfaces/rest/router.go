@@ -73,6 +73,11 @@ func NewRouter(
 	clientHandler := NewClientHandler(clientSvc)
 	clientHandler.RegisterRoutes(mux, adminMw)
 
+	// API documentation
+	mux.HandleFunc("/docs", DocsUIHandler)
+	mux.HandleFunc("/docs/", DocsUIHandler)
+	mux.HandleFunc("/docs/openapi.yaml", DocsSpecHandler)
+
 	// Health check
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

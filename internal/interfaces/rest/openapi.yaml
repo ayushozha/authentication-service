@@ -1,0 +1,1660 @@
+openapi: 3.1.0
+info:
+  title: Authentication Service API
+  description: |
+    Multi-tenant authentication service with support for email/password, OAuth2, magic links, TOTP 2FA, and passkeys (WebAuthn).
+
+    ## Authentication
+
+    This service uses a multi-tenant architecture. Each project registers as a **client** and receives:
+    - **API Key** — identifies the client; sent as `X-API-Key` header
+    - **JWT Secret** — used by downstream services to validate tokens locally
+
+    ### Header Reference
+
+    | Header | Used By | Description |
+    |--------|---------|-------------|
+    | `X-API-Key` | Client apps | Per-project API key for auth requests |
+    | `Authorization: Bearer <token>` | Client apps | User access token (JWT) |
+    | `X-Admin-Key` | Service admin | Master admin key for client management |
+
+    ## Session Modes
+
+    Authentication endpoints support two session modes:
+
+    - **Cookie mode** (default) — refresh token is set as an `HttpOnly` secure cookie (`auth_refresh`)
+    - **Token mode** — pass `session_mode=token` in the request body to receive the refresh token in the JSON response
+
+    ## Token Lifecycle
+
+    - **Access tokens** expire in 15 minutes (900 seconds)
+    - **Refresh tokens** are single-use and rotated on each refresh
+    - Changing a password or resetting it revokes all sessions
+  version: 1.0.0
+  contact:
+    name: Ayush Ojha
+    url: https://ayushojha.com
+  license:
+    name: MIT
+
+servers:
+  - url: https://authservice.ayushojha.com
+    description: Production
+
+tags:
+  - name: Authentication
+    description: Core signup, login, logout, token refresh, and user profile
+  - name: Email Verification
+    description: Email verification and password reset flows
+  - name: Magic Links
+    description: Passwordless authentication via email magic links
+  - name: TOTP
+    description: Time-based one-time password (2FA) setup, verification, and management
+  - name: OAuth2
+    description: Social login via Google, GitHub, Microsoft, and Apple
+  - name: Passkeys
+    description: WebAuthn/FIDO2 passwordless authentication
+  - name: Admin
+    description: Client (tenant) management — requires master admin key
+  - name: Utility
+    description: Health checks and key discovery
+
+paths:
+  # ──────────────────────────────────────────────
+  # Authentication
+  # ──────────────────────────────────────────────
+  /api/auth/signup:
+    post:
+      operationId: signup
+      summary: Create a new user account
+      description: |
+        Registers a new user for the client identified by `X-API-Key`. Returns an access token and user profile.
+
+        **Rate limit:** 5 requests per hour per IP.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupRequest"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid input (bad email, weak password)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: "email already registered"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/login:
+    post:
+      operationId: login
+      summary: Sign in with email and password
+      description: |
+        Authenticates a user and returns an access token. If the user has TOTP 2FA enabled, returns a `two_factor_token` instead — use it with the [TOTP Verify](#tag/TOTP/operation/totpVerify) endpoint to complete login.
+
+        **Rate limit:** 10 requests per 15 minutes per IP. Account locks for 30 minutes after repeated failures.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful (or 2FA required)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AuthResponse"
+                  - $ref: "#/components/schemas/TwoFactorChallenge"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Account suspended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Rate limit or account locked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/refresh:
+    post:
+      operationId: refreshToken
+      summary: Refresh an access token
+      description: |
+        Exchanges a refresh token for a new access token. Refresh tokens are single-use and rotated on each call.
+
+        Provide the refresh token either as:
+        - `refresh_token` in the request body (token mode)
+        - `auth_refresh` cookie (cookie mode)
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/logout:
+    post:
+      operationId: logout
+      summary: Sign out and revoke session
+      description: Revokes the current refresh token and clears the session cookie.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/auth/me:
+    get:
+      operationId: getMe
+      summary: Get current user profile
+      description: Returns the profile of the authenticated user.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateMe
+      summary: Update current user profile
+      description: Updates the display name and/or timezone of the authenticated user.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileRequest"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/change-password:
+    post:
+      operationId: changePassword
+      summary: Change password
+      description: |
+        Changes the authenticated user's password. **All existing sessions are revoked** — the user must sign in again.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Incorrect old password or weak new password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # Email Verification
+  # ──────────────────────────────────────────────
+  /api/auth/verify-email:
+    post:
+      operationId: verifyEmail
+      summary: Verify email address
+      description: Verifies a user's email using the token sent via email. This is a public endpoint — no API key required.
+      tags: [Email Verification]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: Verification token from the email link
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/resend-verification:
+    post:
+      operationId: resendVerification
+      summary: Resend verification email
+      description: Sends a new verification email to the authenticated user. Fails if the email is already verified.
+      tags: [Email Verification]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Verification email sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Email already verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Email service not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/forgot-password:
+    post:
+      operationId: forgotPassword
+      summary: Request a password reset
+      description: |
+        Sends a password reset email. **Always returns 200** regardless of whether the email exists, to prevent email enumeration.
+      tags: [Email Verification]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: If the email exists, a reset link was sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/auth/reset-password:
+    post:
+      operationId: resetPassword
+      summary: Reset password with token
+      description: |
+        Resets the user's password using a token from the reset email. **All sessions are revoked.** This is a public endpoint.
+      tags: [Email Verification]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: Password reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid or expired token, or weak password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # Magic Links
+  # ──────────────────────────────────────────────
+  /api/auth/magic-link/send:
+    post:
+      operationId: sendMagicLink
+      summary: Send a magic link email
+      description: |
+        Sends a magic link to the specified email. **Always returns 200** to prevent enumeration. Requires Redis.
+
+        **Rate limit:** 3 requests per hour per email.
+      tags: [Magic Links]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Magic link sent (if user exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Email service or Redis not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/magic-link/verify:
+    get:
+      operationId: verifyMagicLink
+      summary: Verify a magic link token
+      description: |
+        Completes passwordless login via magic link. This is a public endpoint.
+
+        - With `Accept: application/json` or `session_mode=token` — returns JSON with tokens
+        - Otherwise — redirects to `{base_url}/login?access_token={token}`
+      tags: [Magic Links]
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Magic link token from email
+        - name: session_mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [token]
+          description: Set to `token` for JSON response with refresh token
+      responses:
+        "200":
+          description: Authentication successful (JSON mode)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "302":
+          description: Redirect to login page with access token
+        "400":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # TOTP (2FA)
+  # ──────────────────────────────────────────────
+  /api/auth/totp/setup:
+    post:
+      operationId: totpSetup
+      summary: Initialize TOTP setup
+      description: |
+        Generates a new TOTP secret and returns a QR code for the user to scan with their authenticator app. Call [Enable TOTP](#tag/TOTP/operation/totpEnable) with a valid code to activate.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: TOTP setup data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPSetupResponse"
+        "400":
+          description: TOTP already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp/enable:
+    post:
+      operationId: totpEnable
+      summary: Enable TOTP 2FA
+      description: Activates TOTP for the user by verifying a code from their authenticator app against the pending secret.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: 6-digit TOTP code from authenticator app
+                  example: "123456"
+      responses:
+        "200":
+          description: TOTP enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid code or no pending setup
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp/verify:
+    post:
+      operationId: totpVerify
+      summary: Complete login with TOTP code
+      description: |
+        Verifies the TOTP code during login. Use the `two_factor_token` from the login response. Requires Redis.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPVerifyRequest"
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid 2FA token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid TOTP code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/totp/disable:
+    post:
+      operationId: totpDisable
+      summary: Disable TOTP 2FA
+      description: Disables TOTP for the user. Requires a valid TOTP code to confirm identity.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  description: Current 6-digit TOTP code
+                  example: "654321"
+      responses:
+        "200":
+          description: TOTP disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: TOTP not enabled or missing code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid code or token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # OAuth2
+  # ──────────────────────────────────────────────
+  /api/auth/oauth/{provider}:
+    get:
+      operationId: oauthBegin
+      summary: Start OAuth2 flow
+      description: |
+        Redirects the user to the OAuth provider's authorization page. After the user authorizes, they are redirected back to the callback URL.
+
+        Requires Redis for PKCE state management.
+      tags: [OAuth2]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, github, microsoft, apple]
+        - name: session_mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [token]
+          description: Set to `token` to receive refresh token in JSON instead of cookie
+      responses:
+        "302":
+          description: Redirect to OAuth provider
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/oauth/{provider}/callback:
+    get:
+      operationId: oauthCallback
+      summary: OAuth2 callback
+      description: |
+        Handles the OAuth provider's redirect. On success, redirects to `{base_url}/login?access_token={token}` and sets a session cookie.
+        On failure, redirects to `{base_url}/login?error={message}`.
+
+        This is a public endpoint called by the OAuth provider.
+      tags: [OAuth2]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, github, microsoft, apple]
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Authorization code from the OAuth provider
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Signed state parameter
+      responses:
+        "302":
+          description: Redirect to application with token or error
+
+  # ──────────────────────────────────────────────
+  # Passkeys (WebAuthn)
+  # ──────────────────────────────────────────────
+  /api/auth/passkey/register/begin:
+    post:
+      operationId: passkeyRegisterBegin
+      summary: Start passkey registration
+      description: |
+        Initiates WebAuthn registration. Returns a `publicKey` options object to pass to `navigator.credentials.create()`. Requires Redis.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Registration options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCreationOptions"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/passkey/register/finish:
+    post:
+      operationId: passkeyRegisterFinish
+      summary: Complete passkey registration
+      description: |
+        Completes WebAuthn registration with the browser's attestation response. Requires Redis.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Friendly name for the passkey (e.g. "MacBook Touch ID")
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebAuthnAttestationResponse"
+      responses:
+        "201":
+          description: Passkey registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid attestation or no registration in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/passkey/login/begin:
+    post:
+      operationId: passkeyLoginBegin
+      summary: Start passkey login
+      description: |
+        Initiates WebAuthn authentication. Returns options to pass to `navigator.credentials.get()` and a `session_id` for the finish step. Requires Redis.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Authentication options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyRequestOptions"
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/passkey/login/finish:
+    post:
+      operationId: passkeyLoginFinish
+      summary: Complete passkey login
+      description: |
+        Completes WebAuthn authentication with the browser's assertion response. Returns access and refresh tokens.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Session ID from the begin step
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebAuthnAssertionResponse"
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Missing session_id or no login in progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Account suspended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/passkeys:
+    get:
+      operationId: listPasskeys
+      summary: List registered passkeys
+      description: Returns all passkeys registered by the authenticated user.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of passkeys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Passkey"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deletePasskeyQuery
+      summary: Delete a passkey (query param)
+      description: Deletes a passkey by credential ID passed as a query parameter.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Passkey credential ID
+      responses:
+        "200":
+          description: Passkey deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Missing passkey ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/passkeys/{id}:
+    delete:
+      operationId: deletePasskeyPath
+      summary: Delete a passkey
+      description: Deletes a passkey by credential ID.
+      tags: [Passkeys]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Passkey credential ID
+      responses:
+        "200":
+          description: Passkey deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Missing passkey ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # Admin
+  # ──────────────────────────────────────────────
+  /api/admin/clients:
+    post:
+      operationId: createClient
+      summary: Register a new client
+      description: |
+        Creates a new tenant (client) and returns the API key and JWT secret. **Save these values** — they are only shown at creation time.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClientRequest"
+      responses:
+        "201":
+          description: Client created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateClientResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: listClients
+      summary: List all clients
+      description: Returns all registered clients.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      responses:
+        "200":
+          description: List of clients
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Client"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/clients/{id}:
+    get:
+      operationId: getClient
+      summary: Get a client by ID
+      description: Returns a single client's details.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Client details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Client not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/clients/{id}/rotate-jwt:
+    post:
+      operationId: rotateJwtSecret
+      summary: Rotate JWT secret
+      description: |
+        Generates a new JWT secret for the client. The old secret is immediately invalidated — all existing tokens signed with it will fail validation.
+
+        Also available at `/api/admin/clients/{id}/rotate-secret`.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: New JWT secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateSecretResponse"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/clients/{id}/rotate-key:
+    post:
+      operationId: rotateApiKey
+      summary: Rotate API key
+      description: |
+        Generates a new API key for the client. The old key is immediately invalidated.
+
+        Also available at `/api/admin/clients/{id}/rotate-api-key`.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: New API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateKeyResponse"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # Utility
+  # ──────────────────────────────────────────────
+  /healthz:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      description: Returns service health status.
+      tags: [Utility]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: Get JSON Web Key Set
+      description: |
+        Returns the JWKS for a client, used to validate RS256-signed tokens. Provide either `X-API-Key` header or `client_id` query parameter.
+      tags: [Utility]
+      parameters:
+        - name: client_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Client ID (alternative to X-API-Key header)
+      responses:
+        "200":
+          description: JWKS
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JWKS"
+        "400":
+          description: Neither X-API-Key nor client_id provided
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Client API key — identifies the tenant
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (JWT)
+    AdminKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Master admin key for client management
+
+  schemas:
+    # ── Requests ──────────────────────────────
+    SignupRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: User email address
+          example: user@example.com
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: Password (8-72 characters, bcrypt limit)
+          example: MySecurePass123
+        display_name:
+          type: string
+          description: Display name (defaults to email prefix)
+          example: John Doe
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          example: MySecurePass123
+        session_mode:
+          type: string
+          enum: [token]
+          description: Set to `token` to receive refresh token in JSON instead of cookie
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: Refresh token (required in token mode)
+        session_mode:
+          type: string
+          enum: [token]
+
+    ChangePasswordRequest:
+      type: object
+      required: [old_password, new_password]
+      properties:
+        old_password:
+          type: string
+          description: Current password
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: New password (8-72 characters)
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+          description: New display name
+          example: Jane Doe
+        timezone:
+          type: string
+          description: IANA timezone
+          example: America/New_York
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          type: string
+          description: Reset token from email
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: New password (8-72 characters)
+
+    TOTPVerifyRequest:
+      type: object
+      required: [two_factor_token, code]
+      properties:
+        two_factor_token:
+          type: string
+          description: Token from login response when 2FA is required
+        code:
+          type: string
+          description: 6-digit TOTP code from authenticator app
+          example: "123456"
+        session_mode:
+          type: string
+          enum: [token]
+
+    CreateClientRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          description: Human-readable project name
+          example: My SaaS App
+        slug:
+          type: string
+          description: Unique identifier (URL-safe)
+          example: my-saas-app
+        allowed_origins:
+          type: array
+          items:
+            type: string
+          description: Allowed CORS origins
+          example: ["https://myapp.com", "https://www.myapp.com"]
+        webhook_url:
+          type: string
+          format: uri
+          description: Webhook URL for auth events
+          example: https://myapp.com/webhooks/auth
+
+    # ── Responses ─────────────────────────────
+    OkResponse:
+      type: object
+      properties:
+        ok:
+          type: string
+          example: "true"
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: invalid request
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT access token (15 min TTL)
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          example: 900
+          description: Token lifetime in seconds
+        user:
+          $ref: "#/components/schemas/User"
+        refresh_token:
+          type: string
+          description: Refresh token (only present in token session mode)
+
+    TwoFactorChallenge:
+      type: object
+      properties:
+        requires_2fa:
+          type: boolean
+          example: true
+        two_factor_token:
+          type: string
+          description: Pass this to the TOTP verify endpoint
+        two_factor_methods:
+          type: array
+          items:
+            type: string
+          example: ["totp"]
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        client_id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        email_verified:
+          type: boolean
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+          example: UTC
+        locale:
+          type: string
+          example: en
+        role:
+          type: string
+          example: user
+        status:
+          type: string
+          enum: [active, suspended, deleted]
+        totp_enabled:
+          type: boolean
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        allowed_origins:
+          type: array
+          items:
+            type: string
+        webhook_url:
+          type: string
+          nullable: true
+        settings:
+          type: object
+        status:
+          type: string
+          enum: [active, suspended]
+        token_mode:
+          type: string
+          enum: [v1_hs256, v2_jwks]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateClientResponse:
+      type: object
+      properties:
+        client:
+          $ref: "#/components/schemas/Client"
+        api_key:
+          type: string
+          description: Client API key — save this, shown only at creation
+        jwt_secret:
+          type: string
+          description: JWT signing secret — save this, shown only at creation
+
+    RotateSecretResponse:
+      type: object
+      properties:
+        client:
+          $ref: "#/components/schemas/Client"
+        jwt_secret:
+          type: string
+          description: New JWT secret
+
+    RotateKeyResponse:
+      type: object
+      properties:
+        client:
+          $ref: "#/components/schemas/Client"
+        api_key:
+          type: string
+          description: New API key
+
+    TOTPSetupResponse:
+      type: object
+      properties:
+        secret:
+          type: string
+          description: Base32-encoded TOTP secret
+        uri:
+          type: string
+          description: "otpauth:// URI for QR code generation"
+        qr:
+          type: string
+          description: Base64-encoded PNG QR code image
+
+    Passkey:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Credential ID
+        public_key:
+          type: string
+        counter:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    PasskeyCreationOptions:
+      type: object
+      description: WebAuthn PublicKeyCredentialCreationOptions — pass to navigator.credentials.create()
+      properties:
+        public_key:
+          type: object
+          properties:
+            challenge:
+              type: string
+              description: Base64url-encoded challenge
+            rp:
+              type: object
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+            user:
+              type: object
+              properties:
+                id:
+                  type: string
+                name:
+                  type: string
+                displayName:
+                  type: string
+            pubKeyCredParams:
+              type: array
+              items:
+                type: object
+                properties:
+                  alg:
+                    type: integer
+                  type:
+                    type: string
+            timeout:
+              type: integer
+            attestation:
+              type: string
+
+    PasskeyRequestOptions:
+      type: object
+      description: WebAuthn PublicKeyCredentialRequestOptions — pass to navigator.credentials.get()
+      properties:
+        public_key:
+          type: object
+          properties:
+            challenge:
+              type: string
+            timeout:
+              type: integer
+            rpId:
+              type: string
+            userVerification:
+              type: string
+            allowCredentials:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  type:
+                    type: string
+        session_id:
+          type: string
+          description: Pass this to the login/finish endpoint
+
+    WebAuthnAttestationResponse:
+      type: object
+      description: Browser attestation response from navigator.credentials.create()
+      properties:
+        id:
+          type: string
+        rawId:
+          type: string
+        response:
+          type: object
+          properties:
+            clientDataJSON:
+              type: string
+            attestationObject:
+              type: string
+        type:
+          type: string
+          example: public-key
+
+    WebAuthnAssertionResponse:
+      type: object
+      description: Browser assertion response from navigator.credentials.get()
+      properties:
+        id:
+          type: string
+        rawId:
+          type: string
+        response:
+          type: object
+          properties:
+            clientDataJSON:
+              type: string
+            authenticatorData:
+              type: string
+            signature:
+              type: string
+        type:
+          type: string
+          example: public-key
+
+    JWKS:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kty:
+                type: string
+                example: RSA
+              kid:
+                type: string
+              use:
+                type: string
+                example: sig
+              alg:
+                type: string
+                example: RS256
+              "n":
+                type: string
+                description: Base64url-encoded RSA modulus
+              e:
+                type: string
+                description: Base64url-encoded RSA exponent
