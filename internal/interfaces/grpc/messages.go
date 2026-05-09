@@ -125,13 +125,22 @@ type ValidateTokenRequest struct {
 }
 
 type ValidateTokenResponse struct {
-	Valid         bool   `json:"valid"`
-	UserID        string `json:"user_id,omitempty"`
-	Email         string `json:"email,omitempty"`
-	Role          string `json:"role,omitempty"`
-	EmailVerified bool   `json:"email_verified,omitempty"`
-	ClientID      string `json:"client_id,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Valid                   bool     `json:"valid"`
+	UserID                  string   `json:"user_id,omitempty"`
+	Email                   string   `json:"email,omitempty"`
+	Role                    string   `json:"role,omitempty"`
+	EmailVerified           bool     `json:"email_verified,omitempty"`
+	ClientID                string   `json:"client_id,omitempty"`
+	TokenUse                string   `json:"token_use,omitempty"`
+	Scope                   string   `json:"scope,omitempty"`
+	Scopes                  []string `json:"scopes,omitempty"`
+	ServiceAccountID        string   `json:"service_account_id,omitempty"`
+	ServiceAccountName      string   `json:"service_account_name,omitempty"`
+	OrganizationID          string   `json:"org_id,omitempty"`
+	OrganizationSlug        string   `json:"org_slug,omitempty"`
+	OrganizationRole        string   `json:"org_role,omitempty"`
+	OrganizationPermissions []string `json:"org_permissions,omitempty"`
+	Error                   string   `json:"error,omitempty"`
 }
 
 // --- Admin Service Messages ---

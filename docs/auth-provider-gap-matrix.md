@@ -7,7 +7,7 @@
 
 The service is strongest for teams that want a self-hosted, open-source auth service for Go/microservice architectures without MAU pricing. It already has a rare combination of REST plus gRPC, tenant-scoped JWTs, JWKS/RS256 support, passkeys, TOTP, magic links, OAuth, Redis rate limiting, refresh-token rotation, and now queryable audit logs.
 
-The strongest remaining gaps versus enterprise CIAM providers are SAML/OIDC enterprise SSO, SCIM directory sync, organization-level RBAC, and machine-to-machine OAuth/client-credentials tokens.
+The strongest remaining gaps versus enterprise CIAM providers are live native mobile network fixtures, device-reputation integrations, step-up policy polish, automated audit retention jobs, and formal third-party compliance reports. Enterprise SSO, SCIM, organization RBAC, M2M tokens, an admin/customer portal, browser/React/Node SDK starters, starter native SDK packages/test harnesses, CAPTCHA hooks, audit exports, signed audit webhooks, operations runbooks, and TOTP recovery codes are now implemented.
 
 ## Current Test Coverage
 
@@ -17,26 +17,30 @@ The strongest remaining gaps versus enterprise CIAM providers are SAML/OIDC ente
 | Browser-grade passkey login | Covered | Same test completes `navigator.credentials.get()` and verifies token-mode access plus refresh tokens | Conditional UI/autofill is not implemented in the public login page |
 | Passkey negative security path | Covered | Same test forces a bogus authenticator signature and expects `401 Unauthorized` | Attestation policy and enterprise attestation are not implemented |
 | Public auth pages | Covered | `TestBrowserPublicAuthPagesWorkOnDesktopIOSAndAndroidProfiles` runs signup, email verification, forgot/reset password, login, magic link, and TOTP challenge flows through the served HTML pages | OAuth still uses provider redirect stubs, not live external IdPs |
-| iOS mobile web | Covered as browser emulation | Same public-page suite runs with iPhone viewport, touch, platform, and Safari user-agent profile | Native iOS SDK/XCTest does not exist yet |
-| Android mobile web | Covered as browser emulation | Same public-page suite runs with Pixel viewport, touch, platform, and Chrome user-agent profile | Native Android SDK/Espresso does not exist yet |
+| Admin/customer portal | Covered | `TestBrowserPortalShellRendersOnDesktopIOSAndAndroidProfiles` loads `/portal.html`, switches workspaces, and checks desktop/mobile document overflow | API-backed workflows are covered by route E2Es, not a live operator acceptance test |
+| Browser SDK and embeddable UI | Covered | `TestBrowserSDKSignupOrganizationsAndUserWidget` loads `/authservice.js` in Chrome and exercises signup, token storage, `/me`, profile update, org creation, org token minting, and `mountUserButton` | No packaged npm release yet |
+| iOS mobile web | Covered as browser emulation | Same public-page suite runs with iPhone viewport, touch, platform, and Safari user-agent profile | Native XCTest suite is not implemented yet |
+| Android mobile web | Covered as browser emulation | Same public-page suite runs with Pixel viewport, touch, platform, and Chrome user-agent profile | Native Espresso suite is not implemented yet |
+| iOS Swift SDK | Starter covered | `sdks/ios/Package.swift`, `AuthServiceClient.swift`, `KeychainAuthServiceTokenStore`, and XCTest fixtures cover package/test scaffolding | No live XCTest network fixture yet |
+| Android Java SDK | Starter present | `sdks/android/build.gradle` and JUnit fixtures wrap the dependency-free native request/session helpers | Java runtime is unavailable in this workspace, so javac/Gradle validation could not run; no Android AAR publishing config yet |
 | Route-level E2E auth lifecycle | Covered | `e2e_test.go` covers signup, login, refresh rotation, logout, profile, password change/reset, email verification, magic links, TOTP, OAuth state/PKCE, passkey begin routes, audit querying, client admin, and Redis-required feature failures | No full external IdP sandbox runs yet |
-| Enterprise-grade SSO/SCIM/RBAC/M2M | Not covered because features are absent | The comparison below treats these as product gaps, not just test gaps | Implement SAML/OIDC enterprise SSO, SCIM 2.0, organization RBAC, and OAuth2 client credentials |
+| Enterprise-grade SSO/SCIM/RBAC/M2M | Covered | Route E2Es cover organization invitations/tokens, OAuth2 client credentials and introspection, OIDC/SAML enterprise SSO setup/callbacks, and SCIM Users/Groups provisioning | No live Okta/Azure/Ping/Google Workspace sandbox matrix yet |
 
 ## Provider Comparison
 
 | Provider | Best Fit | Strengths | Where This Service Wins | Remaining Gap |
 |---|---|---|---|---|
 | Clerk | React/Next.js apps that want hosted/prebuilt UI fast | 50K MRU free tier, prebuilt UI, organizations, application logs, MFA/passkeys on paid plans, M2M features | Self-hosted, no MAU cost, Go validator, REST+gRPC, tenant-owned data | Hosted React components, organization UX, richer administration |
-| Auth0 by Okta | Enterprise CIAM and complex identity programs | Enterprise connections, organizations, passkeys, Actions/Forms, SCIM/B2B add-ons, enterprise SLAs | Lower operational complexity for self-hosters, no vendor lock-in, per-client signing isolation, queryable logs without paid tiers | SAML/SCIM, mature compliance story, ecosystem |
-| WorkOS | B2B SaaS enterprise readiness | SSO, Directory Sync/SCIM, Admin Portal, Audit Logs, RBAC/AuthKit | Self-hosted full auth stack, passkeys/TOTP/magic links plus gRPC in one binary | SSO admin portal, SCIM, directory sync |
+| Auth0 by Okta | Enterprise CIAM and complex identity programs | Enterprise connections, organizations, passkeys, Actions/Forms, SCIM/B2B add-ons, enterprise SLAs | Lower operational complexity for self-hosters, no vendor lock-in, per-client signing isolation, queryable logs without paid tiers | Mature compliance story, Actions/marketplace ecosystem, managed SLAs |
+| WorkOS | B2B SaaS enterprise readiness | SSO, Directory Sync/SCIM, Admin Portal, Audit Logs, RBAC/AuthKit | Self-hosted full auth stack, passkeys/TOTP/magic links plus gRPC in one binary | Hosted admin portal polish, directory provider compatibility matrix, managed SLA |
 | Firebase Authentication | Firebase/mobile-first apps | Broad mobile/web SDKs, social providers, TOTP/SMS MFA, SAML/OIDC docs, Firebase ecosystem | Standalone auth, self-hosted data, built-in tenant isolation/audit logs/rate limiting, no Firebase coupling | Mobile SDK depth, anonymous auth, Firebase integrations |
-| Amazon Cognito | AWS-native products | Low-friction AWS integration, managed login, passkeys in Essentials, Plus threat/audit features, M2M add-on | Better local developer ergonomics, self-hosted, simpler mental model, REST+gRPC | AWS integration, Lambda triggers, managed scale, M2M |
+| Amazon Cognito | AWS-native products | Low-friction AWS integration, managed login, passkeys in Essentials, Plus threat/audit features, M2M add-on | Better local developer ergonomics, self-hosted, simpler mental model, REST+gRPC | AWS integration, Lambda triggers, managed scale |
 | Supabase Auth | Supabase/Postgres/RLS apps | Password, magic link, OTP, social, SSO, MFA, auth hooks, RLS integration | Standalone service with gRPC, passkeys, tenant-scoped signing, queryable auth audit API | Supabase RLS/database integration, broader provider catalog |
-| Stytch | API-first B2B/B2C auth with passwordless and enterprise features | 10K MAU free, organizations, SSO/SCIM, M2M, RBAC, fraud/risk add-ons | Self-hosted/no usage bill, Go-native microservice integration | SSO/SCIM, fraud/risk, prebuilt admin portal |
-| Descope | Visual/no-code auth flow design | Flow builder, passkeys, MFA/step-up, tenants, RBAC, SSO/SCIM tiers, M2M exchanges | Code-owned flows, self-hosting, no workflow lock-in, gRPC | Visual flow builder, FGA, SCIM |
+| Stytch | API-first B2B/B2C auth with passwordless and enterprise features | 10K MAU free, organizations, SSO/SCIM, M2M, RBAC, fraud/risk add-ons | Self-hosted/no usage bill, Go-native microservice integration | Fraud/risk, hosted UX polish, managed provider ecosystem |
+| Descope | Visual/no-code auth flow design | Flow builder, passkeys, MFA/step-up, tenants, RBAC, SSO/SCIM tiers, M2M exchanges | Code-owned flows, self-hosting, no workflow lock-in, gRPC | Visual flow builder, FGA, risk orchestration |
 | Keycloak | Classic open-source IAM | Mature OSS IAM, admin console, SSO/OIDC/SAML, fine-grained authorization, REST admin API | Lighter single Go service, simpler deployment, app-focused REST+gRPC auth API | Full IAM breadth, admin console, federation maturity |
 | Zitadel | Modern open-source/cloud-native IAM | Open-source identity infrastructure, hosted/self-hosted options, strong OIDC orientation | Simpler service footprint for product auth, Go validator package, no cloud dependency | Full IAM/OIDC platform depth, console/workflows |
-| FusionAuth | Self-hosted CIAM with commercial support | Free self-hosted Community, tenants, OAuth/OIDC/SAML, MFA, magic links, passkeys in premium/enterprise, rich APIs | Lighter Go footprint, no Java server, REST+gRPC | Commercial support depth, admin console, SCIM/enterprise features |
+| FusionAuth | Self-hosted CIAM with commercial support | Free self-hosted Community, tenants, OAuth/OIDC/SAML, MFA, magic links, passkeys in premium/enterprise, rich APIs | Lighter Go footprint, no Java server, REST+gRPC | Commercial support depth, richer admin console, enterprise support packaging |
 | Ory | Headless open-source identity infrastructure | Kratos/Hydra/Keto/Oathkeeper stack, OAuth2/OIDC, authorization, cloud/self-hosted | Much simpler all-in-one deployment for product teams, built-in hosted pages, gRPC | Standards breadth, OAuth2 provider depth, relationship authorization |
 | Kinde | Indie/SaaS auth plus billing/feature flags | 10,500 MAU free, organizations, MFA, M2M, feature flags, billing, SSO on paid plans | Self-hosted/no MAU cost, data ownership, gRPC, passkeys | Billing/feature flags, hosted UX, org-level policies |
 
@@ -45,22 +49,23 @@ The strongest remaining gaps versus enterprise CIAM providers are SAML/OIDC ente
 | Capability | Current Status | Competitors That Make This Table Stakes | Priority |
 |---|---|---|---|
 | WebAuthn/passkeys | Implemented and now browser-grade tested for registration, login, resident credentials, user verification, and signature rejection | Auth0, Cognito, Stytch, Descope, Keycloak, Zitadel, FusionAuth, Hanko-style passkey-first tools | Keep hardening |
-| Passkey conditional UI/autofill | Missing; public login has an explicit passkey button only | Auth0 documents passkey autofill-style login flows; passkey-first providers optimize this UX | Medium |
-| Cross-device passkey UX | Protocol-compatible, but not tested with real iOS/Android/Safari/Chrome cross-device prompts | Auth0 and passkey-first providers emphasize cross-device passkeys | Medium |
-| Attestation policy / enterprise attestation | Missing; current service accepts normal WebAuthn registration without tenant policy controls | Enterprise IAM and regulated deployments often need authenticator policy choices | Medium |
+| Passkey conditional UI/autofill | Implemented in `/login.html` and exposed in `/authservice.js` with `startConditionalPasskeyLogin` | Auth0 documents passkey autofill-style login flows; passkey-first providers optimize this UX | Keep testing across real browsers |
+| Cross-device passkey UX | Protocol-compatible with automated browser coverage plus manual cross-device QA checklist in `docs/passkey-qa.md` | Auth0 and passkey-first providers emphasize cross-device passkeys | Add real-device automation where practical |
+| Attestation policy / enterprise attestation | Implemented with tenant settings for attestation conveyance, required attestation, and allowed attestation formats | Enterprise IAM and regulated deployments often need authenticator policy choices | Keep hardening with metadata trust stores |
 | TOTP MFA | Implemented and route-level tested | Clerk, Auth0, Firebase/Identity Platform, Supabase, Cognito, Stytch, Descope, Keycloak, Kinde | Keep |
 | SMS/phone OTP MFA | Missing | Firebase, Supabase, Cognito, Auth0, Stytch, Descope | Low unless mobile-first |
-| Backup/recovery codes | Missing | Common in mature MFA products | Medium |
+| Backup/recovery codes | Implemented for TOTP as one-time hashed recovery codes with login verification and usage audit events | Common in mature MFA products | Keep hardening with account recovery workflows |
 | Magic links/passwordless email | Implemented and E2E tested | Firebase, Supabase, Stytch, FusionAuth, Kinde | Keep |
 | Social OAuth | Implemented for Google, GitHub, Microsoft, Apple with state/PKCE tests | Most providers | Keep |
-| Enterprise SAML/OIDC SSO | Missing | Auth0, WorkOS, Clerk Enterprise Connections, Stytch, Descope, Keycloak, FusionAuth, Ory/Zitadel | Highest |
-| SCIM/directory sync | Missing | WorkOS, Auth0, Stytch, Descope, FusionAuth enterprise offerings | Highest |
-| Organizations and org-scoped RBAC | Missing | Clerk Organizations, WorkOS RBAC, Stytch RBAC, Descope tenants/RBAC, Kinde orgs, FusionAuth tenants | Highest |
-| Machine-to-machine/client credentials | Missing | Auth0, WorkOS, Stytch, Descope, Cognito, Ory, Kinde | High |
-| Queryable audit logs | Implemented with admin filters | WorkOS, Auth0, Clerk, Kinde, enterprise IAM products | Keep improving exports/streams |
-| Native iOS SDK | Missing; only HTTP API and mobile-web profile test | Firebase, Clerk, Auth0, Cognito, Supabase, Stytch, Descope | Medium if mobile apps are a target |
-| Native Android SDK | Missing; only HTTP API and mobile-web profile test | Firebase, Clerk, Auth0, Cognito, Supabase, Stytch, Descope | Medium if mobile apps are a target |
-| Fraud/risk/bot protection | Basic rate limiting and lockout only; no CAPTCHA, device reputation, breached-password checks, or adaptive risk engine | Stytch, Descope, Auth0, Cognito Plus, Firebase App Check ecosystem | Medium |
+| Enterprise SAML/OIDC SSO | Implemented with admin APIs, domain routing, OIDC discovery/callbacks, SAML SP metadata, and signed response validation | Auth0, WorkOS, Clerk Enterprise Connections, Stytch, Descope, Keycloak, FusionAuth, Ory/Zitadel | Keep hardening with live IdP fixtures |
+| SCIM/directory sync | Implemented for SCIM 2.0 Users and Groups with bearer-token directories and deprovisioning | WorkOS, Auth0, Stytch, Descope, FusionAuth enterprise offerings | Keep hardening with IdP compatibility fixtures |
+| Organizations and org-scoped RBAC | Implemented with owner/admin/member/viewer roles, custom permissions, invitations, members, and org-scoped tokens | Clerk Organizations, WorkOS RBAC, Stytch RBAC, Descope tenants/RBAC, Kinde orgs, FusionAuth tenants | Add richer UI policies and templates |
+| Machine-to-machine/client credentials | Implemented with service accounts, scoped keys, OAuth2 token endpoint, introspection, revocation, and rotation | Auth0, WorkOS, Stytch, Descope, Cognito, Ory, Kinde | Keep |
+| Queryable audit logs and webhooks | Implemented with admin filters, CSV/NDJSON export, and signed audit-event webhook delivery with retries | WorkOS, Auth0, Clerk, Kinde, enterprise IAM products | Keep improving retention controls and evidence automation |
+| Browser SDK and embeddable UI | Implemented as dependency-free `/authservice.js`, React/Next.js bindings, Node SDK, token/session helpers, and sign-in/user widgets | Clerk, Auth0, Firebase, Supabase, Stytch, Descope | Add npm packaging and framework-specific adapters |
+| Native iOS SDK | Starter Swift client implemented for signup/login/refresh/logout/profile/org flows | Firebase, Clerk, Auth0, Cognito, Supabase, Stytch, Descope | Package with SPM, Keychain store, and XCTest fixture |
+| Native Android SDK | Starter Java client implemented for signup/login/refresh/logout/profile/org flows | Firebase, Clerk, Auth0, Cognito, Supabase, Stytch, Descope | Package with Gradle/AAR, encrypted storage, and Espresso/JVM fixture |
+| Fraud/risk/bot protection | Rate limiting, lockout, optional CAPTCHA hooks for signup/login, configurable password policy, common/compromised-password blocking, user-info password blocking, disposable email-domain blocking, active-session management, suspicious new IP/device login detection, adaptive MFA challenge audit signals, and audit events for blocked attempts | Stytch, Descope, Auth0, Cognito Plus, Firebase App Check ecosystem | Add managed device reputation provider integrations |
 
 ## Feature Matrix
 
@@ -78,32 +83,45 @@ The strongest remaining gaps versus enterprise CIAM providers are SAML/OIDC ente
 | Refresh-token rotation | Yes |
 | Per-client JWT/JWKS signing | Yes |
 | Queryable audit logs | Yes: `GET /api/admin/audit-events` |
+| Audit evidence export | Yes: `GET /api/admin/audit-events/export` as CSV or NDJSON |
+| Signed audit webhooks | Yes: client `webhook_url` receives HMAC-signed `audit.event` deliveries with retry controls |
+| Operations runbooks | Yes: backup, restore, migration, import/export, webhook verification, incident, and audit-retention guidance in `docs/operations-runbook.md`; helper scripts in `scripts/` |
+| Admin/customer portal | Yes: `/portal.html` |
+| Browser SDK and embeddable UI | Yes: `/authservice.js` |
+| React/Next.js SDK starter | Yes: `sdks/react/authservice-react.js` |
+| Node.js SDK starter | Yes: `sdks/node/authservice-node.js` |
+| iOS Swift SDK starter | Yes: `sdks/ios/AuthServiceClient.swift` |
+| Android Java SDK starter | Yes: `sdks/android/com/authservice/sdk/AuthServiceClient.java` |
 | Rate limiting and lockout | Yes |
+| CAPTCHA/bot verification | Yes: optional Turnstile, hCaptcha, reCAPTCHA, or custom verification endpoint for signup/login |
+| Password risk policy | Yes: common/compromised-password, low-entropy, and user-info rejection |
+| Device/session management | Yes: users can list and revoke active sessions |
+| Suspicious login detection | Yes: password login compares active session IP/device history and audits `suspicious_login` plus adaptive MFA challenge signals |
 | Browser-grade passkey E2E | Yes: Chrome DevTools virtual WebAuthn authenticator |
 | iOS mobile-web E2E | Yes: public auth pages under iPhone viewport/touch/user-agent browser profile |
 | Android mobile-web E2E | Yes: public auth pages under Pixel viewport/touch/user-agent browser profile |
-| Native iOS SDK/test harness | Not yet |
-| Native Android SDK/test harness | Not yet |
-| Enterprise SSO/SAML | Not yet |
-| SCIM directory sync | Not yet |
-| Organization-level RBAC | Not yet |
-| Machine-to-machine OAuth | Not yet |
+| Enterprise SSO/SAML/OIDC | Yes |
+| SCIM directory sync | Yes |
+| Organization-level RBAC | Yes |
+| Machine-to-machine OAuth | Yes |
+| Native iOS package/test harness | Yes: Swift Package plus XCTest starter |
+| Native Android package/test harness | Yes: Gradle/JUnit starter; local Java runtime unavailable for validation |
 
 ## Implemented Gap
 
-**Implemented:** Queryable audit log API.
+**Implemented:** Queryable audit log API, evidence export, and signed webhook delivery.
 
-Before this pass, events were written to `login_audit_log` but were not accessible through a supported API. That made the service weaker than enterprise/B2B providers with audit log products. The new admin endpoint makes audit evidence available by `client_id`, `user_id`, `event_type`, and `limit`.
+Before this pass, events were written to `login_audit_log` but were not accessible through a supported API. That made the service weaker than enterprise/B2B providers with audit log products. The admin endpoints make audit evidence available by `client_id`, `user_id`, `event_type`, and `limit`, export it as CSV/NDJSON, and deliver the same audit stream to each client's `webhook_url` with HMAC signatures and bounded retries.
 
 This most directly improves the target use case: **self-hosted B2B SaaS that needs auth auditability without buying an enterprise identity tier**. Combined with existing self-hosting, gRPC, passkeys, TOTP, magic links, rate limiting, and per-client signing isolation, the service is now stronger than Firebase Auth and Supabase Auth for standalone B2B auth auditability, and stronger than Clerk/Kinde when the buyer prioritizes self-hosted data ownership and zero MAU-based auth spend over hosted UI.
 
 ## Next Feature Bets
 
-1. **Organization-level RBAC**: closes the most common B2B SaaS gap versus Clerk, WorkOS, Stytch, Descope, Kinde, and FusionAuth.
-2. **SAML/OIDC enterprise SSO**: required to compete directly for enterprise SaaS deals.
-3. **SCIM 2.0**: pairs with SSO for enterprise user lifecycle management.
-4. **M2M/client credentials**: improves service-to-service auth and closes a gap against Auth0, WorkOS, Stytch, Cognito, Descope, FusionAuth, Ory, and Kinde.
-5. **Native mobile SDKs and tests**: adds real XCTest/Espresso coverage instead of only mobile-web browser profiles.
+1. **Native mobile packaging and tests**: adds Swift Package/Gradle packaging plus real XCTest/Espresso coverage.
+2. **Bot protection integrations**: managed device reputation providers and richer step-up policies.
+3. **Passkey UX polish**: conditional UI/autofill, cross-device fixtures, and tenant attestation policy.
+4. **MFA step-up policy**: route-level MFA enforcement helpers and recovery workflow polish.
+5. **Compliance/operations packaging**: automated retention controls, backup/restore automation, and evidence-friendly docs.
 
 ## Sources
 

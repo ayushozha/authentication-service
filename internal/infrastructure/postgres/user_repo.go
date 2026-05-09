@@ -125,6 +125,13 @@ func (r *UserRepo) UpdateProfile(ctx context.Context, userID, displayName, timez
 	return err
 }
 
+func (r *UserRepo) UpdateStatus(ctx context.Context, userID, status string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2`,
+		status, userID)
+	return err
+}
+
 func (r *UserRepo) SetTOTPSecret(ctx context.Context, userID, secret string) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE users SET totp_secret = $1, updated_at = NOW() WHERE id = $2`,

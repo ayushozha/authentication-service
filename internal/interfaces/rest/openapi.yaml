@@ -4,7 +4,7 @@ info:
   description: |
     AuthService is a self-hosted, multi-tenant authentication platform for teams that want provider-grade auth without handing user data, pricing leverage, or service-to-service trust to a third party.
 
-    It provides email/password auth, OAuth2 social login, magic links, TOTP 2FA, passkeys/WebAuthn, refresh-token rotation, tenant-scoped JWTs, JWKS, audit logs, REST, gRPC, and an importable Go JWT validator.
+    It provides email/password auth, OAuth2 social login, enterprise SSO with SAML/OIDC, SCIM 2.0 directory sync, machine-to-machine client credentials, magic links, TOTP 2FA, passkeys/WebAuthn, organization RBAC, refresh-token rotation, tenant-scoped JWTs, JWKS, audit logs, REST, gRPC, and an importable Go JWT validator.
 
     ## What This Replaces
 
@@ -16,9 +16,13 @@ info:
     | Passwordless login | Magic links and passkeys/WebAuthn |
     | MFA | TOTP setup, enable, login verify, and disable lifecycle |
     | Social identity | Google, GitHub, Microsoft, and Apple OAuth2 |
+    | Enterprise SSO | Per-client SAML 2.0 and OIDC connections, domain routing, metadata, and JIT provisioning |
+    | Directory sync | SCIM 2.0 inbound provisioning for users, groups, deprovisioning, and token rotation |
+    | B2B SaaS authorization | Organizations, owner/admin/member/viewer roles, invitations, permissions, and org-scoped JWT claims |
+    | Backend automation | OAuth2 client credentials, service accounts, scoped secrets, token introspection, and key rotation |
     | Multi-product tenancy | Client-specific users, sessions, origins, signing keys, and API keys |
     | Microservice token trust | Local JWT validation with HS256 or RS256/JWKS plus gRPC token validation |
-    | Enterprise-style evidence | Queryable audit events with tenant, user, type, and limit filters |
+    | Enterprise-style evidence | Queryable audit events with tenant/user/type filters, CSV/NDJSON export, and signed webhook delivery |
 
     ## Integration Quickstart
 
@@ -28,8 +32,10 @@ info:
        - Browser apps: omit `session_mode` and let AuthService set the `HttpOnly` `auth_refresh` cookie.
        - Native apps, CLIs, server-side rendered apps, and API-only products: pass `session_mode=token` to receive `refresh_token` in JSON.
     4. **Authenticate users** through signup, login, OAuth, magic links, TOTP, or passkeys.
-    5. **Validate access tokens** in downstream services using JWKS, the Go validator package, or the gRPC TokenService.
-    6. **Operate the integration** with admin client rotation, tenant-scoped JWKS lookup, and audit-event queries.
+    5. **For B2B products**, create organizations, invite members, and mint org-scoped access tokens before calling tenant-aware product APIs.
+    6. **For service-to-service automation**, provision service accounts and exchange scoped client credentials at `/oauth/token`.
+    7. **Validate access tokens** in downstream services using JWKS, introspection, the Go validator package, or the gRPC TokenService.
+    8. **Operate the integration** with admin client rotation, tenant-scoped JWKS lookup, service-account key rotation, audit-event queries/exports, and signed webhooks.
 
     ```bash
     curl -X POST https://authservice.ayushojha.com/api/auth/login \
@@ -50,6 +56,8 @@ info:
     | API key | Client credential sent as `X-API-Key`; never expose it in untrusted public code |
     | Admin key | Operator credential sent as `X-Admin-Key` for client and audit APIs |
     | Access token | Short-lived JWT used as `Authorization: Bearer <token>` |
+    | Organization | B2B workspace/account under a client, with role and permission scoped memberships |
+    | Service account | Machine identity under a client, with scoped credentials for backend automation |
     | Refresh token | Long-lived, single-use session credential rotated on every refresh |
     | Token mode | JSON refresh-token delivery for mobile, CLI, API, or SSR integrations |
     | Cookie mode | Default browser session mode using an `HttpOnly` `auth_refresh` cookie |
@@ -62,6 +70,7 @@ info:
     | `X-API-Key` | App-initiated `/api/auth/*` requests | Identifies the client/tenant and enforces tenant ownership |
     | `Authorization: Bearer <token>` | User-protected endpoints | Carries the user's short-lived access token |
     | `X-Admin-Key` | `/api/admin/*` endpoints | Authenticates service operators and provisioning automation |
+    | `X-AuthService-Signature` | Outbound audit webhooks | HMAC-SHA256 signature over `timestamp + "." + raw_body` using `WEBHOOK_SIGNING_SECRET` |
 
     ## Recommended Integration Patterns
 
@@ -101,6 +110,7 @@ info:
     - Use RS256/JWKS mode for new service-to-service integrations.
     - Keep `ADMIN_API_KEY`, client API keys, OAuth provider secrets, and Resend keys in a secret manager.
     - Monitor `GET /api/admin/audit-events` for suspicious sign-in, reset, and MFA activity.
+    - Set `WEBHOOK_SIGNING_SECRET` before relying on client `webhook_url` audit delivery.
     - Rotate API keys and signing material during incidents or ownership changes.
 
     ## Token Lifecycle
@@ -139,6 +149,14 @@ tags:
     description: Tenant-bound social login via Google, GitHub, Microsoft, and Apple with PKCE-backed state
   - name: Passkeys
     description: WebAuthn/FIDO2 registration, login, listing, and deletion for modern passwordless UX
+  - name: Organizations
+    description: B2B SaaS organizations, memberships, invitations, roles, permissions, and org-scoped token issuance
+  - name: Machine Auth
+    description: OAuth2 client credentials, service accounts, scoped secrets, token introspection, rotation, and revocation
+  - name: Enterprise SSO
+    description: Enterprise SAML/OIDC connections, domain-routed login starts, SAML metadata, callbacks, and JIT user provisioning
+  - name: SCIM
+    description: SCIM 2.0 directory provisioning for users, groups, deprovisioning, and per-directory bearer tokens
   - name: Admin
     description: Client provisioning, key rotation, and audit-event operations requiring the master admin key
   - name: Utility
@@ -147,6 +165,10 @@ tags:
 x-tagGroups:
   - name: Build User Login
     tags: [Authentication, Email Verification, Magic Links, TOTP, OAuth2, Passkeys]
+  - name: Build B2B SaaS
+    tags: [Organizations]
+  - name: Connect Services
+    tags: [Machine Auth]
   - name: Operate AuthService
     tags: [Admin, Utility]
 
@@ -439,6 +461,86 @@ paths:
                 $ref: "#/components/schemas/Error"
         "401":
           description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/sessions:
+    get:
+      operationId: listSessions
+      summary: List active sessions
+      description: Returns active refresh sessions for the authenticated user under the current client.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: revokeAllSessions
+      summary: Revoke all sessions
+      description: Revokes all active refresh sessions for the authenticated user under the current client.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/sessions/{id}:
+    delete:
+      operationId: revokeSession
+      summary: Revoke a session
+      description: Revokes one active refresh session owned by the authenticated user.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Session ID
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Session not found
           content:
             application/json:
               schema:
@@ -873,6 +975,82 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/auth/recovery-codes:
+    get:
+      operationId: recoveryCodesCount
+      summary: Count unused recovery codes
+      description: Returns the number of unused one-time MFA recovery codes without exposing the codes themselves.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Recovery code count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodesResponse"
+    post:
+      operationId: recoveryCodesGenerate
+      summary: Generate MFA recovery codes
+      description: Rotates one-time recovery codes for a user with TOTP enabled. Codes are shown only once and stored as hashes.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Newly generated recovery codes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecoveryCodesResponse"
+        "400":
+          description: TOTP is not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/recovery-codes/verify:
+    post:
+      operationId: recoveryCodesVerify
+      summary: Complete login with a recovery code
+      description: Verifies a one-time recovery code during a TOTP login challenge and marks the code used.
+      tags: [TOTP]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecoveryCodeVerifyRequest"
+            example:
+              two_factor_token: tfa_login_challenge_token
+              code: ABCD-1234-EF56
+              session_mode: token
+      responses:
+        "200":
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid 2FA token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid or already used recovery code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   # ──────────────────────────────────────────────
   # OAuth2
   # ──────────────────────────────────────────────
@@ -1224,6 +1402,1190 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   # ──────────────────────────────────────────────
+  # Organizations
+  # ──────────────────────────────────────────────
+  /api/auth/organizations:
+    get:
+      operationId: listOrganizations
+      summary: List organizations for the current user
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: User organizations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationListResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createOrganization
+      summary: Create an organization
+      description: Creates a B2B organization under the current client. The authenticated user becomes the `owner`.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrganizationRequest"
+            example:
+              name: Acme Inc
+      responses:
+        "201":
+          description: Organization created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationMembershipDetails"
+        "400":
+          description: Invalid organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Organization slug already exists for this client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/organizations/{org_id}:
+    get:
+      operationId: getOrganization
+      summary: Get an organization
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      responses:
+        "200":
+          description: Organization and caller membership
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationMembershipDetails"
+        "403":
+          description: Caller is not a member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateOrganization
+      summary: Update organization profile
+      description: Requires `org:write`.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrganizationRequest"
+      responses:
+        "200":
+          description: Updated organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "403":
+          description: Missing organization write permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/organizations/{org_id}/members:
+    get:
+      operationId: listOrganizationMembers
+      summary: List organization members
+      description: Requires `members:read`.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      responses:
+        "200":
+          description: Active organization members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationMembersResponse"
+        "403":
+          description: Missing members read permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/organizations/{org_id}/members/{user_id}:
+    patch:
+      operationId: updateOrganizationMember
+      summary: Update member role or custom permissions
+      description: Requires `members:write`. The last owner cannot be demoted.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrganizationMemberRequest"
+      responses:
+        "200":
+          description: Updated membership
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationMembership"
+        "403":
+          description: Missing members write permission or invalid owner transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: removeOrganizationMember
+      summary: Remove a member
+      description: Requires `members:write`. The last owner cannot be removed.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Member removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "403":
+          description: Missing members write permission or invalid owner transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/organizations/{org_id}/invitations:
+    get:
+      operationId: listOrganizationInvitations
+      summary: List organization invitations
+      description: Requires `invitations:read`.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      responses:
+        "200":
+          description: Organization invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationInvitationsResponse"
+    post:
+      operationId: createOrganizationInvitation
+      summary: Invite a user to an organization
+      description: Requires `invitations:write`. Returns the raw invitation token once.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteOrganizationMemberRequest"
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationInvitationWithToken"
+        "403":
+          description: Missing invitations write permission
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/organizations/{org_id}/invitations/{invitation_id}/revoke:
+    post:
+      operationId: revokeOrganizationInvitation
+      summary: Revoke an invitation
+      description: Requires `invitations:write`.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+        - name: invitation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invitation revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/auth/organization-invitations/accept:
+    post:
+      operationId: acceptOrganizationInvitation
+      summary: Accept an organization invitation
+      description: The authenticated user's email must match the invitation email.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptOrganizationInvitationRequest"
+      responses:
+        "200":
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationMembershipDetails"
+        "400":
+          description: Invalid or expired invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/organizations/{org_id}/token:
+    post:
+      operationId: createOrganizationToken
+      summary: Mint an organization-scoped access token
+      description: Returns a short-lived access token containing `org_id`, `org_slug`, `org_role`, and `org_permissions`.
+      tags: [Organizations]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      responses:
+        "200":
+          description: Organization-scoped token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationTokenResponse"
+        "403":
+          description: Caller is not an active organization member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  # ──────────────────────────────────────────────
+  # Machine-to-Machine Auth
+  # ──────────────────────────────────────────────
+  /oauth/token:
+    post:
+      operationId: createClientCredentialsToken
+      summary: Issue a machine-to-machine access token
+      description: OAuth2 client credentials grant. Use the service account ID as `client_id` and the returned secret as `client_secret`.
+      tags: [Machine Auth]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/ClientCredentialsRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientCredentialsRequest"
+      responses:
+        "200":
+          description: Access token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/M2MTokenResponse"
+        "400":
+          description: Unsupported grant type or invalid scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid client credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /oauth/introspect:
+    post:
+      operationId: introspectToken
+      summary: Introspect an access token
+      description: Authenticates the caller with service account credentials and returns token metadata for tokens under the same parent client.
+      tags: [Machine Auth]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/TokenIntrospectionRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenIntrospectionRequest"
+      responses:
+        "200":
+          description: Introspection response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/M2MIntrospectionResponse"
+        "401":
+          description: Invalid client credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/clients/{id}/service-accounts:
+    get:
+      operationId: listServiceAccounts
+      summary: List service accounts for a client
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Service accounts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccountListResponse"
+    post:
+      operationId: createServiceAccount
+      summary: Create a service account and initial secret
+      description: Returns `client_secret` once. Store it securely.
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceAccountRequest"
+      responses:
+        "201":
+          description: Service account and initial secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccountKeyWithSecret"
+
+  /api/admin/clients/{id}/service-accounts/{service_account_id}:
+    get:
+      operationId: getServiceAccount
+      summary: Get a service account
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+      responses:
+        "200":
+          description: Service account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccount"
+    patch:
+      operationId: updateServiceAccount
+      summary: Update service account metadata, scopes, or status
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServiceAccountRequest"
+      responses:
+        "200":
+          description: Updated service account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccount"
+    delete:
+      operationId: disableServiceAccount
+      summary: Disable a service account
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+      responses:
+        "200":
+          description: Disabled service account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccount"
+
+  /api/admin/clients/{id}/service-accounts/{service_account_id}/keys:
+    get:
+      operationId: listServiceAccountKeys
+      summary: List service account keys
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+      responses:
+        "200":
+          description: Keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccountKeyListResponse"
+    post:
+      operationId: createServiceAccountKey
+      summary: Create a scoped service account key
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceAccountKeyRequest"
+      responses:
+        "201":
+          description: New key and one-time secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccountKeyWithSecret"
+
+  /api/admin/clients/{id}/service-accounts/{service_account_id}/keys/{key_id}:
+    delete:
+      operationId: revokeServiceAccountKey
+      summary: Revoke a service account key
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+        - $ref: "#/components/parameters/ServiceAccountKeyID"
+      responses:
+        "200":
+          description: Key revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+
+  /api/admin/clients/{id}/service-accounts/{service_account_id}/keys/{key_id}/rotate:
+    post:
+      operationId: rotateServiceAccountKey
+      summary: Rotate a service account key
+      description: Creates a replacement key with the same scopes and revokes the old key.
+      tags: [Machine Auth, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/ServiceAccountID"
+        - $ref: "#/components/parameters/ServiceAccountKeyID"
+      responses:
+        "200":
+          description: Replacement key and one-time secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceAccountKeyWithSecret"
+
+  # ──────────────────────────────────────────────
+  # Enterprise SSO
+  # ──────────────────────────────────────────────
+  /api/auth/sso:
+    get:
+      operationId: beginEnterpriseSSOByDomain
+      summary: Start enterprise SSO by email domain
+      description: Resolves an active SAML or OIDC connection by domain and redirects the browser to the enterprise identity provider.
+      tags: [Enterprise SSO]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: domain
+          in: query
+          required: true
+          schema:
+            type: string
+          example: acme.com
+        - name: session_mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [token]
+      responses:
+        "302":
+          description: Redirect to the configured SAML or OIDC identity provider
+        "404":
+          description: No active SSO connection is configured for the domain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/sso/{sso_connection_id}:
+    get:
+      operationId: beginEnterpriseSSOByConnection
+      summary: Start enterprise SSO by connection
+      description: Starts SSO using a connection ID or slug and redirects the browser to the enterprise identity provider.
+      tags: [Enterprise SSO]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SSOConnectionID"
+        - name: session_mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [token]
+      responses:
+        "302":
+          description: Redirect to the configured SAML or OIDC identity provider
+        "400":
+          description: Invalid or inactive SSO connection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/sso/callback/{sso_connection_id}:
+    get:
+      operationId: enterpriseOIDCCallback
+      summary: Complete an enterprise OIDC login
+      description: Public OIDC redirect callback. Validates cached state, PKCE, issuer, audience, signature, expiry, and nonce before issuing AuthService tokens.
+      tags: [Enterprise SSO]
+      parameters:
+        - $ref: "#/components/parameters/SSOConnectionID"
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to login page with access token or error
+    post:
+      operationId: enterpriseSAMLCallback
+      summary: Complete an enterprise SAML login
+      description: Public SAML Assertion Consumer Service endpoint. Validates signed SAML responses using IdP metadata or configured X.509 certificates before issuing AuthService tokens.
+      tags: [Enterprise SSO]
+      parameters:
+        - $ref: "#/components/parameters/SSOConnectionID"
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/SAMLCallbackRequest"
+      responses:
+        "302":
+          description: Redirect to login page with access token or error
+
+  /api/auth/sso/metadata/{sso_connection_id}:
+    get:
+      operationId: getSAMLServiceProviderMetadata
+      summary: Get SAML service provider metadata
+      description: Public metadata document to upload into Okta, Azure AD, Google Workspace, Ping, or another SAML identity provider.
+      tags: [Enterprise SSO]
+      parameters:
+        - $ref: "#/components/parameters/SSOConnectionID"
+      responses:
+        "200":
+          description: SAML service provider metadata XML
+          content:
+            application/samlmetadata+xml:
+              schema:
+                type: string
+
+  /api/admin/clients/{id}/sso-connections:
+    get:
+      operationId: listEnterpriseSSOConnections
+      summary: List enterprise SSO connections
+      tags: [Enterprise SSO, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      responses:
+        "200":
+          description: Enterprise SSO connections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnterpriseSSOConnectionListResponse"
+    post:
+      operationId: createEnterpriseSSOConnection
+      summary: Create an enterprise SSO connection
+      tags: [Enterprise SSO, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEnterpriseSSOConnectionRequest"
+      responses:
+        "201":
+          description: Created SSO connection with secrets redacted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnterpriseSSOConnection"
+
+  /api/admin/clients/{id}/sso-connections/{sso_connection_id}:
+    get:
+      operationId: getEnterpriseSSOConnection
+      summary: Get an enterprise SSO connection
+      tags: [Enterprise SSO, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/SSOConnectionID"
+      responses:
+        "200":
+          description: Enterprise SSO connection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnterpriseSSOConnection"
+    patch:
+      operationId: updateEnterpriseSSOConnection
+      summary: Update an enterprise SSO connection
+      tags: [Enterprise SSO, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/SSOConnectionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEnterpriseSSOConnectionRequest"
+      responses:
+        "200":
+          description: Updated SSO connection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnterpriseSSOConnection"
+    delete:
+      operationId: deactivateEnterpriseSSOConnection
+      summary: Deactivate an enterprise SSO connection
+      tags: [Enterprise SSO, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/SSOConnectionID"
+      responses:
+        "204":
+          description: SSO connection deactivated
+
+  # ──────────────────────────────────────────────
+  # SCIM 2.0 Directory Sync
+  # ──────────────────────────────────────────────
+  /scim/v2/{scim_directory_id}/ServiceProviderConfig:
+    get:
+      operationId: getSCIMServiceProviderConfig
+      summary: Get SCIM service provider capabilities
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: SCIM service provider config
+          content:
+            application/scim+json:
+              schema:
+                type: object
+
+  /scim/v2/{scim_directory_id}/ResourceTypes:
+    get:
+      operationId: listSCIMResourceTypes
+      summary: List supported SCIM resource types
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: Supported resource types
+          content:
+            application/scim+json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /scim/v2/{scim_directory_id}/Schemas:
+    get:
+      operationId: listSCIMSchemas
+      summary: List supported SCIM schemas
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: Supported schemas
+          content:
+            application/scim+json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /scim/v2/{scim_directory_id}/Users:
+    get:
+      operationId: listSCIMUsers
+      summary: List SCIM users
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: SCIM user list
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMListResponse"
+    post:
+      operationId: createSCIMUser
+      summary: Provision a SCIM user
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: "#/components/schemas/SCIMUser"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SCIMUser"
+      responses:
+        "201":
+          description: Provisioned SCIM user
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMUser"
+
+  /scim/v2/{scim_directory_id}/Users/{scim_user_id}:
+    get:
+      operationId: getSCIMUser
+      summary: Get a SCIM user
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMUserID"
+      responses:
+        "200":
+          description: SCIM user
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMUser"
+    put:
+      operationId: replaceSCIMUser
+      summary: Replace a SCIM user
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMUserID"
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: "#/components/schemas/SCIMUser"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SCIMUser"
+      responses:
+        "200":
+          description: Updated SCIM user
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMUser"
+    patch:
+      operationId: patchSCIMUser
+      summary: Patch a SCIM user
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMUserID"
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: "#/components/schemas/SCIMPatchRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SCIMPatchRequest"
+      responses:
+        "200":
+          description: Patched SCIM user
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMUser"
+    delete:
+      operationId: deleteSCIMUser
+      summary: Deprovision a SCIM user
+      description: Suspends the linked AuthService user and removes the SCIM mapping.
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMUserID"
+      responses:
+        "204":
+          description: User deprovisioned
+
+  /scim/v2/{scim_directory_id}/Groups:
+    get:
+      operationId: listSCIMGroups
+      summary: List SCIM groups
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: SCIM group list
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMListResponse"
+    post:
+      operationId: createSCIMGroup
+      summary: Sync a SCIM group
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: "#/components/schemas/SCIMGroup"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SCIMGroup"
+      responses:
+        "201":
+          description: Synced SCIM group
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMGroup"
+
+  /scim/v2/{scim_directory_id}/Groups/{scim_group_id}:
+    get:
+      operationId: getSCIMGroup
+      summary: Get a SCIM group
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMGroupID"
+      responses:
+        "200":
+          description: SCIM group
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMGroup"
+    put:
+      operationId: replaceSCIMGroup
+      summary: Replace a SCIM group
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMGroupID"
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: "#/components/schemas/SCIMGroup"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SCIMGroup"
+      responses:
+        "200":
+          description: Updated SCIM group
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMGroup"
+    patch:
+      operationId: patchSCIMGroup
+      summary: Patch a SCIM group
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMGroupID"
+      requestBody:
+        required: true
+        content:
+          application/scim+json:
+            schema:
+              $ref: "#/components/schemas/SCIMPatchRequest"
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SCIMPatchRequest"
+      responses:
+        "200":
+          description: Patched SCIM group
+          content:
+            application/scim+json:
+              schema:
+                $ref: "#/components/schemas/SCIMGroup"
+    delete:
+      operationId: deleteSCIMGroup
+      summary: Delete a SCIM group
+      tags: [SCIM]
+      security:
+        - SCIMBearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+        - $ref: "#/components/parameters/SCIMGroupID"
+      responses:
+        "204":
+          description: Group deleted
+
+  /api/admin/clients/{id}/scim-directories:
+    get:
+      operationId: listSCIMDirectories
+      summary: List SCIM directories
+      tags: [SCIM, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      responses:
+        "200":
+          description: SCIM directories
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SCIMDirectoryListResponse"
+    post:
+      operationId: createSCIMDirectory
+      summary: Create a SCIM directory and bearer token
+      tags: [SCIM, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSCIMDirectoryRequest"
+      responses:
+        "201":
+          description: SCIM directory and one-time token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SCIMDirectoryWithToken"
+
+  /api/admin/clients/{id}/scim-directories/{scim_directory_id}:
+    get:
+      operationId: getSCIMDirectory
+      summary: Get a SCIM directory
+      tags: [SCIM, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: SCIM directory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SCIMDirectory"
+    patch:
+      operationId: updateSCIMDirectory
+      summary: Update a SCIM directory
+      tags: [SCIM, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSCIMDirectoryRequest"
+      responses:
+        "200":
+          description: Updated SCIM directory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SCIMDirectory"
+
+  /api/admin/clients/{id}/scim-directories/{scim_directory_id}/rotate-token:
+    post:
+      operationId: rotateSCIMDirectoryToken
+      summary: Rotate a SCIM directory bearer token
+      tags: [SCIM, Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+        - $ref: "#/components/parameters/SCIMDirectoryID"
+      responses:
+        "200":
+          description: SCIM directory and replacement one-time token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SCIMDirectoryWithToken"
+
+  # ──────────────────────────────────────────────
   # Admin
   # ──────────────────────────────────────────────
   /api/admin/clients:
@@ -1335,6 +2697,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Client"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Client not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateClient
+      summary: Update a client
+      description: Updates mutable client settings such as allowed origins, webhook URL, status, and tenant WebAuthn policy controls.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateClientRequest"
+            example:
+              settings:
+                webauthn_attestation: direct
+                webauthn_require_attestation: true
+                webauthn_allowed_attestation_formats: [packed, tpm, apple]
+      responses:
+        "200":
+          description: Client updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: Invalid admin key
           content:
@@ -1536,6 +2948,82 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/admin/audit-events/export:
+    get:
+      operationId: exportAuditEvents
+      summary: Export audit events
+      description: Exports filtered audit events as CSV or newline-delimited JSON for security reviews, customer evidence requests, and offline retention.
+      tags: [Admin]
+      x-codeSamples:
+        - lang: cURL
+          label: Export recent audit evidence as CSV
+          source: |
+            curl "https://authservice.ayushojha.com/api/admin/audit-events/export?client_id=$CLIENT_ID&format=csv&limit=500" \
+              -H "X-Admin-Key: $AUTH_SERVICE_ADMIN_KEY" \
+              -o authservice-audit-events.csv
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: client_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filter events for a client/tenant
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filter events for a user
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by event type
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: Maximum number of events to export
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [csv, jsonl, ndjson]
+            default: csv
+          description: Export format. `jsonl` and `ndjson` both return `application/x-ndjson`.
+      responses:
+        "200":
+          description: Audit export
+          content:
+            text/csv:
+              schema:
+                type: string
+            application/x-ndjson:
+              schema:
+                type: string
+        "400":
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   # ──────────────────────────────────────────────
   # Utility
   # ──────────────────────────────────────────────
@@ -1617,11 +3105,73 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: User access token (JWT)
+    SCIMBearerAuth:
+      type: http
+      scheme: bearer
+      description: Per-directory SCIM provisioning token
     AdminKeyAuth:
       type: apiKey
       in: header
       name: X-Admin-Key
       description: Master admin key for client management
+
+  parameters:
+    ClientIDPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Client ID
+    OrganizationID:
+      name: org_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Organization ID
+    ServiceAccountID:
+      name: service_account_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Service account ID used as OAuth client_id
+    ServiceAccountKeyID:
+      name: key_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Service account key ID
+    SSOConnectionID:
+      name: sso_connection_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Enterprise SSO connection ID or slug where supported
+    SCIMDirectoryID:
+      name: scim_directory_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: SCIM directory ID
+    SCIMUserID:
+      name: scim_user_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: SCIM user resource ID
+    SCIMGroupID:
+      name: scim_group_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: SCIM group resource ID
 
   schemas:
     # ── Requests ──────────────────────────────
@@ -1648,6 +3198,9 @@ components:
           type: string
           enum: [token]
           description: Set to `token` to receive refresh token in JSON instead of cookie
+        captcha_token:
+          type: string
+          description: Required when `CAPTCHA_SIGNUP_REQUIRED=true`
 
     LoginRequest:
       type: object
@@ -1664,6 +3217,9 @@ components:
           type: string
           enum: [token]
           description: Set to `token` to receive refresh token in JSON instead of cookie
+        captcha_token:
+          type: string
+          description: Required when `CAPTCHA_LOGIN_REQUIRED=true`
 
     RefreshRequest:
       type: object
@@ -1735,6 +3291,351 @@ components:
           type: string
           enum: [token]
 
+    RecoveryCodeVerifyRequest:
+      type: object
+      required: [two_factor_token, code]
+      properties:
+        two_factor_token:
+          type: string
+          description: Token from login response when 2FA is required
+        code:
+          type: string
+          description: One-time recovery code generated after TOTP enrollment
+          example: ABCD-1234-EF56
+        session_mode:
+          type: string
+          enum: [token]
+
+    RecoveryCodesResponse:
+      type: object
+      properties:
+        recovery_codes:
+          type: array
+          description: Newly generated one-time codes. Present only immediately after rotation.
+          items:
+            type: string
+          example: [ABCD-1234-EF56, "9876-ABCD-4321"]
+        unused_count:
+          type: integer
+          description: Count of unused recovery codes
+          example: 10
+
+    CreateOrganizationRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          example: Acme Inc
+        slug:
+          type: string
+          maxLength: 80
+          description: URL-safe slug. Defaults to a normalized version of name.
+          example: acme-inc
+
+    UpdateOrganizationRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          example: Acme Corp
+        slug:
+          type: string
+          maxLength: 80
+          example: acme-corp
+
+    InviteOrganizationMemberRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          example: teammate@acme.com
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationPermission"
+          description: Optional custom permissions. Omit to use the role defaults.
+        expires_in_hours:
+          type: integer
+          minimum: 1
+          maximum: 720
+          default: 168
+
+    UpdateOrganizationMemberRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationPermission"
+          description: Optional custom permissions. Omit to use the role defaults.
+
+    AcceptOrganizationInvitationRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: Raw invitation token returned at invite creation.
+
+    CreateServiceAccountRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          example: Billing Worker
+        description:
+          type: string
+          maxLength: 512
+        scopes:
+          type: array
+          items:
+            type: string
+          example: ["invoices:read", "invoices:write"]
+
+    UpdateServiceAccountRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        description:
+          type: string
+          maxLength: 512
+        scopes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, disabled]
+
+    CreateServiceAccountKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          example: read-only deploy key
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Must be a subset of the parent service account scopes. Omit to inherit all account scopes.
+        expires_in_hours:
+          type: integer
+          minimum: 1
+          description: Optional key expiry.
+
+    OIDCConnectionConfig:
+      type: object
+      properties:
+        issuer:
+          type: string
+          format: uri
+          example: https://acme.okta.com/oauth2/default
+        client_id:
+          type: string
+        client_secret:
+          type: string
+          writeOnly: true
+        scopes:
+          type: array
+          items:
+            type: string
+          default: [openid, email, profile]
+
+    SAMLConnectionConfig:
+      type: object
+      properties:
+        idp_entity_id:
+          type: string
+          example: https://idp.example.com/metadata
+        idp_sso_url:
+          type: string
+          format: uri
+        idp_certificate:
+          type: string
+          description: Base64 DER X.509 signing certificate. PEM input is accepted by the API and normalized.
+        idp_metadata_xml:
+          type: string
+          description: Optional IdP metadata XML. If supplied, entity ID, SSO URL, and signing certs can be read from metadata.
+        sp_entity_id:
+          type: string
+          description: Service provider entity ID. Defaults to the generated metadata URL.
+        sp_metadata_url:
+          type: string
+          format: uri
+          readOnly: true
+        acs_url:
+          type: string
+          format: uri
+          readOnly: true
+        sp_certificate_pem:
+          type: string
+          readOnly: true
+          description: Generated SP certificate to upload through metadata when needed.
+
+    CreateEnterpriseSSOConnectionRequest:
+      type: object
+      required: [name, protocol]
+      properties:
+        name:
+          type: string
+          example: Acme Okta
+        slug:
+          type: string
+          example: acme-okta
+        protocol:
+          type: string
+          enum: [oidc, saml]
+        status:
+          type: string
+          enum: [active, inactive]
+          default: active
+        domains:
+          type: array
+          items:
+            type: string
+          example: [acme.com]
+        enforce_for_domains:
+          type: boolean
+          default: false
+        oidc:
+          $ref: "#/components/schemas/OIDCConnectionConfig"
+        saml:
+          $ref: "#/components/schemas/SAMLConnectionConfig"
+        attribute_mapping:
+          type: object
+          additionalProperties:
+            type: string
+          description: Maps local fields such as `email`, `name`, and `external_id` to SAML attribute names.
+
+    UpdateEnterpriseSSOConnectionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+        domains:
+          type: array
+          items:
+            type: string
+        enforce_for_domains:
+          type: boolean
+        oidc:
+          $ref: "#/components/schemas/OIDCConnectionConfig"
+        saml:
+          $ref: "#/components/schemas/SAMLConnectionConfig"
+        attribute_mapping:
+          type: object
+          additionalProperties:
+            type: string
+
+    SAMLCallbackRequest:
+      type: object
+      required: [SAMLResponse, RelayState]
+      properties:
+        SAMLResponse:
+          type: string
+          description: Base64-encoded SAML response from the IdP.
+        RelayState:
+          type: string
+          description: Opaque state returned from the SAML AuthnRequest.
+
+    CreateSCIMDirectoryRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: Acme Directory
+        domains:
+          type: array
+          items:
+            type: string
+          description: Optional allowed email domains for provisioned users.
+
+    UpdateSCIMDirectoryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        domains:
+          type: array
+          items:
+            type: string
+
+    SCIMPatchRequest:
+      type: object
+      required: [Operations]
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+        Operations:
+          type: array
+          items:
+            type: object
+            required: [op]
+            properties:
+              op:
+                type: string
+                enum: [add, replace, remove]
+              path:
+                type: string
+              value: {}
+
+    ClientCredentialsRequest:
+      type: object
+      required: [grant_type, client_id, client_secret]
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+        client_id:
+          type: string
+          description: Service account ID.
+        client_secret:
+          type: string
+          description: One-time secret returned when creating or rotating a service account key.
+        scope:
+          type: string
+          description: Space-delimited requested scopes. Omit to request all allowed scopes.
+          example: invoices:read
+
+    TokenIntrospectionRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+        client_id:
+          type: string
+          description: Service account ID. May be supplied through HTTP Basic auth instead.
+        client_secret:
+          type: string
+          description: Service account secret. May be supplied through HTTP Basic auth instead.
+
     CreateClientRequest:
       type: object
       required: [name, slug]
@@ -1756,8 +3657,32 @@ components:
         webhook_url:
           type: string
           format: uri
-          description: Webhook URL for auth events
+          description: Webhook URL for signed audit-event deliveries when `WEBHOOK_SIGNING_SECRET` is configured
           example: https://myapp.com/webhooks/auth
+        settings:
+          type: object
+          description: Tenant settings. WebAuthn policy keys include `webauthn_attestation`, `webauthn_require_attestation`, and `webauthn_allowed_attestation_formats`.
+          additionalProperties: true
+
+    UpdateClientRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        allowed_origins:
+          type: array
+          items:
+            type: string
+        webhook_url:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum: [active, suspended]
+        settings:
+          type: object
+          additionalProperties: true
+          description: Replaces the client settings object when supplied.
 
     # ── Responses ─────────────────────────────
     OkResponse:
@@ -1793,6 +3718,8 @@ components:
         refresh_token:
           type: string
           description: Refresh token (only present in token session mode)
+        risk:
+          $ref: "#/components/schemas/LoginRisk"
 
     TwoFactorChallenge:
       type: object
@@ -1807,7 +3734,28 @@ components:
           type: array
           items:
             type: string
-          example: ["totp"]
+          example: ["totp", "recovery_code"]
+        risk:
+          $ref: "#/components/schemas/LoginRisk"
+
+    LoginRisk:
+      type: object
+      description: Present when a login is considered suspicious and should be surfaced to the user or security team.
+      properties:
+        level:
+          type: string
+          enum: [low, medium]
+          example: medium
+        reasons:
+          type: array
+          items:
+            type: string
+            enum: [new_ip, new_device]
+          example: [new_ip, new_device]
+        new_ip:
+          type: boolean
+        new_device:
+          type: boolean
 
     User:
       type: object
@@ -1853,6 +3801,535 @@ components:
           type: string
           format: date-time
 
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        client_id:
+          type: string
+        user_agent:
+          type: string
+        ip_address:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    SessionListResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+
+    OrganizationRole:
+      type: string
+      enum: [owner, admin, member, viewer]
+      default: member
+
+    OrganizationPermission:
+      type: string
+      enum:
+        - org:read
+        - org:write
+        - members:read
+        - members:write
+        - invitations:read
+        - invitations:write
+
+    Organization:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_by_user_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OrganizationMembership:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        organization_id:
+          type: string
+        user_id:
+          type: string
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationPermission"
+        status:
+          type: string
+          enum: [active]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OrganizationMembershipDetails:
+      type: object
+      properties:
+        organization:
+          $ref: "#/components/schemas/Organization"
+        membership:
+          $ref: "#/components/schemas/OrganizationMembership"
+
+    OrganizationInvitation:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        organization_id:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          $ref: "#/components/schemas/OrganizationRole"
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationPermission"
+        status:
+          type: string
+          enum: [pending, accepted, revoked]
+        invited_by_user_id:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+        accepted_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OrganizationInvitationWithToken:
+      type: object
+      properties:
+        invitation:
+          $ref: "#/components/schemas/OrganizationInvitation"
+        token:
+          type: string
+          description: Raw invitation token. Returned once.
+
+    OrganizationListResponse:
+      type: object
+      properties:
+        organizations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMembershipDetails"
+
+    OrganizationMembersResponse:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationMembership"
+
+    OrganizationInvitationsResponse:
+      type: object
+      properties:
+        invitations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationInvitation"
+
+    OrganizationTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT containing organization claims
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          example: 900
+
+    EnterpriseSSOConnection:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        protocol:
+          type: string
+          enum: [oidc, saml]
+        status:
+          type: string
+          enum: [active, inactive]
+        domains:
+          type: array
+          items:
+            type: string
+        enforce_for_domains:
+          type: boolean
+        oidc:
+          $ref: "#/components/schemas/OIDCConnectionConfig"
+        saml:
+          $ref: "#/components/schemas/SAMLConnectionConfig"
+        attribute_mapping:
+          type: object
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    EnterpriseSSOConnectionListResponse:
+      type: array
+      items:
+        $ref: "#/components/schemas/EnterpriseSSOConnection"
+
+    SCIMDirectory:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        token_prefix:
+          type: string
+          description: Non-secret token prefix for identifying the active SCIM token.
+        domains:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SCIMDirectoryWithToken:
+      type: object
+      properties:
+        directory:
+          $ref: "#/components/schemas/SCIMDirectory"
+        token:
+          type: string
+          description: Raw SCIM bearer token. Returned once.
+
+    SCIMDirectoryListResponse:
+      type: array
+      items:
+        $ref: "#/components/schemas/SCIMDirectory"
+
+    SCIMUser:
+      type: object
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example: ["urn:ietf:params:scim:schemas:core:2.0:User"]
+        id:
+          type: string
+          readOnly: true
+        externalId:
+          type: string
+        userName:
+          type: string
+          format: email
+        active:
+          type: boolean
+        displayName:
+          type: string
+        name:
+          type: object
+          properties:
+            formatted:
+              type: string
+            givenName:
+              type: string
+            familyName:
+              type: string
+        emails:
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+                format: email
+              type:
+                type: string
+              primary:
+                type: boolean
+        meta:
+          $ref: "#/components/schemas/SCIMMeta"
+
+    SCIMGroup:
+      type: object
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+          example: ["urn:ietf:params:scim:schemas:core:2.0:Group"]
+        id:
+          type: string
+          readOnly: true
+        externalId:
+          type: string
+        displayName:
+          type: string
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              value:
+                type: string
+              $ref:
+                type: string
+              display:
+                type: string
+        meta:
+          $ref: "#/components/schemas/SCIMMeta"
+
+    SCIMMeta:
+      type: object
+      properties:
+        resourceType:
+          type: string
+        created:
+          type: string
+          format: date-time
+        lastModified:
+          type: string
+          format: date-time
+        location:
+          type: string
+
+    SCIMListResponse:
+      type: object
+      properties:
+        schemas:
+          type: array
+          items:
+            type: string
+        totalResults:
+          type: integer
+        startIndex:
+          type: integer
+        itemsPerPage:
+          type: integer
+        Resources:
+          type: array
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/SCIMUser"
+              - $ref: "#/components/schemas/SCIMGroup"
+
+    ServiceAccount:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, disabled]
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ServiceAccountKey:
+      type: object
+      properties:
+        id:
+          type: string
+        client_id:
+          type: string
+        service_account_id:
+          type: string
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: Non-secret prefix for identifying keys in logs and dashboards.
+        scopes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ServiceAccountKeyWithSecret:
+      type: object
+      properties:
+        service_account:
+          $ref: "#/components/schemas/ServiceAccount"
+        key:
+          $ref: "#/components/schemas/ServiceAccountKey"
+        client_id:
+          type: string
+          description: Service account ID to send as OAuth client_id.
+        client_secret:
+          type: string
+          description: Raw secret. Returned once and never stored in plaintext.
+
+    ServiceAccountListResponse:
+      type: object
+      properties:
+        service_accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceAccount"
+
+    ServiceAccountKeyListResponse:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceAccountKey"
+
+    M2MTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          example: 900
+        scope:
+          type: string
+          example: invoices:read
+
+    M2MIntrospectionResponse:
+      type: object
+      properties:
+        active:
+          type: boolean
+        client_id:
+          type: string
+        sub:
+          type: string
+        token_use:
+          type: string
+          enum: [client_credentials]
+        scope:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        service_account_id:
+          type: string
+        service_account_name:
+          type: string
+        exp:
+          type: integer
+          format: int64
+        iat:
+          type: integer
+          format: int64
+        jti:
+          type: string
+        error:
+          type: string
+
     Client:
       type: object
       properties:
@@ -1870,6 +4347,7 @@ components:
         webhook_url:
           type: string
           nullable: true
+          description: Receives signed `audit.event` webhooks when webhook delivery is enabled
         settings:
           type: object
         status:

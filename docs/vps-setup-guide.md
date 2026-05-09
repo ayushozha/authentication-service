@@ -113,6 +113,24 @@ BASE_URL=https://<auth-domain>
 JWT_ACCESS_TTL=15m
 JWT_REFRESH_TTL=168h
 BCRYPT_COST=12
+PASSWORD_MIN_LENGTH=8
+PASSWORD_MAX_LENGTH=72
+PASSWORD_MIN_UNIQUE=4
+PASSWORD_BLOCK_COMMON=true
+PASSWORD_BLOCK_USER_INFO=true
+BLOCKED_EMAIL_DOMAINS=10minutemail.com,dispostable.com,guerrillamail.com,guerrillamail.net,mailinator.com,maildrop.cc,sharklasers.com,tempmail.com,throwawaymail.com,yopmail.com
+
+# Optional signed audit-event webhooks
+WEBHOOK_SIGNING_SECRET=<generate-a-strong-random-key>
+WEBHOOK_RETRY_ATTEMPTS=3
+WEBHOOK_TIMEOUT=5s
+
+# Optional CAPTCHA / bot verification
+CAPTCHA_PROVIDER=turnstile
+CAPTCHA_SECRET=<captcha-secret>
+CAPTCHA_TIMEOUT=5s
+CAPTCHA_SIGNUP_REQUIRED=false
+CAPTCHA_LOGIN_REQUIRED=false
 
 # Email
 RESEND_API_KEY=<your-resend-api-key>

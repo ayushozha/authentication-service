@@ -36,6 +36,7 @@ type UserRepository interface {
 	VerifyEmail(ctx context.Context, userID string) error
 	UpdatePassword(ctx context.Context, userID, passwordHash string) error
 	UpdateProfile(ctx context.Context, userID, displayName, timezone string) error
+	UpdateStatus(ctx context.Context, userID, status string) error
 	SetTOTPSecret(ctx context.Context, userID, secret string) error
 	EnableTOTP(ctx context.Context, userID string) error
 	DisableTOTP(ctx context.Context, userID string) error
@@ -44,8 +45,10 @@ type UserRepository interface {
 type SessionRepository interface {
 	Create(ctx context.Context, userID, clientID, ip, ua string, ttl time.Duration) (rawToken string, err error)
 	Validate(ctx context.Context, clientID, rawToken string) (userID, sessionID string, err error)
+	ListForUser(ctx context.Context, clientID, userID string) ([]*domain.Session, error)
 	Revoke(ctx context.Context, sessionID string) error
 	RevokeByToken(ctx context.Context, clientID, rawToken string) error
+	RevokeForUser(ctx context.Context, clientID, userID, sessionID string) error
 	RevokeAllForUser(ctx context.Context, clientID, userID string) error
 }
 
@@ -68,8 +71,78 @@ type TokenRepository interface {
 	Validate(ctx context.Context, rawToken, tokenType string) (userID string, err error)
 }
 
+type RecoveryCodeRepository interface {
+	ReplaceForUser(ctx context.Context, userID string, codeHashes []string) error
+	CountUnused(ctx context.Context, userID string) (int, error)
+	MarkUsedByHash(ctx context.Context, userID, codeHash string) (bool, error)
+}
+
 type AuditRepository interface {
 	Log(ctx context.Context, clientID string, userID *string, eventType, ip, ua string, metadata map[string]interface{})
+}
+
+type OrganizationRepository interface {
+	CreateOrganization(ctx context.Context, org *domain.Organization, owner *domain.OrganizationMembership) error
+	UpdateOrganization(ctx context.Context, org *domain.Organization) error
+	GetOrganization(ctx context.Context, clientID, organizationID string) (*domain.Organization, error)
+	ListOrganizationsForUser(ctx context.Context, clientID, userID string) ([]domain.OrganizationMembershipDetails, error)
+	GetMembership(ctx context.Context, clientID, organizationID, userID string) (*domain.OrganizationMembership, error)
+	ListMemberships(ctx context.Context, clientID, organizationID string) ([]*domain.OrganizationMembership, error)
+	UpsertMembership(ctx context.Context, membership *domain.OrganizationMembership) error
+	UpdateMembership(ctx context.Context, membership *domain.OrganizationMembership) error
+	DeleteMembership(ctx context.Context, clientID, organizationID, userID string) error
+	CreateInvitation(ctx context.Context, invitation *domain.OrganizationInvitation) error
+	ListInvitations(ctx context.Context, clientID, organizationID string) ([]*domain.OrganizationInvitation, error)
+	GetInvitation(ctx context.Context, clientID, organizationID, invitationID string) (*domain.OrganizationInvitation, error)
+	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (*domain.OrganizationInvitation, error)
+	MarkInvitationAccepted(ctx context.Context, invitationID, userID string) error
+	RevokeInvitation(ctx context.Context, clientID, organizationID, invitationID string) error
+}
+
+type ServiceAccountRepository interface {
+	CreateServiceAccount(ctx context.Context, account *domain.ServiceAccount) error
+	ListServiceAccounts(ctx context.Context, clientID string) ([]*domain.ServiceAccount, error)
+	GetServiceAccount(ctx context.Context, clientID, serviceAccountID string) (*domain.ServiceAccount, error)
+	UpdateServiceAccount(ctx context.Context, account *domain.ServiceAccount) error
+	UpdateServiceAccountLastUsed(ctx context.Context, serviceAccountID string) error
+	CreateServiceAccountKey(ctx context.Context, key *domain.ServiceAccountKey) error
+	ListServiceAccountKeys(ctx context.Context, clientID, serviceAccountID string) ([]*domain.ServiceAccountKey, error)
+	GetServiceAccountKey(ctx context.Context, clientID, serviceAccountID, keyID string) (*domain.ServiceAccountKey, error)
+	GetServiceAccountKeyBySecretHash(ctx context.Context, serviceAccountID, secretHash string) (*domain.ServiceAccountKey, error)
+	UpdateServiceAccountKeyLastUsed(ctx context.Context, keyID string) error
+	RevokeServiceAccountKey(ctx context.Context, clientID, serviceAccountID, keyID string) error
+}
+
+type EnterpriseSSORepository interface {
+	CreateConnection(ctx context.Context, connection *domain.EnterpriseSSOConnection) error
+	ListConnections(ctx context.Context, clientID string) ([]*domain.EnterpriseSSOConnection, error)
+	GetConnection(ctx context.Context, clientID, connectionID string) (*domain.EnterpriseSSOConnection, error)
+	GetConnectionByID(ctx context.Context, connectionID string) (*domain.EnterpriseSSOConnection, error)
+	GetConnectionBySlug(ctx context.Context, clientID, slug string) (*domain.EnterpriseSSOConnection, error)
+	GetActiveConnectionByDomain(ctx context.Context, clientID, domain string) (*domain.EnterpriseSSOConnection, error)
+	UpdateConnection(ctx context.Context, connection *domain.EnterpriseSSOConnection) error
+	DeactivateConnection(ctx context.Context, clientID, connectionID string) error
+	FindIdentity(ctx context.Context, clientID, connectionID, externalID string) (*domain.EnterpriseSSOIdentity, error)
+	UpsertIdentity(ctx context.Context, identity *domain.EnterpriseSSOIdentity) error
+}
+
+type SCIMRepository interface {
+	CreateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error
+	ListDirectories(ctx context.Context, clientID string) ([]*domain.SCIMDirectory, error)
+	GetDirectory(ctx context.Context, clientID, directoryID string) (*domain.SCIMDirectory, error)
+	GetDirectoryByID(ctx context.Context, directoryID string) (*domain.SCIMDirectory, error)
+	GetDirectoryByTokenHash(ctx context.Context, tokenHash string) (*domain.SCIMDirectory, error)
+	UpdateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error
+	UpsertUser(ctx context.Context, user *domain.SCIMUser) error
+	ListUsers(ctx context.Context, clientID, directoryID string) ([]*domain.SCIMUser, error)
+	GetUser(ctx context.Context, clientID, directoryID, scimUserID string) (*domain.SCIMUser, error)
+	GetUserByExternalID(ctx context.Context, clientID, directoryID, externalID string) (*domain.SCIMUser, error)
+	DeleteUser(ctx context.Context, clientID, directoryID, scimUserID string) error
+	UpsertGroup(ctx context.Context, group *domain.SCIMGroup) error
+	ListGroups(ctx context.Context, clientID, directoryID string) ([]*domain.SCIMGroup, error)
+	GetGroup(ctx context.Context, clientID, directoryID, scimGroupID string) (*domain.SCIMGroup, error)
+	GetGroupByExternalID(ctx context.Context, clientID, directoryID, externalID string) (*domain.SCIMGroup, error)
+	DeleteGroup(ctx context.Context, clientID, directoryID, scimGroupID string) error
 }
 
 type CacheClient interface {

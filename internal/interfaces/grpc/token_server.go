@@ -41,12 +41,21 @@ func (s *TokenServer) ValidateToken(ctx context.Context, req *ValidateTokenReque
 	}
 
 	return &ValidateTokenResponse{
-		Valid:         true,
-		UserID:        claims.Subject,
-		Email:         claims.Email,
-		Role:          claims.Role,
-		EmailVerified: claims.EmailVerified,
-		ClientID:      claims.ClientID,
+		Valid:                   true,
+		UserID:                  claims.Subject,
+		Email:                   claims.Email,
+		Role:                    claims.Role,
+		EmailVerified:           claims.EmailVerified,
+		ClientID:                claims.ClientID,
+		TokenUse:                claims.TokenUse,
+		Scope:                   claims.Scope,
+		Scopes:                  claims.Scopes,
+		ServiceAccountID:        claims.ServiceAccountID,
+		ServiceAccountName:      claims.ServiceAccountName,
+		OrganizationID:          claims.OrganizationID,
+		OrganizationSlug:        claims.OrganizationSlug,
+		OrganizationRole:        claims.OrganizationRole,
+		OrganizationPermissions: claims.OrganizationPermissions,
 	}, nil
 }
 

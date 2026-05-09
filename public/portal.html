@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AuthService Portal</title>
+<style>
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f0f4f6;
+  --text: #172026;
+  --muted: #66727c;
+  --border: #dbe2e7;
+  --primary: #0f766e;
+  --primary-strong: #0b5f59;
+  --blue: #2563eb;
+  --amber: #b45309;
+  --red: #dc2626;
+  --green: #15803d;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06);
+  --radius: 8px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+}
+button, input, select, textarea {
+  font: inherit;
+}
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+}
+.sidebar {
+  background: #101820;
+  color: #d8e1e8;
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, .1);
+}
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #10b981;
+  color: #082f2a;
+  font-weight: 800;
+}
+.brand h1 {
+  font-size: 15px;
+  margin: 0;
+}
+.brand p {
+  margin: 2px 0 0;
+  color: #93a4b1;
+  font-size: 12px;
+}
+.nav-group {
+  display: grid;
+  gap: 6px;
+}
+.nav-label {
+  color: #8fa1ad;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  padding: 0 10px;
+}
+.nav-btn {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  background: transparent;
+  color: #d8e1e8;
+  cursor: pointer;
+  text-align: left;
+}
+.nav-btn:hover, .nav-btn.active {
+  background: rgba(255, 255, 255, .1);
+  color: #ffffff;
+}
+.nav-btn svg, .icon-btn svg, .btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.topbar {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 22px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.topbar h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.topbar p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.status.ok { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+.status.warn { color: var(--amber); border-color: #fde68a; background: #fffbeb; }
+.content {
+  padding: 22px;
+  display: grid;
+  gap: 16px;
+}
+.workspace {
+  display: none;
+}
+.workspace.active {
+  display: grid;
+  gap: 16px;
+}
+.toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.field {
+  display: grid;
+  gap: 5px;
+}
+.field label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.field input, .field select, .field textarea {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+.field textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, .12);
+}
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.panel-head {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 750;
+}
+.panel-body {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.btn-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.btn {
+  min-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 11px;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text);
+  background: var(--surface-2);
+}
+.btn:hover { filter: brightness(.98); }
+.btn.primary {
+  background: var(--primary);
+  color: #ffffff;
+}
+.btn.primary:hover { background: var(--primary-strong); }
+.btn.blue {
+  background: var(--blue);
+  color: #ffffff;
+}
+.btn.danger {
+  color: #ffffff;
+  background: var(--red);
+}
+.btn.ghost {
+  background: var(--surface);
+  border-color: var(--border);
+}
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--surface);
+  cursor: pointer;
+}
+.table-wrap {
+  overflow: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th, td {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  background: #fbfcfd;
+}
+td.wrap {
+  white-space: normal;
+  min-width: 180px;
+}
+.item-list {
+  display: grid;
+  gap: 8px;
+}
+.item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  background: #fbfcfd;
+}
+.item-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.item-title {
+  font-weight: 750;
+}
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eef6f6;
+  color: #0f766e;
+  border: 1px solid #cde7e5;
+  font-size: 12px;
+  font-weight: 700;
+}
+.pill.gray {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+.empty {
+  min-height: 92px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  padding: 16px;
+}
+.toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10;
+  max-width: min(420px, calc(100vw - 36px));
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .12);
+  display: none;
+}
+.toast.show { display: block; }
+.secret-box {
+  border: 1px solid #facc15;
+  background: #fffbeb;
+  color: #713f12;
+  border-radius: 8px;
+  padding: 10px;
+  display: none;
+  word-break: break-all;
+}
+.secret-box.show { display: block; }
+.hide { display: none !important; }
+@media (max-width: 980px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: static; }
+  .toolbar, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .topbar { align-items: flex-start; flex-direction: column; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div>
+        <h1>AuthService</h1>
+        <p>Portal</p>
+      </div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">Workspaces</div>
+      <button class="nav-btn active" data-workspace="admin"><i data-lucide="building-2"></i><span>Admin Console</span></button>
+      <button class="nav-btn" data-workspace="account"><i data-lucide="user-round-cog"></i><span>Account Portal</span></button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">References</div>
+      <a class="nav-btn" href="/docs"><i data-lucide="book-open"></i><span>API Docs</span></a>
+      <a class="nav-btn" href="/login.html"><i data-lucide="log-in"></i><span>Login Page</span></a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="workspaceTitle">Admin Console</h2>
+        <p id="workspaceSubtitle">Provision clients and operate tenant features.</p>
+      </div>
+      <div class="btn-row">
+        <span class="status" id="adminStatus"><i data-lucide="key-round"></i><span>Admin key not set</span></span>
+        <span class="status" id="accountStatus"><i data-lucide="shield-check"></i><span>Account token not set</span></span>
+      </div>
+    </header>
+
+    <section class="content">
+      <div class="workspace active" id="adminWorkspace">
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title"><i data-lucide="settings-2"></i><span>Operator Context</span></div>
+            <button class="btn primary" id="saveAdminContext"><i data-lucide="save"></i><span>Save</span></button>
+          </div>
+          <div class="panel-body toolbar">
+            <div class="field">
+              <label for="adminBaseUrl">API base URL</label>
+              <input id="adminBaseUrl" placeholder="http://localhost:8080">
+            </div>
+            <div class="field">
+              <label for="adminKey">Admin key</label>
+              <input id="adminKey" type="password" placeholder="ADMIN_API_KEY">
+            </div>
+            <div class="field">
+              <label for="selectedClient">Selected client</label>
+              <select id="selectedClient"></select>
+            </div>
+            <div class="field">
+              <label>&nbsp;</label>
+              <button class="btn blue" id="refreshAdmin"><i data-lucide="refresh-cw"></i><span>Refresh Console</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title"><i data-lucide="app-window"></i><span>Clients</span></div>
+              <button class="icon-btn" id="reloadClients" title="Refresh clients"><i data-lucide="refresh-cw"></i></button>
+            </div>
+            <div class="panel-body">
+              <div class="grid-3">
+                <div class="field"><label>Name</label><input id="newClientName" placeholder="Acme Production"></div>
+                <div class="field"><label>Slug</label><input id="newClientSlug" placeholder="acme-prod"></div>
+                <div class="field"><label>Allowed origins</label><input id="newClientOrigins" placeholder="https://app.acme.com"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn primary" id="createClient"><i data-lucide="plus"></i><span>Create Client</span></button>
+              </div>
+              <div class="secret-box" id="clientSecretBox"></div>
+              <div class="table-wrap"><table><thead><tr><th>Name</th><th>ID</th><th>Status</th><th>Actions</th></tr></thead><tbody id="clientsTable"></tbody></table></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title"><i data-lucide="activity"></i><span>Audit Events</span></div>
+              <button class="icon-btn" id="reloadAudit" title="Refresh audit events"><i data-lucide="refresh-cw"></i></button>
+            </div>
+            <div class="panel-body">
+              <div class="grid-3">
+                <div class="field"><label>Event type</label><input id="auditEventType" placeholder="login_success"></div>
+                <div class="field"><label>User ID</label><input id="auditUserId" placeholder="optional"></div>
+                <div class="field"><label>Limit</label><input id="auditLimit" type="number" value="50" min="1" max="500"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn ghost" id="exportAuditCSV"><i data-lucide="file-down"></i><span>Export CSV</span></button>
+                <button class="btn ghost" id="exportAuditJSONL"><i data-lucide="file-json"></i><span>Export JSONL</span></button>
+              </div>
+              <div class="table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>User</th><th class="wrap">Metadata</th></tr></thead><tbody id="auditTable"></tbody></table></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="bot"></i><span>Service Accounts</span></div></div>
+            <div class="panel-body">
+              <div class="field"><label>Name</label><input id="saName" placeholder="Billing Worker"></div>
+              <div class="field"><label>Scopes</label><input id="saScopes" placeholder="invoices:read invoices:write"></div>
+              <button class="btn primary" id="createServiceAccount"><i data-lucide="plus"></i><span>Create</span></button>
+              <div class="secret-box" id="serviceAccountSecretBox"></div>
+              <div class="item-list" id="serviceAccountsList"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="landmark"></i><span>Enterprise SSO</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Name</label><input id="ssoName" placeholder="Acme Okta"></div>
+                <div class="field"><label>Protocol</label><select id="ssoProtocol"><option value="oidc">OIDC</option><option value="saml">SAML</option></select></div>
+              </div>
+              <div class="field"><label>Domains</label><input id="ssoDomains" placeholder="acme.com"></div>
+              <div class="field"><label>OIDC issuer</label><input id="ssoIssuer" placeholder="https://acme.okta.com/oauth2/default"></div>
+              <div class="grid-2">
+                <div class="field"><label>OIDC client ID</label><input id="ssoClientId"></div>
+                <div class="field"><label>OIDC client secret</label><input id="ssoClientSecret" type="password"></div>
+              </div>
+              <div class="grid-2">
+                <div class="field"><label>SAML IdP entity ID</label><input id="ssoSamlEntity" placeholder="https://idp.example.com/metadata"></div>
+                <div class="field"><label>SAML IdP SSO URL</label><input id="ssoSamlUrl" placeholder="https://idp.example.com/sso"></div>
+              </div>
+              <div class="field"><label>SAML IdP certificate</label><textarea id="ssoSamlCert" placeholder="Base64 DER or PEM"></textarea></div>
+              <button class="btn primary" id="createSSO"><i data-lucide="plus"></i><span>Create Connection</span></button>
+              <div class="item-list" id="ssoList"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="users-round"></i><span>SCIM Directories</span></div></div>
+            <div class="panel-body">
+              <div class="field"><label>Name</label><input id="scimName" placeholder="Acme Directory"></div>
+              <div class="field"><label>Domains</label><input id="scimDomains" placeholder="acme.com"></div>
+              <button class="btn primary" id="createSCIM"><i data-lucide="plus"></i><span>Create Directory</span></button>
+              <div class="secret-box" id="scimTokenBox"></div>
+              <div class="item-list" id="scimList"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="workspace" id="accountWorkspace">
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title"><i data-lucide="user-check"></i><span>Account Context</span></div>
+            <button class="btn primary" id="saveAccountContext"><i data-lucide="save"></i><span>Save</span></button>
+          </div>
+          <div class="panel-body toolbar">
+            <div class="field"><label>API base URL</label><input id="accountBaseUrl" placeholder="http://localhost:8080"></div>
+            <div class="field"><label>Client API key</label><input id="accountApiKey" type="password"></div>
+            <div class="field"><label>Access token</label><input id="accountAccessToken" type="password"></div>
+            <div class="field"><label>&nbsp;</label><button class="btn blue" id="refreshAccount"><i data-lucide="refresh-cw"></i><span>Refresh Account</span></button></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="id-card"></i><span>Profile</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Display name</label><input id="profileName"></div>
+                <div class="field"><label>Timezone</label><input id="profileTimezone" placeholder="UTC"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn primary" id="saveProfile"><i data-lucide="save"></i><span>Update Profile</span></button>
+                <button class="btn ghost" id="loadProfile"><i data-lucide="refresh-cw"></i><span>Reload</span></button>
+              </div>
+              <div class="item-list" id="profileSummary"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="shield"></i><span>Security</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Current password</label><input id="oldPassword" type="password"></div>
+                <div class="field"><label>New password</label><input id="newPassword" type="password"></div>
+              </div>
+              <button class="btn primary" id="changePassword"><i data-lucide="key-round"></i><span>Change Password</span></button>
+              <div class="grid-2">
+                <div class="field"><label>TOTP code</label><input id="totpCode" placeholder="000000"></div>
+                <div class="field"><label>Passkey label</label><input id="passkeyName" placeholder="Work laptop"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn ghost" id="setupTOTP"><i data-lucide="qr-code"></i><span>Setup TOTP</span></button>
+                <button class="btn ghost" id="enableTOTP"><i data-lucide="check"></i><span>Enable TOTP</span></button>
+                <button class="btn ghost" id="disableTOTP"><i data-lucide="x"></i><span>Disable TOTP</span></button>
+                <button class="btn ghost" id="generateRecoveryCodes"><i data-lucide="shield-plus"></i><span>Recovery Codes</span></button>
+                <button class="btn ghost" id="registerPasskey"><i data-lucide="fingerprint"></i><span>Register Passkey</span></button>
+              </div>
+              <div class="secret-box" id="totpSecretBox"></div>
+              <div class="item-list" id="passkeyList"></div>
+              <div class="item-head">
+                <div class="panel-title"><i data-lucide="monitor-smartphone"></i><span>Active Sessions</span></div>
+                <div class="btn-row">
+                  <button class="icon-btn" id="reloadSessions" title="Refresh sessions"><i data-lucide="refresh-cw"></i></button>
+                  <button class="icon-btn" id="revokeAllSessions" title="Revoke all sessions"><i data-lucide="log-out"></i></button>
+                </div>
+              </div>
+              <div class="item-list" id="sessionList"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="building"></i><span>Organizations</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Name</label><input id="orgName" placeholder="Acme Inc"></div>
+                <div class="field"><label>Slug</label><input id="orgSlug" placeholder="acme"></div>
+              </div>
+              <button class="btn primary" id="createOrg"><i data-lucide="plus"></i><span>Create Organization</span></button>
+              <div class="item-list" id="orgList"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="ticket-check"></i><span>Invitations & Org Tokens</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Organization ID</label><input id="orgActionId"></div>
+                <div class="field"><label>Invite email</label><input id="inviteEmail" placeholder="teammate@acme.com"></div>
+              </div>
+              <div class="grid-2">
+                <div class="field"><label>Role</label><select id="inviteRole"><option>member</option><option>viewer</option><option>admin</option><option>owner</option></select></div>
+                <div class="field"><label>Invitation token</label><input id="inviteToken"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn ghost" id="sendInvite"><i data-lucide="mail-plus"></i><span>Invite</span></button>
+                <button class="btn ghost" id="acceptInvite"><i data-lucide="ticket-check"></i><span>Accept</span></button>
+                <button class="btn ghost" id="mintOrgToken"><i data-lucide="badge-check"></i><span>Mint Org Token</span></button>
+              </div>
+              <div class="secret-box" id="orgSecretBox"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  const state = {
+    adminBaseUrl: localStorage.getItem('portal_admin_base_url') || window.location.origin,
+    adminKey: localStorage.getItem('portal_admin_key') || '',
+    accountBaseUrl: localStorage.getItem('portal_account_base_url') || window.location.origin,
+    accountApiKey: localStorage.getItem('auth_api_key') || localStorage.getItem('portal_account_api_key') || '',
+    accountAccessToken: localStorage.getItem('auth_access_token') || localStorage.getItem('portal_account_access_token') || '',
+    clients: [],
+    selectedClientId: localStorage.getItem('portal_selected_client_id') || ''
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const splitWords = (value) => (value || '').split(/[,\s]+/).map(v => v.trim()).filter(Boolean);
+
+  function adminHeaders(extra) {
+    return Object.assign({ 'Content-Type': 'application/json', 'X-Admin-Key': state.adminKey }, extra || {});
+  }
+
+  function accountHeaders(extra) {
+    return Object.assign({
+      'Content-Type': 'application/json',
+      'X-API-Key': state.accountApiKey,
+      'Authorization': 'Bearer ' + state.accountAccessToken
+    }, extra || {});
+  }
+
+  async function request(baseUrl, path, options) {
+    const res = await fetch(baseUrl.replace(/\/$/, '') + path, options);
+    const text = await res.text();
+    let data = null;
+    if (text) {
+      try { data = JSON.parse(text); } catch (_) { data = text; }
+    }
+    if (!res.ok) {
+      const msg = data && data.error ? data.error : data && data.detail ? data.detail : 'Request failed';
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  function toast(message, kind) {
+    const el = $('toast');
+    el.textContent = message;
+    el.style.borderColor = kind === 'error' ? '#fecaca' : '#bbf7d0';
+    el.style.color = kind === 'error' ? '#991b1b' : '#166534';
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 4200);
+  }
+
+  function showSecret(id, title, value) {
+    const el = $(id);
+    el.innerHTML = '<strong>' + title + '</strong><br><span class="mono">' + escapeHTML(value) + '</span>';
+    el.classList.add('show');
+  }
+
+  function escapeHTML(value) {
+    return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+
+  function setContextInputs() {
+    $('adminBaseUrl').value = state.adminBaseUrl;
+    $('adminKey').value = state.adminKey;
+    $('accountBaseUrl').value = state.accountBaseUrl;
+    $('accountApiKey').value = state.accountApiKey;
+    $('accountAccessToken').value = state.accountAccessToken;
+    updateStatus();
+  }
+
+  function updateStatus() {
+    $('adminStatus').className = 'status ' + (state.adminKey ? 'ok' : 'warn');
+    $('adminStatus').querySelector('span').textContent = state.adminKey ? 'Admin key set' : 'Admin key not set';
+    $('accountStatus').className = 'status ' + (state.accountAccessToken && state.accountApiKey ? 'ok' : 'warn');
+    $('accountStatus').querySelector('span').textContent = state.accountAccessToken && state.accountApiKey ? 'Account context set' : 'Account token not set';
+  }
+
+  async function loadClients() {
+    const clients = await request(state.adminBaseUrl, '/api/admin/clients', { headers: adminHeaders() });
+    state.clients = Array.isArray(clients) ? clients : [];
+    if (!state.selectedClientId && state.clients.length) state.selectedClientId = state.clients[0].id;
+    if (!state.clients.some(c => c.id === state.selectedClientId) && state.clients.length) state.selectedClientId = state.clients[0].id;
+    renderClients();
+    renderClientSelect();
+  }
+
+  function renderClientSelect() {
+    $('selectedClient').innerHTML = state.clients.map(c => '<option value="' + c.id + '">' + escapeHTML(c.name || c.slug || c.id) + '</option>').join('');
+    $('selectedClient').value = state.selectedClientId;
+  }
+
+  function renderClients() {
+    $('clientsTable').innerHTML = state.clients.map(c => (
+      '<tr><td>' + escapeHTML(c.name) + '<div class="muted">' + escapeHTML(c.slug || '') + '</div></td>' +
+      '<td class="mono">' + escapeHTML(c.id) + '</td><td><span class="pill gray">' + escapeHTML(c.status || 'active') + '</span></td>' +
+      '<td><div class="btn-row"><button class="icon-btn" data-select-client="' + c.id + '" title="Select client"><i data-lucide="mouse-pointer-click"></i></button>' +
+      '<button class="icon-btn" data-rotate-key="' + c.id + '" title="Rotate API key"><i data-lucide="key-round"></i></button>' +
+      '<button class="icon-btn" data-rotate-jwt="' + c.id + '" title="Rotate JWT secret"><i data-lucide="rotate-cw"></i></button></div></td></tr>'
+    )).join('') || '<tr><td colspan="4"><div class="empty">No clients loaded</div></td></tr>';
+    refreshIcons();
+  }
+
+  async function loadAudit() {
+    if (!state.selectedClientId) return;
+    const params = auditParams();
+    const events = await request(state.adminBaseUrl, '/api/admin/audit-events?' + params.toString(), { headers: adminHeaders() });
+    const list = Array.isArray(events) ? events : events.audit_events || events.events || [];
+    $('auditTable').innerHTML = list.map(e => (
+      '<tr><td class="mono">' + escapeHTML(e.created_at || '') + '</td><td>' + escapeHTML(e.event_type || '') + '</td>' +
+      '<td class="mono">' + escapeHTML(e.user_id || '') + '</td><td class="wrap mono">' + escapeHTML(JSON.stringify(e.metadata || {})) + '</td></tr>'
+    )).join('') || '<tr><td colspan="4"><div class="empty">No audit events</div></td></tr>';
+  }
+
+  function auditParams(format) {
+    const params = new URLSearchParams({ client_id: state.selectedClientId, limit: $('auditLimit').value || '50' });
+    if ($('auditEventType').value) params.set('event_type', $('auditEventType').value);
+    if ($('auditUserId').value) params.set('user_id', $('auditUserId').value);
+    if (format) params.set('format', format);
+    return params;
+  }
+
+  async function downloadAudit(format) {
+    if (!state.selectedClientId) throw new Error('Select a client first.');
+    const response = await fetch(state.adminBaseUrl.replace(/\/$/, '') + '/api/admin/audit-events/export?' + auditParams(format).toString(), { headers: adminHeaders() });
+    if (!response.ok) throw new Error((await response.text()) || 'Could not export audit events.');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'authservice-audit-events.' + (format === 'csv' ? 'csv' : 'ndjson');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function loadServiceAccounts() {
+    if (!state.selectedClientId) return;
+    const data = await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/service-accounts', { headers: adminHeaders() });
+    const list = data.service_accounts || data || [];
+    $('serviceAccountsList').innerHTML = list.map(sa => (
+      '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(sa.name) + '</div><div class="muted mono">' + escapeHTML(sa.id) + '</div></div>' +
+      '<span class="pill gray">' + escapeHTML(sa.status) + '</span></div><div>' + (sa.scopes || []).map(s => '<span class="pill">' + escapeHTML(s) + '</span>').join(' ') + '</div></div>'
+    )).join('') || '<div class="empty">No service accounts</div>';
+  }
+
+  async function loadSSO() {
+    if (!state.selectedClientId) return;
+    const list = await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/sso-connections', { headers: adminHeaders() });
+    $('ssoList').innerHTML = (list || []).map(conn => (
+      '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(conn.name) + '</div><div class="muted mono">' + escapeHTML(conn.id) + '</div></div>' +
+      '<span class="pill">' + escapeHTML(conn.protocol) + '</span></div><div class="muted">' + escapeHTML((conn.domains || []).join(', ')) + '</div>' +
+      (conn.protocol === 'saml' ? '<a class="muted" href="/api/auth/sso/metadata/' + conn.id + '">SAML metadata</a>' : '') + '</div>'
+    )).join('') || '<div class="empty">No SSO connections</div>';
+  }
+
+  async function loadSCIM() {
+    if (!state.selectedClientId) return;
+    const list = await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/scim-directories', { headers: adminHeaders() });
+    $('scimList').innerHTML = (list || []).map(dir => (
+      '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(dir.name) + '</div><div class="muted mono">' + escapeHTML(dir.id) + '</div></div>' +
+      '<span class="pill gray">' + escapeHTML(dir.status) + '</span></div><div class="muted">Base URL: <span class="mono">' + escapeHTML(state.adminBaseUrl.replace(/\/$/, '') + '/scim/v2/' + dir.id) + '</span></div>' +
+      '<div class="btn-row"><button class="btn ghost" data-rotate-scim="' + dir.id + '"><i data-lucide="key-round"></i><span>Rotate Token</span></button></div></div>'
+    )).join('') || '<div class="empty">No SCIM directories</div>';
+    refreshIcons();
+  }
+
+  async function refreshAdmin() {
+    if (!state.adminKey) {
+      toast('Set an admin key first.', 'error');
+      return;
+    }
+    await loadClients();
+    await Promise.allSettled([loadAudit(), loadServiceAccounts(), loadSSO(), loadSCIM()]);
+    toast('Admin console refreshed.', 'ok');
+  }
+
+  async function loadProfile() {
+    const user = await request(state.accountBaseUrl, '/api/auth/me', { headers: accountHeaders() });
+    $('profileName').value = user.display_name || '';
+    $('profileTimezone').value = user.timezone || 'UTC';
+    $('profileSummary').innerHTML = '<div class="item"><div class="item-title">' + escapeHTML(user.email) + '</div><div class="muted mono">' + escapeHTML(user.id) + '</div><div><span class="pill gray">' + escapeHTML(user.status) + '</span> <span class="pill">' + (user.email_verified ? 'verified' : 'unverified') + '</span></div></div>';
+  }
+
+  async function loadPasskeys() {
+    const keys = await request(state.accountBaseUrl, '/api/auth/passkeys', { headers: accountHeaders() });
+    $('passkeyList').innerHTML = (keys || []).map(k => (
+      '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(k.friendly_name || 'Passkey') + '</div><div class="muted mono">' + escapeHTML(k.id) + '</div></div>' +
+      '<button class="icon-btn" data-delete-passkey="' + k.id + '" title="Delete passkey"><i data-lucide="trash-2"></i></button></div></div>'
+    )).join('') || '<div class="empty">No passkeys registered</div>';
+    refreshIcons();
+  }
+
+  async function loadSessions() {
+    const data = await request(state.accountBaseUrl, '/api/auth/sessions', { headers: accountHeaders() });
+    const sessions = data.sessions || data || [];
+    $('sessionList').innerHTML = sessions.map(session => (
+      '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(session.ip_address || 'Unknown IP') + '</div>' +
+      '<div class="muted mono">' + escapeHTML(session.id) + '</div></div>' +
+      '<button class="icon-btn" data-revoke-session="' + escapeHTML(session.id) + '" title="Revoke session"><i data-lucide="x"></i></button></div>' +
+      '<div class="muted wrap">' + escapeHTML(session.user_agent || 'Unknown device') + '</div>' +
+      '<div class="muted">Expires ' + escapeHTML(session.expires_at || '') + '</div></div>'
+    )).join('') || '<div class="empty">No active sessions</div>';
+    refreshIcons();
+  }
+
+  async function loadOrganizations() {
+    const data = await request(state.accountBaseUrl, '/api/auth/organizations', { headers: accountHeaders() });
+    const orgs = data.organizations || [];
+    $('orgList').innerHTML = orgs.map(row => {
+      const org = row.organization || row.Organization || row;
+      const membership = row.membership || row.Membership || {};
+      return '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(org.name) + '</div><div class="muted mono">' + escapeHTML(org.id) + '</div></div><span class="pill">' + escapeHTML(membership.role || '') + '</span></div><button class="btn ghost" data-org-action="' + org.id + '"><i data-lucide="mouse-pointer-click"></i><span>Use</span></button></div>';
+    }).join('') || '<div class="empty">No organizations</div>';
+    refreshIcons();
+  }
+
+  async function refreshAccount() {
+    if (!state.accountApiKey || !state.accountAccessToken) {
+      toast('Set client API key and access token first.', 'error');
+      return;
+    }
+    await Promise.allSettled([loadProfile(), loadPasskeys(), loadSessions(), loadOrganizations()]);
+    toast('Account portal refreshed.', 'ok');
+  }
+
+  async function registerPasskey() {
+    if (!navigator.credentials || !window.PublicKeyCredential) {
+      toast('This browser does not expose WebAuthn.', 'error');
+      return;
+    }
+    const options = await request(state.accountBaseUrl, '/api/auth/passkey/register/begin', {
+      method: 'POST',
+      headers: accountHeaders(),
+      body: '{}'
+    });
+    options.publicKey.challenge = b64urlToBuffer(options.publicKey.challenge);
+    options.publicKey.user.id = b64urlToBuffer(options.publicKey.user.id);
+    if (options.publicKey.excludeCredentials) {
+      options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(c => Object.assign({}, c, { id: b64urlToBuffer(c.id) }));
+    }
+    options.publicKey.authenticatorSelection = Object.assign({}, options.publicKey.authenticatorSelection || {}, {
+      residentKey: 'required',
+      requireResidentKey: true,
+      userVerification: 'required'
+    });
+    const credential = await navigator.credentials.create({ publicKey: options.publicKey });
+    const payload = publicKeyCredentialToJSON(credential);
+    await request(state.accountBaseUrl, '/api/auth/passkey/register/finish?name=' + encodeURIComponent($('passkeyName').value || 'Portal passkey'), {
+      method: 'POST',
+      headers: accountHeaders(),
+      body: JSON.stringify(payload)
+    });
+    await loadPasskeys();
+    toast('Passkey registered.', 'ok');
+  }
+
+  function b64urlToBuffer(value) {
+    const pad = '='.repeat((4 - value.length % 4) % 4);
+    const base64 = (value + pad).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out.buffer;
+  }
+
+  function bufferToB64url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let raw = '';
+    for (let i = 0; i < bytes.byteLength; i++) raw += String.fromCharCode(bytes[i]);
+    return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function publicKeyCredentialToJSON(credential) {
+    return {
+      id: credential.id,
+      rawId: bufferToB64url(credential.rawId),
+      type: credential.type,
+      response: {
+        attestationObject: bufferToB64url(credential.response.attestationObject),
+        clientDataJSON: bufferToB64url(credential.response.clientDataJSON)
+      }
+    };
+  }
+
+  function refreshIcons() {
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function loadIconLibrary() {
+    if (window.lucide || document.querySelector('script[data-lucide-loader]')) {
+      refreshIcons();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/lucide@latest/dist/umd/lucide.min.js';
+    script.async = true;
+    script.dataset.lucideLoader = 'true';
+    script.onload = refreshIcons;
+    document.head.appendChild(script);
+  }
+
+  document.addEventListener('click', async (event) => {
+    const btn = event.target.closest('button, a');
+    if (!btn) return;
+    try {
+      if (btn.dataset.workspace) {
+        document.querySelectorAll('.nav-btn[data-workspace]').forEach(el => el.classList.toggle('active', el === btn));
+        document.querySelectorAll('.workspace').forEach(el => el.classList.remove('active'));
+        $(btn.dataset.workspace + 'Workspace').classList.add('active');
+        $('workspaceTitle').textContent = btn.dataset.workspace === 'admin' ? 'Admin Console' : 'Account Portal';
+        $('workspaceSubtitle').textContent = btn.dataset.workspace === 'admin' ? 'Provision clients and operate tenant features.' : 'Manage profile, security, and organizations.';
+      }
+      if (btn.id === 'saveAdminContext') {
+        state.adminBaseUrl = $('adminBaseUrl').value || window.location.origin;
+        state.adminKey = $('adminKey').value;
+        localStorage.setItem('portal_admin_base_url', state.adminBaseUrl);
+        localStorage.setItem('portal_admin_key', state.adminKey);
+        updateStatus();
+        toast('Admin context saved.', 'ok');
+      }
+      if (btn.id === 'saveAccountContext') {
+        state.accountBaseUrl = $('accountBaseUrl').value || window.location.origin;
+        state.accountApiKey = $('accountApiKey').value;
+        state.accountAccessToken = $('accountAccessToken').value;
+        localStorage.setItem('portal_account_base_url', state.accountBaseUrl);
+        localStorage.setItem('portal_account_api_key', state.accountApiKey);
+        localStorage.setItem('portal_account_access_token', state.accountAccessToken);
+        localStorage.setItem('auth_api_key', state.accountApiKey);
+        localStorage.setItem('auth_access_token', state.accountAccessToken);
+        updateStatus();
+        toast('Account context saved.', 'ok');
+      }
+      if (btn.id === 'refreshAdmin' || btn.id === 'reloadClients') await refreshAdmin();
+      if (btn.id === 'reloadAudit') await loadAudit();
+      if (btn.id === 'exportAuditCSV') await downloadAudit('csv');
+      if (btn.id === 'exportAuditJSONL') await downloadAudit('jsonl');
+      if (btn.id === 'refreshAccount' || btn.id === 'loadProfile') await refreshAccount();
+      if (btn.id === 'reloadSessions') await loadSessions();
+      if (btn.id === 'revokeAllSessions') {
+        await request(state.accountBaseUrl, '/api/auth/sessions', { method: 'DELETE', headers: accountHeaders() });
+        localStorage.removeItem('auth_access_token');
+        localStorage.removeItem('portal_account_access_token');
+        state.accountAccessToken = '';
+        $('accountAccessToken').value = '';
+        updateStatus();
+        await loadSessions().catch(() => {});
+        toast('Sessions revoked.', 'ok');
+      }
+      if (btn.dataset.selectClient) {
+        state.selectedClientId = btn.dataset.selectClient;
+        localStorage.setItem('portal_selected_client_id', state.selectedClientId);
+        renderClientSelect();
+        await Promise.allSettled([loadAudit(), loadServiceAccounts(), loadSSO(), loadSCIM()]);
+      }
+      if (btn.dataset.rotateKey) {
+        const data = await request(state.adminBaseUrl, '/api/admin/clients/' + btn.dataset.rotateKey + '/rotate-api-key', { method: 'POST', headers: adminHeaders() });
+        showSecret('clientSecretBox', 'New API key', data.api_key);
+      }
+      if (btn.dataset.rotateJwt) {
+        const data = await request(state.adminBaseUrl, '/api/admin/clients/' + btn.dataset.rotateJwt + '/rotate-secret', { method: 'POST', headers: adminHeaders() });
+        showSecret('clientSecretBox', 'New JWT secret', data.jwt_secret);
+      }
+      if (btn.id === 'createClient') {
+        const data = await request(state.adminBaseUrl, '/api/admin/clients', {
+          method: 'POST',
+          headers: adminHeaders(),
+          body: JSON.stringify({ name: $('newClientName').value, slug: $('newClientSlug').value, allowed_origins: splitWords($('newClientOrigins').value) })
+        });
+        showSecret('clientSecretBox', 'Save these client credentials', 'api_key=' + data.api_key + '\njwt_secret=' + data.jwt_secret);
+        await refreshAdmin();
+      }
+      if (btn.id === 'createServiceAccount') {
+        const data = await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/service-accounts', {
+          method: 'POST',
+          headers: adminHeaders(),
+          body: JSON.stringify({ name: $('saName').value, scopes: splitWords($('saScopes').value) })
+        });
+        showSecret('serviceAccountSecretBox', 'Service account secret', data.client_secret);
+        await loadServiceAccounts();
+      }
+      if (btn.id === 'createSSO') {
+        const protocol = $('ssoProtocol').value;
+        const body = { name: $('ssoName').value, protocol, domains: splitWords($('ssoDomains').value) };
+        if (protocol === 'oidc') body.oidc = { issuer: $('ssoIssuer').value, client_id: $('ssoClientId').value, client_secret: $('ssoClientSecret').value };
+        if (protocol === 'saml') body.saml = { idp_entity_id: $('ssoSamlEntity').value || $('ssoSamlUrl').value, idp_sso_url: $('ssoSamlUrl').value, idp_certificate: $('ssoSamlCert').value };
+        await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/sso-connections', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(body) });
+        await loadSSO();
+        toast('SSO connection created.', 'ok');
+      }
+      if (btn.id === 'createSCIM') {
+        const data = await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/scim-directories', {
+          method: 'POST',
+          headers: adminHeaders(),
+          body: JSON.stringify({ name: $('scimName').value, domains: splitWords($('scimDomains').value) })
+        });
+        showSecret('scimTokenBox', 'SCIM bearer token', data.token);
+        await loadSCIM();
+      }
+      if (btn.dataset.rotateScim) {
+        const data = await request(state.adminBaseUrl, '/api/admin/clients/' + state.selectedClientId + '/scim-directories/' + btn.dataset.rotateScim + '/rotate-token', { method: 'POST', headers: adminHeaders() });
+        showSecret('scimTokenBox', 'Replacement SCIM bearer token', data.token);
+      }
+      if (btn.id === 'saveProfile') {
+        await request(state.accountBaseUrl, '/api/auth/me', { method: 'PATCH', headers: accountHeaders(), body: JSON.stringify({ display_name: $('profileName').value, timezone: $('profileTimezone').value }) });
+        await loadProfile();
+        toast('Profile updated.', 'ok');
+      }
+      if (btn.id === 'changePassword') {
+        await request(state.accountBaseUrl, '/api/auth/change-password', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ old_password: $('oldPassword').value, new_password: $('newPassword').value }) });
+        toast('Password changed.', 'ok');
+      }
+      if (btn.id === 'setupTOTP') {
+        const data = await request(state.accountBaseUrl, '/api/auth/totp/setup', { method: 'POST', headers: accountHeaders(), body: '{}' });
+        showSecret('totpSecretBox', 'TOTP secret', data.secret || data.otpauth_url || JSON.stringify(data));
+      }
+      if (btn.id === 'enableTOTP') {
+        await request(state.accountBaseUrl, '/api/auth/totp/enable', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ code: $('totpCode').value }) });
+        toast('TOTP enabled.', 'ok');
+      }
+      if (btn.id === 'disableTOTP') {
+        await request(state.accountBaseUrl, '/api/auth/totp/disable', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ code: $('totpCode').value }) });
+        toast('TOTP disabled.', 'ok');
+      }
+      if (btn.id === 'generateRecoveryCodes') {
+        const data = await request(state.accountBaseUrl, '/api/auth/recovery-codes', { method: 'POST', headers: accountHeaders(), body: '{}' });
+        showSecret('totpSecretBox', 'Save these recovery codes', (data.recovery_codes || []).join('\n'));
+      }
+      if (btn.id === 'registerPasskey') await registerPasskey();
+      if (btn.dataset.deletePasskey) {
+        await request(state.accountBaseUrl, '/api/auth/passkeys/' + btn.dataset.deletePasskey, { method: 'DELETE', headers: accountHeaders() });
+        await loadPasskeys();
+      }
+      if (btn.dataset.revokeSession) {
+        await request(state.accountBaseUrl, '/api/auth/sessions/' + btn.dataset.revokeSession, { method: 'DELETE', headers: accountHeaders() });
+        await loadSessions();
+        toast('Session revoked.', 'ok');
+      }
+      if (btn.id === 'createOrg') {
+        await request(state.accountBaseUrl, '/api/auth/organizations', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ name: $('orgName').value, slug: $('orgSlug').value }) });
+        await loadOrganizations();
+      }
+      if (btn.dataset.orgAction) $('orgActionId').value = btn.dataset.orgAction;
+      if (btn.id === 'sendInvite') {
+        const data = await request(state.accountBaseUrl, '/api/auth/organizations/' + $('orgActionId').value + '/invitations', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ email: $('inviteEmail').value, role: $('inviteRole').value }) });
+        showSecret('orgSecretBox', 'Invitation token', data.token || JSON.stringify(data));
+      }
+      if (btn.id === 'acceptInvite') {
+        await request(state.accountBaseUrl, '/api/auth/organization-invitations/accept', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ token: $('inviteToken').value }) });
+        await loadOrganizations();
+      }
+      if (btn.id === 'mintOrgToken') {
+        const data = await request(state.accountBaseUrl, '/api/auth/organizations/' + $('orgActionId').value + '/token', { method: 'POST', headers: accountHeaders(), body: '{}' });
+        showSecret('orgSecretBox', 'Organization access token', data.access_token);
+      }
+    } catch (err) {
+      toast(err.message || 'Action failed', 'error');
+    }
+  });
+
+  $('selectedClient').addEventListener('change', async function() {
+    state.selectedClientId = this.value;
+    localStorage.setItem('portal_selected_client_id', state.selectedClientId);
+    await Promise.allSettled([loadAudit(), loadServiceAccounts(), loadSSO(), loadSCIM()]);
+  });
+
+  setContextInputs();
+  refreshIcons();
+  window.addEventListener('load', loadIconLibrary, { once: true });
+})();
+</script>
+</body>
+</html>

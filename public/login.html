@@ -71,7 +71,7 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229
   <form id="loginForm">
     <div class="field">
       <label for="email">Email</label>
-      <input type="email" id="email" name="email" required autocomplete="email" placeholder="you@example.com">
+      <input type="email" id="email" name="email" required autocomplete="username webauthn" placeholder="you@example.com">
     </div>
     <div class="field">
       <label for="password">Password</label>
@@ -91,10 +91,15 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229
       <div class="field">
         <input type="text" id="totpCode" maxlength="6" pattern="[0-9]{6}" required placeholder="000000" autocomplete="one-time-code">
       </div>
+      <div class="field hidden" id="recoveryCodeField">
+        <input type="text" id="recoveryCode" placeholder="ABCD-1234-EF56" autocomplete="one-time-code">
+      </div>
       <input type="hidden" id="twoFactorToken">
       <button type="submit" class="btn btn-primary" id="totpBtn">Verify</button>
     </form>
     <div class="links" style="margin-top:.75rem">
+      <a href="#" id="recoveryCodeToggle">Use recovery code</a>
+      <span style="margin:0 .25rem">&middot;</span>
       <a href="#" id="backToLogin">Back to login</a>
     </div>
   </div>
@@ -169,9 +174,75 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229
     el.textContent = '';
   }
 
+  let conditionalPasskeyAbort = null;
+  let usingRecoveryCode = false;
+
+  function abortConditionalPasskey() {
+    if (conditionalPasskeyAbort) {
+      conditionalPasskeyAbort.abort();
+      conditionalPasskeyAbort = null;
+    }
+  }
+
+  function decodePasskeyOptions(options) {
+    options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+    if (options.publicKey.allowCredentials) {
+      options.publicKey.allowCredentials = options.publicKey.allowCredentials.map(function(c) {
+        c.id = base64urlToBuffer(c.id);
+        return c;
+      });
+    }
+    return options;
+  }
+
+  async function finishPasskeyLogin(sessionId, credential) {
+    const finishRes = await fetch('/api/auth/passkey/login/finish?session_id=' + encodeURIComponent(sessionId), {
+      method: 'POST',
+      headers: headers(),
+      credentials: 'include',
+      body: JSON.stringify({
+        id: credential.id,
+        rawId: bufferToBase64url(credential.rawId),
+        type: credential.type,
+        response: {
+          authenticatorData: bufferToBase64url(credential.response.authenticatorData),
+          clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+          signature: bufferToBase64url(credential.response.signature),
+          userHandle: credential.response.userHandle ? bufferToBase64url(credential.response.userHandle) : null
+        }
+      })
+    });
+    const data = await finishRes.json();
+    if (!finishRes.ok) throw new Error(data.error || 'Passkey login failed');
+    if (data.access_token) {
+      localStorage.setItem('auth_access_token', data.access_token);
+      showMsg('Login successful!', 'success');
+    }
+    return data;
+  }
+
+  async function runPasskeyLogin(mediation, signal) {
+    const beginRes = await fetch('/api/auth/passkey/login/begin', {
+      method: 'POST',
+      headers: headers(),
+      credentials: 'include'
+    });
+    if (!beginRes.ok) {
+      const d = await beginRes.json();
+      throw new Error(d.error || 'Passkey not available');
+    }
+    const options = decodePasskeyOptions(await beginRes.json());
+    const credentialRequest = { publicKey: options.publicKey };
+    if (mediation) credentialRequest.mediation = mediation;
+    if (signal) credentialRequest.signal = signal;
+    const credential = await navigator.credentials.get(credentialRequest);
+    return finishPasskeyLogin(options.session_id || '', credential);
+  }
+
   // Login form
   document.getElementById('loginForm').addEventListener('submit', async function(e) {
     e.preventDefault();
+    abortConditionalPasskey();
     clearMsg();
     const btn = document.getElementById('loginBtn');
     btn.disabled = true;
@@ -221,13 +292,13 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229
     btn.disabled = true;
     btn.textContent = 'Verifying...';
     try {
-      const res = await fetch('/api/auth/totp/verify', {
+      const res = await fetch(usingRecoveryCode ? '/api/auth/recovery-codes/verify' : '/api/auth/totp/verify', {
         method: 'POST',
         headers: headers(),
         credentials: 'include',
         body: JSON.stringify({
           two_factor_token: document.getElementById('twoFactorToken').value,
-          code: document.getElementById('totpCode').value
+          code: usingRecoveryCode ? document.getElementById('recoveryCode').value : document.getElementById('totpCode').value
         })
       });
       const data = await res.json();
@@ -248,68 +319,39 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229
     }
   });
 
+  document.getElementById('recoveryCodeToggle').addEventListener('click', function(e) {
+    e.preventDefault();
+    usingRecoveryCode = !usingRecoveryCode;
+    document.getElementById('recoveryCodeField').classList.toggle('hidden', !usingRecoveryCode);
+    document.getElementById('totpCode').parentElement.classList.toggle('hidden', usingRecoveryCode);
+    document.getElementById('totpCode').required = !usingRecoveryCode;
+    document.getElementById('recoveryCode').required = usingRecoveryCode;
+    document.getElementById('recoveryCodeToggle').textContent = usingRecoveryCode ? 'Use authenticator code' : 'Use recovery code';
+    (usingRecoveryCode ? document.getElementById('recoveryCode') : document.getElementById('totpCode')).focus();
+  });
+
   // Back to login
   document.getElementById('backToLogin').addEventListener('click', function(e) {
     e.preventDefault();
     document.getElementById('totpSection').classList.add('hidden');
     document.getElementById('loginForm').classList.remove('hidden');
+    usingRecoveryCode = false;
+    document.getElementById('recoveryCodeField').classList.add('hidden');
+    document.getElementById('totpCode').parentElement.classList.remove('hidden');
+    document.getElementById('totpCode').required = true;
+    document.getElementById('recoveryCode').required = false;
+    document.getElementById('recoveryCodeToggle').textContent = 'Use recovery code';
     clearMsg();
   });
 
   // Passkey login
   document.getElementById('passkeyBtn').addEventListener('click', async function() {
+    abortConditionalPasskey();
     clearMsg();
     try {
-      const beginRes = await fetch('/api/auth/passkey/login/begin', {
-        method: 'POST',
-        headers: headers(),
-        credentials: 'include'
-      });
-      if (!beginRes.ok) {
-        const d = await beginRes.json();
-        showMsg(d.error || 'Passkey not available', 'error');
-        return;
-      }
-      const options = await beginRes.json();
-      const sessionId = options.session_id || '';
-
-      // Decode challenge and allowCredentials
-      options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
-      if (options.publicKey.allowCredentials) {
-        options.publicKey.allowCredentials = options.publicKey.allowCredentials.map(function(c) {
-          c.id = base64urlToBuffer(c.id);
-          return c;
-        });
-      }
-
-      const credential = await navigator.credentials.get({ publicKey: options.publicKey });
-      const finishRes = await fetch('/api/auth/passkey/login/finish?session_id=' + encodeURIComponent(sessionId), {
-        method: 'POST',
-        headers: headers(),
-        credentials: 'include',
-        body: JSON.stringify({
-          id: credential.id,
-          rawId: bufferToBase64url(credential.rawId),
-          type: credential.type,
-          response: {
-            authenticatorData: bufferToBase64url(credential.response.authenticatorData),
-            clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
-            signature: bufferToBase64url(credential.response.signature),
-            userHandle: credential.response.userHandle ? bufferToBase64url(credential.response.userHandle) : null
-          }
-        })
-      });
-      const data = await finishRes.json();
-      if (!finishRes.ok) {
-        showMsg(data.error || 'Passkey login failed', 'error');
-        return;
-      }
-      if (data.access_token) {
-        localStorage.setItem('auth_access_token', data.access_token);
-        showMsg('Login successful!', 'success');
-      }
+      await runPasskeyLogin();
     } catch (err) {
-      if (err.name !== 'AbortError') showMsg('Passkey login failed or was cancelled.', 'error');
+      if (err.name !== 'AbortError') showMsg(err.message || 'Passkey login failed or was cancelled.', 'error');
     }
   });
 
@@ -385,6 +427,22 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229
     for (var i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
     return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
   }
+
+  async function startConditionalPasskeyLogin() {
+    if (!apiKey || !window.PublicKeyCredential || !navigator.credentials || !PublicKeyCredential.isConditionalMediationAvailable || !window.AbortController) return;
+    try {
+      const available = await PublicKeyCredential.isConditionalMediationAvailable();
+      if (!available) return;
+      conditionalPasskeyAbort = new AbortController();
+      await runPasskeyLogin('conditional', conditionalPasskeyAbort.signal);
+    } catch (err) {
+      if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') return;
+    } finally {
+      conditionalPasskeyAbort = null;
+    }
+  }
+
+  startConditionalPasskeyLogin();
 })();
 </script>
 </body>

@@ -71,6 +71,40 @@ func (r *SessionRepo) Validate(ctx context.Context, clientID, rawToken string) (
 	return userID, sessionID, nil
 }
 
+func (r *SessionRepo) ListForUser(ctx context.Context, clientID, userID string) ([]*domain.Session, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, user_id, client_id, refresh_token, user_agent, ip_address, expires_at, revoked, created_at
+		FROM sessions
+		WHERE client_id = $1 AND user_id = $2 AND revoked = FALSE AND expires_at > NOW()
+		ORDER BY created_at DESC`,
+		clientID, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := []*domain.Session{}
+	for rows.Next() {
+		session := &domain.Session{}
+		if err := rows.Scan(
+			&session.ID,
+			&session.UserID,
+			&session.ClientID,
+			&session.RefreshToken,
+			&session.UserAgent,
+			&session.IPAddress,
+			&session.ExpiresAt,
+			&session.Revoked,
+			&session.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
+}
+
 func (r *SessionRepo) Revoke(ctx context.Context, sessionID string) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE sessions SET revoked = TRUE WHERE id = $1`, sessionID)
@@ -82,6 +116,19 @@ func (r *SessionRepo) RevokeByToken(ctx context.Context, clientID, rawToken stri
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE sessions SET revoked = TRUE WHERE client_id = $1 AND refresh_token = $2`, clientID, tokenHash)
 	return err
+}
+
+func (r *SessionRepo) RevokeForUser(ctx context.Context, clientID, userID, sessionID string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET revoked = TRUE
+		WHERE client_id = $1 AND user_id = $2 AND id = $3 AND revoked = FALSE`,
+		clientID, userID, sessionID,
+	)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result)
 }
 
 func (r *SessionRepo) RevokeAllForUser(ctx context.Context, clientID, userID string) error {

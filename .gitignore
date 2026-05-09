@@ -5,3 +5,8 @@ auth-server
 # /public/*.html  # Frontend pages are tracked in git
 tmp/
 .history/
+sdks/ios/.build/
+sdks/ios/.swiftpm/
+sdks/android/.gradle/
+sdks/android/build/
+sdks/android/**/build/

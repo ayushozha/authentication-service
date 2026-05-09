@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
@@ -48,6 +49,12 @@ type passkeyRegistrationState struct {
 type passkeyLoginState struct {
 	ClientID    string               `json:"client_id"`
 	SessionData webauthn.SessionData `json:"session_data"`
+}
+
+type PasskeyAttestationPolicy struct {
+	Conveyance         protocol.ConveyancePreference `json:"conveyance"`
+	RequireAttestation bool                          `json:"require_attestation"`
+	AllowedFormats     []string                      `json:"allowed_formats,omitempty"`
 }
 
 func NewPasskeyService(users UserRepository, wa WebAuthnRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, rpDisplayName, rpID, rpOrigin string) (*PasskeyService, error) {
@@ -96,7 +103,18 @@ func (s *PasskeyService) BeginRegistration(ctx context.Context, client *domain.C
 		return nil, err
 	}
 
-	options, sessionData, err := waClient.BeginRegistration(waUser)
+	policy := passkeyAttestationPolicyForClient(client)
+	registrationOptions := []webauthn.RegistrationOption{
+		webauthn.WithConveyancePreference(policy.Conveyance),
+	}
+	if len(policy.AllowedFormats) > 0 {
+		formats := make([]protocol.AttestationFormat, 0, len(policy.AllowedFormats))
+		for _, format := range policy.AllowedFormats {
+			formats = append(formats, protocol.AttestationFormat(format))
+		}
+		registrationOptions = append(registrationOptions, webauthn.WithAttestationFormats(formats))
+	}
+	options, sessionData, err := waClient.BeginRegistration(waUser, registrationOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +168,22 @@ func (s *PasskeyService) FinishRegistration(ctx context.Context, client *domain.
 	if err != nil {
 		return err
 	}
-	credential, err := waClient.FinishRegistration(waUser, state.SessionData, r)
+	parsedResponse, err := protocol.ParseCredentialCreationResponse(r)
+	if err != nil {
+		return err
+	}
+	policy := passkeyAttestationPolicyForClient(client)
+	attestationFormat := strings.TrimSpace(parsedResponse.Response.AttestationObject.Format)
+	if err := validatePasskeyAttestationPolicy(policy, attestationFormat); err != nil {
+		uid := user.ID
+		s.audit.Log(ctx, client.ID, &uid, "passkey_attestation_rejected", ip, ua, map[string]interface{}{
+			"attestation_format": attestationFormat,
+			"attestation_policy": string(policy.Conveyance),
+			"allowed_formats":    append([]string(nil), policy.AllowedFormats...),
+		})
+		return err
+	}
+	credential, err := waClient.CreateCredential(waUser, state.SessionData, parsedResponse)
 	if err != nil {
 		return err
 	}
@@ -164,7 +197,10 @@ func (s *PasskeyService) FinishRegistration(ctx context.Context, client *domain.
 	}
 
 	uid := user.ID
-	s.audit.Log(ctx, client.ID, &uid, "passkey_registered", ip, ua, nil)
+	s.audit.Log(ctx, client.ID, &uid, "passkey_registered", ip, ua, map[string]interface{}{
+		"attestation_format": attestationFormat,
+		"attestation_policy": string(policy.Conveyance),
+	})
 	return nil
 }
 
@@ -327,6 +363,52 @@ func (s *PasskeyService) configForClient(client *domain.Client) clientRPConfig {
 	return cfg
 }
 
+func passkeyAttestationPolicyForClient(client *domain.Client) PasskeyAttestationPolicy {
+	policy := PasskeyAttestationPolicy{Conveyance: protocol.PreferNoAttestation}
+	if client == nil || client.Settings == nil {
+		return policy
+	}
+	if v, ok := getStringSetting(client.Settings, "webauthn_attestation"); ok {
+		switch strings.ToLower(v) {
+		case string(protocol.PreferIndirectAttestation):
+			policy.Conveyance = protocol.PreferIndirectAttestation
+		case string(protocol.PreferDirectAttestation):
+			policy.Conveyance = protocol.PreferDirectAttestation
+		case string(protocol.PreferEnterpriseAttestation):
+			policy.Conveyance = protocol.PreferEnterpriseAttestation
+		default:
+			policy.Conveyance = protocol.PreferNoAttestation
+		}
+	}
+	if v, ok := getBoolSetting(client.Settings, "webauthn_require_attestation"); ok {
+		policy.RequireAttestation = v
+	}
+	if v, ok := getBoolSetting(client.Settings, "webauthn_block_none_attestation"); ok && v {
+		policy.RequireAttestation = true
+	}
+	policy.AllowedFormats = getStringListSetting(client.Settings, "webauthn_allowed_attestation_formats")
+	return policy
+}
+
+func validatePasskeyAttestationPolicy(policy PasskeyAttestationPolicy, format string) error {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = string(protocol.AttestationFormatNone)
+	}
+	if policy.RequireAttestation && format == string(protocol.AttestationFormatNone) {
+		return domain.ErrPasskeyAttestation
+	}
+	if len(policy.AllowedFormats) == 0 {
+		return nil
+	}
+	for _, allowed := range policy.AllowedFormats {
+		if strings.EqualFold(strings.TrimSpace(allowed), format) {
+			return nil
+		}
+	}
+	return domain.ErrPasskeyAttestation
+}
+
 func getStringSetting(settings map[string]interface{}, key string) (string, bool) {
 	val, ok := settings[key]
 	if !ok {
@@ -341,6 +423,56 @@ func getStringSetting(settings map[string]interface{}, key string) (string, bool
 		return "", false
 	}
 	return s, true
+}
+
+func getBoolSetting(settings map[string]interface{}, key string) (bool, bool) {
+	val, ok := settings[key]
+	if !ok {
+		return false, false
+	}
+	switch v := val.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func getStringListSetting(settings map[string]interface{}, key string) []string {
+	val, ok := settings[key]
+	if !ok {
+		return nil
+	}
+	out := []string{}
+	add := func(value string) {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	switch v := val.(type) {
+	case []string:
+		for _, item := range v {
+			add(item)
+		}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				add(s)
+			}
+		}
+	case string:
+		add(v)
+	}
+	return out
 }
 
 func (s *PasskeyService) getWebAuthn(cfg clientRPConfig) (*webauthn.WebAuthn, error) {

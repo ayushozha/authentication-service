@@ -19,6 +19,7 @@
 |------|-------|
 | Admin API Key | `<admin-api-key>` |
 | Admin Header | `X-Admin-Key: <admin-api-key>` |
+| Audit Webhook Signing Secret | `<webhook-signing-secret>` |
 
 ## Infrastructure
 

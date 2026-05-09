@@ -118,6 +118,118 @@ func TestBrowserPublicAuthPagesWorkOnDesktopIOSAndAndroidProfiles(t *testing.T) 
 	}
 }
 
+func TestBrowserPortalShellRendersOnDesktopIOSAndAndroidProfiles(t *testing.T) {
+	chromePath := requireChrome(t)
+
+	for _, profile := range browserDeviceProfiles() {
+		t.Run(profile.name, func(t *testing.T) {
+			env := newE2EEnv(t, e2eOptions{})
+			server, baseURL := startBrowserE2EServer(t, env)
+			defer server.Close()
+
+			ctx, cancel := newBrowserContext(t, chromePath)
+			defer cancel()
+
+			actions := profile.actions()
+			actions = append(actions,
+				chromedp.Navigate(baseURL+"/portal.html"),
+				chromedp.WaitVisible("#adminWorkspace", chromedp.ByQuery),
+				chromedp.WaitVisible("#clientsTable", chromedp.ByQuery),
+				chromedp.Click(`[data-workspace="account"]`, chromedp.ByQuery),
+				chromedp.WaitVisible("#accountWorkspace", chromedp.ByQuery),
+			)
+			if err := chromedp.Run(ctx, actions...); err != nil {
+				t.Fatalf("portal shell did not render: %v", err)
+			}
+
+			var portal struct {
+				Title                 string `json:"title"`
+				AccountVisible        bool   `json:"accountVisible"`
+				AdminVisible          bool   `json:"adminVisible"`
+				HasHorizontalOverflow bool   `json:"hasHorizontalOverflow"`
+			}
+			if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+				const root = document.documentElement;
+				const admin = document.querySelector("#adminWorkspace");
+				const account = document.querySelector("#accountWorkspace");
+				return {
+					title: document.querySelector("#workspaceTitle")?.textContent || "",
+					accountVisible: account && getComputedStyle(account).display !== "none",
+					adminVisible: admin && getComputedStyle(admin).display !== "none",
+					hasHorizontalOverflow: root.scrollWidth > root.clientWidth + 1
+				};
+			})()`, &portal)); err != nil {
+				t.Fatalf("inspect portal layout: %v", err)
+			}
+			if portal.Title != "Account Portal" || !portal.AccountVisible || portal.AdminVisible {
+				t.Fatalf("portal workspace switch failed: %+v", portal)
+			}
+			if portal.HasHorizontalOverflow {
+				t.Fatalf("portal has horizontal document overflow on %s: %+v", profile.name, portal)
+			}
+		})
+	}
+}
+
+func TestBrowserSDKSignupOrganizationsAndUserWidget(t *testing.T) {
+	chromePath := requireChrome(t)
+	env := newE2EEnv(t, e2eOptions{})
+	server, baseURL := startBrowserE2EServer(t, env)
+	defer server.Close()
+	env.clients.setAllowedOrigins(env.client.ID, []string{baseURL})
+
+	ctx, cancel := newBrowserContext(t, chromePath)
+	defer cancel()
+
+	email := fmt.Sprintf("browser-sdk-%d@example.com", time.Now().UnixNano())
+	slug := fmt.Sprintf("browser-sdk-%d", time.Now().UnixNano())
+
+	var result struct {
+		OK         bool   `json:"ok"`
+		Email      string `json:"email"`
+		Display    string `json:"display"`
+		WidgetText string `json:"widgetText"`
+		Error      string `json:"error"`
+	}
+	expr := fmt.Sprintf(`(async () => {
+		try {
+			const client = AuthService.createClient({ baseUrl: location.origin, apiKey: %q, sessionMode: "token" });
+			const signup = await client.signup({ email: %q, password: %q, display_name: "SDK User" });
+			if (!signup.access_token || !client.getAccessToken() || !client.getRefreshToken()) throw new Error("signup did not persist token session");
+
+			const me = await client.me();
+			const updated = await client.updateProfile({ display_name: "SDK Renamed", timezone: "America/Los_Angeles" });
+			const org = await client.createOrganization({ name: "SDK Org", slug: %q });
+			if (!org.organization || !org.organization.id) throw new Error("organization was not created");
+			const orgToken = await client.createOrganizationToken(org.organization.id);
+			if (!orgToken.access_token) throw new Error("organization token was not minted");
+
+			const widget = client.mountUserButton(document.getElementById("widget"));
+			await widget.refresh();
+			const widgetText = document.getElementById("widget").textContent;
+			return {
+				ok: me.email === %q && updated.display_name === "SDK Renamed" && widgetText.includes("SDK Renamed"),
+				email: me.email,
+				display: updated.display_name,
+				widgetText
+			};
+		} catch (err) {
+			return { ok: false, error: err && err.message ? err.message : String(err) };
+		}
+	})()`, env.apiKey, email, e2ePassword, slug, email)
+
+	if err := chromedp.Run(ctx,
+		chromedp.Navigate(baseURL+"/sdk-test"),
+		chromedp.WaitReady("#widget", chromedp.ByQuery),
+		chromedp.Evaluate(expr, &result, evalAwaitPromise),
+	); err != nil {
+		t.Fatalf("SDK browser flow failed: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("SDK browser flow returned failure: %+v", result)
+	}
+}
+
 func runPublicAuthPagesBrowserFlow(t *testing.T, chromePath string, profile browserDeviceProfile, idx int) {
 	t.Helper()
 
@@ -446,6 +558,9 @@ func startBrowserE2EServer(t *testing.T, env *e2eEnv) (*httptest.Server, string)
 		case r.URL.Path == "/webauthn-test":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write([]byte(browserWebAuthnTestPage))
+		case r.URL.Path == "/sdk-test":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(browserSDKTestPage))
 		case strings.HasPrefix(r.URL.Path, "/api/"), strings.HasPrefix(r.URL.Path, "/.well-known/"), r.URL.Path == "/healthz":
 			env.handler.ServeHTTP(w, r)
 		default:
@@ -590,5 +705,17 @@ async function loginPasskey(apiKey) {
 window.registerPasskey = registerPasskey;
 window.loginPasskey = loginPasskey;
 </script>
+</body>
+</html>`
+
+const browserSDKTestPage = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AuthService SDK Browser E2E</title>
+</head>
+<body>
+  <div id="widget"></div>
+  <script src="/authservice.js"></script>
 </body>
 </html>`

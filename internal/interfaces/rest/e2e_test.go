@@ -3,11 +3,17 @@ package rest
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,6 +25,7 @@ import (
 	"github.com/Ayush10/authentication-service/internal/application"
 	"github.com/Ayush10/authentication-service/internal/domain"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/oauth2"
 )
@@ -26,7 +33,7 @@ import (
 const (
 	e2eAdminKey = "admin-e2e-key"
 	e2eAPIKey   = "client-e2e-api-key"
-	e2ePassword = "password123"
+	e2ePassword = "ValidPass123!"
 )
 
 type e2eEnv struct {
@@ -40,10 +47,15 @@ type e2eEnv struct {
 	tokens   *memoryTokenRepo
 	cache    *memoryCache
 	audit    *memoryAuditRepo
+	recovery *memoryRecoveryCodeRepo
 	mailer   *recordingMailer
 	rl       *memoryRateLimiter
 	oauth    *memoryOAuthRepo
 	webauthn *memoryWebAuthnRepo
+	orgs     *memoryOrganizationRepo
+	m2m      *memoryServiceAccountRepo
+	sso      *memoryEnterpriseSSORepo
+	scim     *memorySCIMRepo
 
 	client *domain.Client
 	apiKey string
@@ -72,20 +84,29 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	users := newMemoryUserRepo()
 	sessions := newMemorySessionRepo()
 	tokens := newMemoryTokenRepo()
+	recoveryCodes := newMemoryRecoveryCodeRepo()
 	audit := &memoryAuditRepo{}
 	mailer := &recordingMailer{}
 	rl := newMemoryRateLimiter()
 	oauthRepo := newMemoryOAuthRepo()
 	webauthnRepo := newMemoryWebAuthnRepo()
+	orgRepo := newMemoryOrganizationRepo()
+	serviceAccountRepo := newMemoryServiceAccountRepo()
+	ssoRepo := newMemoryEnterpriseSSORepo()
+	scimRepo := newMemorySCIMRepo()
 
 	clientSvc := application.NewClientService(clients)
 	authSvc := application.NewAuthService(users, sessions, cache, audit, rl)
 	verifySvc := application.NewEmailVerifyService(users, tokens, mailer)
 	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer)
 	magicSvc := application.NewMagicLinkService(clients, users, sessions, cache, mailer, audit, rl)
-	totpSvc := application.NewTOTPService(users, sessions, cache, audit)
+	totpSvc := application.NewTOTPService(users, sessions, cache, audit, recoveryCodes)
 	oauthSvc := application.NewOAuthService(users, clients, oauthRepo, sessions, cache, audit)
 	auditSvc := application.NewAuditService(audit)
+	orgSvc := application.NewOrganizationService(orgRepo, users, audit)
+	m2mSvc := application.NewM2MService(serviceAccountRepo, clients, audit)
+	ssoSvc := application.NewEnterpriseSSOService(ssoRepo, users, clients, sessions, cache, audit)
+	scimSvc := application.NewSCIMService(scimRepo, users, audit)
 	passkeySvc, err := application.NewPasskeyService(users, webauthnRepo, sessions, cache, audit, "E2E Auth", "example.com", "https://example.com")
 	if err != nil {
 		t.Fatalf("new passkey service: %v", err)
@@ -96,6 +117,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	t.Cleanup(func() {
 		application.OnSignup = nil
 		application.SetSigningKeyRepository(nil)
+		application.SetBlockedSignupEmailDomains(defaultBlockedSignupEmailDomains())
 	})
 
 	cfg := &HandlerConfig{
@@ -108,7 +130,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	}
 	router := NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, clientSvc, auditSvc,
+		oauthSvc, passkeySvc, clientSvc, auditSvc, orgSvc, m2mSvc, ssoSvc, scimSvc,
 		opts.oauthProviders, cfg,
 		e2eAdminKey, false, "",
 	)
@@ -123,10 +145,15 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 		tokens:   tokens,
 		cache:    memCache,
 		audit:    audit,
+		recovery: recoveryCodes,
 		mailer:   mailer,
 		rl:       rl,
 		oauth:    oauthRepo,
 		webauthn: webauthnRepo,
+		orgs:     orgRepo,
+		m2m:      serviceAccountRepo,
+		sso:      ssoRepo,
+		scim:     scimRepo,
 		client:   client,
 		apiKey:   e2eAPIKey,
 	}
@@ -162,6 +189,18 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 		"password": "short",
 	}, env.apiHeaders())
 	assertStatus(t, weakRec, http.StatusBadRequest)
+
+	commonPasswordRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
+		"email":    "common-password@example.com",
+		"password": "password123",
+	}, env.apiHeaders())
+	assertStatus(t, commonPasswordRec, http.StatusBadRequest)
+
+	blockedEmailDomainRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
+		"email":    "throwaway@mailinator.com",
+		"password": e2ePassword,
+	}, env.apiHeaders())
+	assertStatus(t, blockedEmailDomainRec, http.StatusBadRequest)
 
 	meRec := env.request(t, http.MethodGet, "/api/auth/me", nil, env.bearerHeaders(signup.AccessToken))
 	assertStatus(t, meRec, http.StatusOK)
@@ -209,6 +248,60 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 	assertStatus(t, loginRec, http.StatusOK)
 	var login application.AuthResponse
 	decodeBody(t, loginRec, &login)
+
+	sessionsRec := env.request(t, http.MethodGet, "/api/auth/sessions", nil, env.bearerHeaders(login.AccessToken))
+	assertStatus(t, sessionsRec, http.StatusOK)
+	var sessionsBody struct {
+		Sessions []domain.Session `json:"sessions"`
+	}
+	decodeBody(t, sessionsRec, &sessionsBody)
+	if len(sessionsBody.Sessions) < 2 {
+		t.Fatalf("expected active sessions from refresh and login, got %+v", sessionsBody.Sessions)
+	}
+	revokedSessionID := sessionsBody.Sessions[0].ID
+	revokeSessionRec := env.request(t, http.MethodDelete, "/api/auth/sessions/"+revokedSessionID, nil, env.bearerHeaders(login.AccessToken))
+	assertStatus(t, revokeSessionRec, http.StatusOK)
+	sessionsAfterRevokeRec := env.request(t, http.MethodGet, "/api/auth/sessions", nil, env.bearerHeaders(login.AccessToken))
+	assertStatus(t, sessionsAfterRevokeRec, http.StatusOK)
+	var sessionsAfterRevoke struct {
+		Sessions []domain.Session `json:"sessions"`
+	}
+	decodeBody(t, sessionsAfterRevokeRec, &sessionsAfterRevoke)
+	for _, session := range sessionsAfterRevoke.Sessions {
+		if session.ID == revokedSessionID {
+			t.Fatalf("revoked session still listed: %+v", sessionsAfterRevoke.Sessions)
+		}
+	}
+
+	riskHeaders := env.apiHeaders()
+	riskHeaders["X-Forwarded-For"] = "203.0.113.44"
+	riskHeaders["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36"
+	riskLoginRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":        "alice@example.com",
+		"password":     e2ePassword,
+		"session_mode": "token",
+	}, riskHeaders)
+	assertStatus(t, riskLoginRec, http.StatusOK)
+	var riskLogin application.AuthResponse
+	decodeBody(t, riskLoginRec, &riskLogin)
+	if riskLogin.Risk == nil || riskLogin.Risk.Level != "medium" || !riskLogin.Risk.NewIP || !riskLogin.Risk.NewDevice {
+		t.Fatalf("expected medium suspicious-login risk response, got %+v", riskLogin.Risk)
+	}
+
+	userInfoPasswordRec := env.request(t, http.MethodPost, "/api/auth/change-password", map[string]string{
+		"old_password": e2ePassword,
+		"new_password": "alice2026!",
+	}, env.bearerHeaders(login.AccessToken))
+	assertStatus(t, userInfoPasswordRec, http.StatusBadRequest)
+	riskEvents, err := env.audit.List(context.Background(), domain.AuditEventFilter{ClientID: env.client.ID, Limit: 100})
+	if err != nil {
+		t.Fatalf("list risk audit events: %v", err)
+	}
+	for _, eventType := range []string{"signup_blocked", "password_change_blocked", "session_revoked", "suspicious_login"} {
+		if !auditEventsContain(riskEvents, eventType) {
+			t.Fatalf("expected risk audit event %q in %+v", eventType, riskEvents)
+		}
+	}
 
 	changeRec := env.request(t, http.MethodPost, "/api/auth/change-password", map[string]string{
 		"old_password": e2ePassword,
@@ -327,6 +420,22 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 	}, env.bearerHeaders(magicLogin.AccessToken))
 	assertStatus(t, enableRec, http.StatusOK)
 
+	recoveryCodesRec := env.request(t, http.MethodPost, "/api/auth/recovery-codes", nil, env.bearerHeaders(magicLogin.AccessToken))
+	assertStatus(t, recoveryCodesRec, http.StatusOK)
+	var recoveryCodes application.RecoveryCodesResponse
+	decodeBody(t, recoveryCodesRec, &recoveryCodes)
+	if recoveryCodes.UnusedCount != 10 || len(recoveryCodes.RecoveryCodes) != 10 {
+		t.Fatalf("expected one-time recovery codes, got %+v", recoveryCodes)
+	}
+
+	recoveryCountRec := env.request(t, http.MethodGet, "/api/auth/recovery-codes", nil, env.bearerHeaders(magicLogin.AccessToken))
+	assertStatus(t, recoveryCountRec, http.StatusOK)
+	var recoveryCount application.RecoveryCodesResponse
+	decodeBody(t, recoveryCountRec, &recoveryCount)
+	if recoveryCount.UnusedCount != 10 || len(recoveryCount.RecoveryCodes) != 0 {
+		t.Fatalf("recovery code count should not expose codes: %+v", recoveryCount)
+	}
+
 	challengeRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
 		"email":        "bob@example.com",
 		"password":     "resetpassword123",
@@ -335,7 +444,7 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 	assertStatus(t, challengeRec, http.StatusOK)
 	var challenge application.AuthResponse
 	decodeBody(t, challengeRec, &challenge)
-	if !challenge.Requires2FA || challenge.TwoFAToken == "" || len(challenge.TwoFAMethods) != 1 {
+	if !challenge.Requires2FA || challenge.TwoFAToken == "" || !containsString(challenge.TwoFAMethods, "totp") || !containsString(challenge.TwoFAMethods, "recovery_code") {
 		t.Fatalf("expected 2FA challenge, got %+v", challenge)
 	}
 	if challenge.AccessToken != "" || challenge.RefreshToken != "" {
@@ -365,13 +474,58 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 		t.Fatalf("2FA verify should issue tokens: %+v", twoFALogin)
 	}
 
+	recoveryChallengeRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":        "bob@example.com",
+		"password":     "resetpassword123",
+		"session_mode": "token",
+	}, env.apiHeaders())
+	assertStatus(t, recoveryChallengeRec, http.StatusOK)
+	var recoveryChallenge application.AuthResponse
+	decodeBody(t, recoveryChallengeRec, &recoveryChallenge)
+	if !recoveryChallenge.Requires2FA || recoveryChallenge.TwoFAToken == "" {
+		t.Fatalf("expected recovery-code 2FA challenge, got %+v", recoveryChallenge)
+	}
+	recoveryVerifyRec := env.request(t, http.MethodPost, "/api/auth/recovery-codes/verify", map[string]string{
+		"two_factor_token": recoveryChallenge.TwoFAToken,
+		"code":             recoveryCodes.RecoveryCodes[0],
+		"session_mode":     "token",
+	}, env.apiHeaders())
+	assertStatus(t, recoveryVerifyRec, http.StatusOK)
+	var recoveryLogin application.AuthResponse
+	decodeBody(t, recoveryVerifyRec, &recoveryLogin)
+	if recoveryLogin.AccessToken == "" || recoveryLogin.RefreshToken == "" {
+		t.Fatalf("recovery code verify should issue tokens: %+v", recoveryLogin)
+	}
+	recoveryCountAfterUseRec := env.request(t, http.MethodGet, "/api/auth/recovery-codes", nil, env.bearerHeaders(recoveryLogin.AccessToken))
+	assertStatus(t, recoveryCountAfterUseRec, http.StatusOK)
+	var recoveryCountAfterUse application.RecoveryCodesResponse
+	decodeBody(t, recoveryCountAfterUseRec, &recoveryCountAfterUse)
+	if recoveryCountAfterUse.UnusedCount != 9 {
+		t.Fatalf("expected one recovery code to be consumed, got %+v", recoveryCountAfterUse)
+	}
+
+	reuseChallengeRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":        "bob@example.com",
+		"password":     "resetpassword123",
+		"session_mode": "token",
+	}, env.apiHeaders())
+	assertStatus(t, reuseChallengeRec, http.StatusOK)
+	var reuseChallenge application.AuthResponse
+	decodeBody(t, reuseChallengeRec, &reuseChallenge)
+	reuseRecoveryRec := env.request(t, http.MethodPost, "/api/auth/recovery-codes/verify", map[string]string{
+		"two_factor_token": reuseChallenge.TwoFAToken,
+		"code":             recoveryCodes.RecoveryCodes[0],
+		"session_mode":     "token",
+	}, env.apiHeaders())
+	assertStatus(t, reuseRecoveryRec, http.StatusUnauthorized)
+
 	disableCode, err := totp.GenerateCode(setup.Secret, time.Now())
 	if err != nil {
 		t.Fatalf("generate totp code: %v", err)
 	}
 	disableRec := env.request(t, http.MethodPost, "/api/auth/totp/disable", map[string]string{
 		"code": disableCode,
-	}, env.bearerHeaders(twoFALogin.AccessToken))
+	}, env.bearerHeaders(recoveryLogin.AccessToken))
 	assertStatus(t, disableRec, http.StatusOK)
 
 	postDisableLoginRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
@@ -435,6 +589,20 @@ func TestE2ETenantIsolationAdminAndAbuseControls(t *testing.T) {
 	decodeBody(t, createClientRec, &created)
 	if created.Client.ID == "" || created.APIKey == "" || created.JWTSecret == "" {
 		t.Fatalf("admin create client returned incomplete payload: %+v", created)
+	}
+
+	updateClientRec := env.request(t, http.MethodPatch, "/api/admin/clients/"+created.Client.ID, map[string]interface{}{
+		"settings": map[string]interface{}{
+			"webauthn_attestation":                 "enterprise",
+			"webauthn_require_attestation":         true,
+			"webauthn_allowed_attestation_formats": []string{"packed", "tpm"},
+		},
+	}, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, updateClientRec, http.StatusOK)
+	var updatedClient domain.Client
+	decodeBody(t, updateClientRec, &updatedClient)
+	if updatedClient.Settings["webauthn_attestation"] != "enterprise" || updatedClient.Settings["webauthn_require_attestation"] != true {
+		t.Fatalf("client settings were not updated: %+v", updatedClient.Settings)
 	}
 
 	listClientRec := env.request(t, http.MethodGet, "/api/admin/clients", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
@@ -530,8 +698,29 @@ func TestE2ETenantIsolationAdminAndAbuseControls(t *testing.T) {
 		}
 	}
 
+	auditCSVRec := env.request(t, http.MethodGet, "/api/admin/audit-events/export?client_id="+url.QueryEscape(env.client.ID)+"&event_type=signup&limit=2&format=csv", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, auditCSVRec, http.StatusOK)
+	if contentType := auditCSVRec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/csv") {
+		t.Fatalf("expected CSV content type, got %q", contentType)
+	}
+	if body := auditCSVRec.Body.String(); !strings.Contains(body, "event_type") || !strings.Contains(body, "signup") {
+		t.Fatalf("audit CSV export missing expected data: %s", body)
+	}
+
+	auditJSONLRec := env.request(t, http.MethodGet, "/api/admin/audit-events/export?client_id="+url.QueryEscape(env.client.ID)+"&event_type=signup&limit=1&format=jsonl", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, auditJSONLRec, http.StatusOK)
+	if contentType := auditJSONLRec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/x-ndjson") {
+		t.Fatalf("expected NDJSON content type, got %q", contentType)
+	}
+	if body := auditJSONLRec.Body.String(); !strings.Contains(body, `"event_type":"signup"`) {
+		t.Fatalf("audit JSONL export missing expected data: %s", body)
+	}
+
 	badAuditLimitRec := env.request(t, http.MethodGet, "/api/admin/audit-events?limit=not-a-number", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
 	assertStatus(t, badAuditLimitRec, http.StatusBadRequest)
+
+	badAuditFormatRec := env.request(t, http.MethodGet, "/api/admin/audit-events/export?format=xml", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, badAuditFormatRec, http.StatusBadRequest)
 }
 
 func TestE2EOAuthAndPasskeyRouteCoverage(t *testing.T) {
@@ -646,8 +835,19 @@ func TestE2EOAuthAndPasskeyRouteCoverage(t *testing.T) {
 		t.Fatalf("unexpected passkey login begin payload: %#v", loginBegin)
 	}
 
+	env.clients.setSettings(env.client.ID, map[string]interface{}{
+		"webauthn_attestation":                 "direct",
+		"webauthn_allowed_attestation_formats": []interface{}{"packed", "apple"},
+	})
 	passkeyRegisterBeginRec := env.request(t, http.MethodPost, "/api/auth/passkey/register/begin", nil, env.bearerHeaders(user.AccessToken))
 	assertStatus(t, passkeyRegisterBeginRec, http.StatusOK)
+	var registrationBegin map[string]interface{}
+	decodeBody(t, passkeyRegisterBeginRec, &registrationBegin)
+	publicKey, _ := registrationBegin["publicKey"].(map[string]interface{})
+	formats, _ := publicKey["attestationFormats"].([]interface{})
+	if publicKey["attestation"] != "direct" || len(formats) != 2 {
+		t.Fatalf("expected passkey attestation policy in options, got %#v", registrationBegin)
+	}
 
 	missingSessionFinishRec := env.request(t, http.MethodPost, "/api/auth/passkey/login/finish", nil, env.apiHeaders())
 	assertStatus(t, missingSessionFinishRec, http.StatusBadRequest)
@@ -667,6 +867,447 @@ func TestE2ERedisRequiredFeaturesFailExplicitlyWithoutCache(t *testing.T) {
 
 	passkeyRec := env.request(t, http.MethodPost, "/api/auth/passkey/login/begin", nil, env.apiHeaders())
 	assertStatus(t, passkeyRec, http.StatusServiceUnavailable)
+}
+
+func TestE2EOrganizationRBACLifecycle(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+	owner := signupE2EUser(t, env, "owner@example.com", e2ePassword)
+	member := signupE2EUser(t, env, "member@example.com", e2ePassword)
+
+	createRec := env.request(t, http.MethodPost, "/api/auth/organizations", map[string]string{
+		"name": "Acme Workspace",
+	}, env.bearerHeaders(owner.AccessToken))
+	assertStatus(t, createRec, http.StatusCreated)
+	var created domain.OrganizationMembershipDetails
+	decodeBody(t, createRec, &created)
+	if created.Organization == nil || created.Organization.Slug != "acme-workspace" {
+		t.Fatalf("unexpected organization response: %+v", created)
+	}
+	if created.Membership == nil || created.Membership.Role != domain.OrganizationRoleOwner {
+		t.Fatalf("creator should be owner: %+v", created.Membership)
+	}
+	orgID := created.Organization.ID
+
+	duplicateRec := env.request(t, http.MethodPost, "/api/auth/organizations", map[string]string{
+		"name": "Acme Workspace",
+		"slug": "acme-workspace",
+	}, env.bearerHeaders(owner.AccessToken))
+	assertStatus(t, duplicateRec, http.StatusConflict)
+
+	listRec := env.request(t, http.MethodGet, "/api/auth/organizations", nil, env.bearerHeaders(owner.AccessToken))
+	assertStatus(t, listRec, http.StatusOK)
+	var listResp struct {
+		Organizations []domain.OrganizationMembershipDetails `json:"organizations"`
+	}
+	decodeBody(t, listRec, &listResp)
+	if len(listResp.Organizations) != 1 {
+		t.Fatalf("expected owner organization in list, got %d", len(listResp.Organizations))
+	}
+
+	inviteRec := env.request(t, http.MethodPost, "/api/auth/organizations/"+orgID+"/invitations", map[string]string{
+		"email": member.User.Email,
+		"role":  domain.OrganizationRoleMember,
+	}, env.bearerHeaders(owner.AccessToken))
+	assertStatus(t, inviteRec, http.StatusCreated)
+	var invite domain.OrganizationInvitationWithToken
+	decodeBody(t, inviteRec, &invite)
+	if invite.Token == "" || invite.Invitation == nil || invite.Invitation.Email != member.User.Email {
+		t.Fatalf("unexpected invitation response: %+v", invite)
+	}
+
+	acceptRec := env.request(t, http.MethodPost, "/api/auth/organization-invitations/accept", map[string]string{
+		"token": invite.Token,
+	}, env.bearerHeaders(member.AccessToken))
+	assertStatus(t, acceptRec, http.StatusOK)
+
+	memberOrgRec := env.request(t, http.MethodGet, "/api/auth/organizations/"+orgID, nil, env.bearerHeaders(member.AccessToken))
+	assertStatus(t, memberOrgRec, http.StatusOK)
+
+	memberInviteRec := env.request(t, http.MethodPost, "/api/auth/organizations/"+orgID+"/invitations", map[string]string{
+		"email": "blocked@example.com",
+	}, env.bearerHeaders(member.AccessToken))
+	assertStatus(t, memberInviteRec, http.StatusForbidden)
+
+	updateMemberRec := env.request(t, http.MethodPatch, "/api/auth/organizations/"+orgID+"/members/"+member.User.ID, map[string]string{
+		"role": domain.OrganizationRoleAdmin,
+	}, env.bearerHeaders(owner.AccessToken))
+	assertStatus(t, updateMemberRec, http.StatusOK)
+	var updatedMember domain.OrganizationMembership
+	decodeBody(t, updateMemberRec, &updatedMember)
+	if updatedMember.Role != domain.OrganizationRoleAdmin {
+		t.Fatalf("expected admin role, got %+v", updatedMember)
+	}
+
+	tokenRec := env.request(t, http.MethodPost, "/api/auth/organizations/"+orgID+"/token", nil, env.bearerHeaders(member.AccessToken))
+	assertStatus(t, tokenRec, http.StatusOK)
+	var orgToken organizationTokenResponse
+	decodeBody(t, tokenRec, &orgToken)
+	claims, err := application.ValidateAccessToken(context.Background(), env.client, orgToken.AccessToken)
+	if err != nil {
+		t.Fatalf("validate org token: %v", err)
+	}
+	if claims.OrganizationID != orgID || claims.OrganizationRole != domain.OrganizationRoleAdmin {
+		t.Fatalf("missing org claims: %+v", claims)
+	}
+	if !containsString(claims.OrganizationPermissions, domain.PermissionInvitationsWrite) {
+		t.Fatalf("admin org token missing invitation permission: %+v", claims.OrganizationPermissions)
+	}
+
+	membersRec := env.request(t, http.MethodGet, "/api/auth/organizations/"+orgID+"/members", nil, env.bearerHeaders(member.AccessToken))
+	assertStatus(t, membersRec, http.StatusOK)
+
+	removeMemberRec := env.request(t, http.MethodDelete, "/api/auth/organizations/"+orgID+"/members/"+member.User.ID, nil, env.bearerHeaders(owner.AccessToken))
+	assertStatus(t, removeMemberRec, http.StatusOK)
+
+	removedAccessRec := env.request(t, http.MethodGet, "/api/auth/organizations/"+orgID, nil, env.bearerHeaders(member.AccessToken))
+	assertStatus(t, removedAccessRec, http.StatusNotFound)
+
+	events, err := env.audit.List(context.Background(), domain.AuditEventFilter{ClientID: env.client.ID, Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, eventType := range []string{"organization_created", "organization_invitation_accepted", "organization_member_updated", "organization_member_removed"} {
+		if !auditEventsContain(events, eventType) {
+			t.Fatalf("expected audit event %q in %+v", eventType, events)
+		}
+	}
+}
+
+func TestE2EMachineToMachineClientCredentialsLifecycle(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+
+	createRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/service-accounts", map[string]interface{}{
+		"name":   "Billing Worker",
+		"scopes": []string{"invoices:read", "invoices:write"},
+	}, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, createRec, http.StatusCreated)
+	var created domain.ServiceAccountKeyWithSecret
+	decodeBody(t, createRec, &created)
+	if created.ServiceAccount == nil || created.Key == nil || created.ClientID == "" || created.ClientSecret == "" {
+		t.Fatalf("create service account returned incomplete response: %+v", created)
+	}
+	serviceAccountID := created.ClientID
+	initialSecret := created.ClientSecret
+
+	tokenRec := env.request(t, http.MethodPost, "/oauth/token", map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     serviceAccountID,
+		"client_secret": initialSecret,
+		"scope":         "invoices:read",
+	}, nil)
+	assertStatus(t, tokenRec, http.StatusOK)
+	var token application.M2MTokenResponse
+	decodeBody(t, tokenRec, &token)
+	if token.AccessToken == "" || token.Scope != "invoices:read" {
+		t.Fatalf("unexpected token response: %+v", token)
+	}
+
+	claims, err := application.ValidateAccessToken(context.Background(), env.client, token.AccessToken)
+	if err != nil {
+		t.Fatalf("validate m2m token: %v", err)
+	}
+	if claims.TokenUse != domain.TokenUseClientCredentials || claims.ServiceAccountID != serviceAccountID || claims.Subject != serviceAccountID {
+		t.Fatalf("missing m2m claims: %+v", claims)
+	}
+	if !containsString(claims.Scopes, "invoices:read") {
+		t.Fatalf("m2m token missing requested scope: %+v", claims.Scopes)
+	}
+
+	introspectRec := env.request(t, http.MethodPost, "/oauth/introspect", map[string]string{
+		"token":         token.AccessToken,
+		"client_id":     serviceAccountID,
+		"client_secret": initialSecret,
+	}, nil)
+	assertStatus(t, introspectRec, http.StatusOK)
+	var introspection application.M2MIntrospectionResponse
+	decodeBody(t, introspectRec, &introspection)
+	if !introspection.Active || introspection.ServiceAccountID != serviceAccountID || introspection.Scope != "invoices:read" {
+		t.Fatalf("unexpected introspection response: %+v", introspection)
+	}
+
+	deniedScopeRec := env.request(t, http.MethodPost, "/oauth/token", map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     serviceAccountID,
+		"client_secret": initialSecret,
+		"scope":         "invoices:delete",
+	}, nil)
+	assertStatus(t, deniedScopeRec, http.StatusBadRequest)
+
+	createKeyRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/service-accounts/"+serviceAccountID+"/keys", map[string]interface{}{
+		"name":   "read-only",
+		"scopes": []string{"invoices:read"},
+	}, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, createKeyRec, http.StatusCreated)
+	var createdKey domain.ServiceAccountKeyWithSecret
+	decodeBody(t, createKeyRec, &createdKey)
+	if createdKey.Key == nil || createdKey.ClientSecret == "" || createdKey.ClientSecret == initialSecret {
+		t.Fatalf("unexpected key creation response: %+v", createdKey)
+	}
+
+	revokeInitialRec := env.request(t, http.MethodDelete, "/api/admin/clients/"+env.client.ID+"/service-accounts/"+serviceAccountID+"/keys/"+created.Key.ID, nil, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, revokeInitialRec, http.StatusOK)
+
+	revokedTokenRec := env.request(t, http.MethodPost, "/oauth/token", map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     serviceAccountID,
+		"client_secret": initialSecret,
+	}, nil)
+	assertStatus(t, revokedTokenRec, http.StatusUnauthorized)
+
+	newTokenRec := env.request(t, http.MethodPost, "/oauth/token", map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     serviceAccountID,
+		"client_secret": createdKey.ClientSecret,
+	}, nil)
+	assertStatus(t, newTokenRec, http.StatusOK)
+
+	rotateRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/service-accounts/"+serviceAccountID+"/keys/"+createdKey.Key.ID+"/rotate", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, rotateRec, http.StatusOK)
+	var rotatedKey domain.ServiceAccountKeyWithSecret
+	decodeBody(t, rotateRec, &rotatedKey)
+	if rotatedKey.ClientSecret == "" || rotatedKey.ClientSecret == createdKey.ClientSecret {
+		t.Fatalf("unexpected rotated key response: %+v", rotatedKey)
+	}
+
+	rotatedOldSecretRec := env.request(t, http.MethodPost, "/oauth/token", map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     serviceAccountID,
+		"client_secret": createdKey.ClientSecret,
+	}, nil)
+	assertStatus(t, rotatedOldSecretRec, http.StatusUnauthorized)
+
+	rotatedTokenRec := env.request(t, http.MethodPost, "/oauth/token", map[string]string{
+		"grant_type":    "client_credentials",
+		"client_id":     serviceAccountID,
+		"client_secret": rotatedKey.ClientSecret,
+	}, nil)
+	assertStatus(t, rotatedTokenRec, http.StatusOK)
+
+	events, err := env.audit.List(context.Background(), domain.AuditEventFilter{ClientID: env.client.ID, Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, eventType := range []string{"service_account_created", "m2m_token_issued", "service_account_key_revoked", "service_account_key_rotated"} {
+		if !auditEventsContain(events, eventType) {
+			t.Fatalf("expected audit event %q in %+v", eventType, events)
+		}
+	}
+}
+
+func TestE2EEnterpriseSSOOIDCLifecycle(t *testing.T) {
+	oidcProvider := newTestOIDCProvider(t, testOIDCProfile{
+		Subject:       "okta-user-123",
+		Email:         "sso.user@acme.com",
+		Name:          "SSO User",
+		EmailVerified: true,
+	})
+	defer oidcProvider.Close()
+
+	env := newE2EEnv(t, e2eOptions{})
+
+	createRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/sso-connections", map[string]interface{}{
+		"name":                "Acme Okta",
+		"slug":                "acme-okta",
+		"protocol":            "oidc",
+		"domains":             []string{"acme.com"},
+		"enforce_for_domains": true,
+		"oidc": map[string]interface{}{
+			"issuer":        oidcProvider.URL(),
+			"client_id":     "enterprise-client",
+			"client_secret": "enterprise-secret",
+			"scopes":        []string{"openid", "email", "profile"},
+		},
+	}, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, createRec, http.StatusCreated)
+	var connection domain.EnterpriseSSOConnection
+	decodeBody(t, createRec, &connection)
+	if connection.ID == "" || connection.Protocol != domain.SSOProtocolOIDC || connection.OIDC.ClientSecret != "" {
+		t.Fatalf("unexpected sanitized OIDC connection response: %+v", connection)
+	}
+
+	beginRec := env.request(t, http.MethodGet, "/api/auth/sso?domain=acme.com", nil, env.apiHeaders())
+	assertStatus(t, beginRec, http.StatusFound)
+	providerRedirect := beginRec.Header().Get("Location")
+	if !strings.HasPrefix(providerRedirect, oidcProvider.URL()+"/authorize") {
+		t.Fatalf("expected OIDC provider redirect, got %s", providerRedirect)
+	}
+
+	callbackURL := followRedirectOnce(t, providerRedirect)
+	callbackRec := env.request(t, http.MethodGet, callbackURL, nil, nil)
+	assertStatus(t, callbackRec, http.StatusFound)
+	loginRedirect := callbackRec.Header().Get("Location")
+	accessToken := accessTokenFromURL(t, loginRedirect)
+	claims, err := application.ValidateAccessToken(context.Background(), env.client, accessToken)
+	if err != nil {
+		t.Fatalf("validate SSO access token: %v", err)
+	}
+	if claims.Email != "sso.user@acme.com" || claims.ClientID != env.client.ID {
+		t.Fatalf("unexpected SSO claims: %+v", claims)
+	}
+
+	user, err := env.users.GetByEmail(context.Background(), env.client.ID, "sso.user@acme.com")
+	if err != nil {
+		t.Fatalf("expected SSO-provisioned user: %v", err)
+	}
+	if !user.EmailVerified || user.DisplayName != "SSO User" {
+		t.Fatalf("unexpected SSO user: %+v", user)
+	}
+	identity, err := env.sso.FindIdentity(context.Background(), env.client.ID, connection.ID, "okta-user-123")
+	if err != nil || identity.UserID != user.ID {
+		t.Fatalf("expected linked SSO identity, got %+v err=%v", identity, err)
+	}
+
+	events, err := env.audit.List(context.Background(), domain.AuditEventFilter{ClientID: env.client.ID, Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, eventType := range []string{"enterprise_sso_connection_created", "signup", "login_success"} {
+		if !auditEventsContain(events, eventType) {
+			t.Fatalf("expected audit event %q in %+v", eventType, events)
+		}
+	}
+}
+
+func TestE2EEnterpriseSSOSAMLMetadataAndRedirect(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+	idpCert := generateTestCertificateBase64(t)
+
+	createRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/sso-connections", map[string]interface{}{
+		"name":     "Acme SAML",
+		"slug":     "acme-saml",
+		"protocol": "saml",
+		"domains":  []string{"acme.com"},
+		"saml": map[string]interface{}{
+			"idp_entity_id":   "https://idp.example.com/metadata",
+			"idp_sso_url":     "https://idp.example.com/sso",
+			"idp_certificate": idpCert,
+		},
+		"attribute_mapping": map[string]string{
+			"email":       "mail",
+			"name":        "displayName",
+			"external_id": "uid",
+		},
+	}, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, createRec, http.StatusCreated)
+	var connection domain.EnterpriseSSOConnection
+	decodeBody(t, createRec, &connection)
+	if connection.ID == "" || connection.Protocol != domain.SSOProtocolSAML || connection.SAML.SPPrivateKeyPEM != "" {
+		t.Fatalf("unexpected sanitized SAML connection response: %+v", connection)
+	}
+	if connection.SAML.SPCertificatePEM == "" {
+		t.Fatalf("expected generated SP certificate in sanitized SAML response")
+	}
+
+	metadataRec := env.request(t, http.MethodGet, "/api/auth/sso/metadata/"+connection.ID, nil, nil)
+	assertStatus(t, metadataRec, http.StatusOK)
+	metadata := metadataRec.Body.String()
+	if !strings.Contains(metadata, "EntityDescriptor") || !strings.Contains(metadata, "AssertionConsumerService") {
+		t.Fatalf("unexpected SAML metadata: %s", metadata)
+	}
+
+	beginRec := env.request(t, http.MethodGet, "/api/auth/sso/"+connection.ID, nil, env.apiHeaders())
+	assertStatus(t, beginRec, http.StatusFound)
+	redirectURL := beginRec.Header().Get("Location")
+	parsed, err := url.Parse(redirectURL)
+	if err != nil {
+		t.Fatalf("parse SAML redirect: %v", err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "idp.example.com" || parsed.Query().Get("SAMLRequest") == "" || parsed.Query().Get("RelayState") == "" {
+		t.Fatalf("unexpected SAML redirect: %s", redirectURL)
+	}
+}
+
+func TestE2ESCIMDirectorySyncLifecycle(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+
+	createDirectoryRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/scim-directories", map[string]interface{}{
+		"name":    "Acme Directory",
+		"domains": []string{"acme.com"},
+	}, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, createDirectoryRec, http.StatusCreated)
+	var directoryWithToken domain.SCIMDirectoryWithToken
+	decodeBody(t, createDirectoryRec, &directoryWithToken)
+	if directoryWithToken.Directory == nil || directoryWithToken.Directory.ID == "" || directoryWithToken.Token == "" {
+		t.Fatalf("unexpected SCIM directory response: %+v", directoryWithToken)
+	}
+
+	scimHeaders := map[string]string{"Authorization": "Bearer " + directoryWithToken.Token}
+	configRec := env.request(t, http.MethodGet, "/scim/v2/"+directoryWithToken.Directory.ID+"/ServiceProviderConfig", nil, scimHeaders)
+	assertStatus(t, configRec, http.StatusOK)
+
+	createUserRec := env.request(t, http.MethodPost, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users", map[string]interface{}{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"externalId":  "00u-acme-1",
+		"userName":    "provisioned@acme.com",
+		"active":      true,
+		"displayName": "Provisioned User",
+		"emails": []map[string]interface{}{{
+			"value":   "provisioned@acme.com",
+			"type":    "work",
+			"primary": true,
+		}},
+	}, scimHeaders)
+	assertStatus(t, createUserRec, http.StatusCreated)
+	var scimUser application.SCIMUserResource
+	decodeBody(t, createUserRec, &scimUser)
+	if scimUser.ID == "" || scimUser.UserName != "provisioned@acme.com" || !scimUser.Active {
+		t.Fatalf("unexpected SCIM user: %+v", scimUser)
+	}
+	user, err := env.users.GetByEmail(context.Background(), env.client.ID, "provisioned@acme.com")
+	if err != nil || user.DisplayName != "Provisioned User" || user.Status != "active" {
+		t.Fatalf("expected provisioned active user, got %+v err=%v", user, err)
+	}
+
+	listUsersRec := env.request(t, http.MethodGet, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users", nil, scimHeaders)
+	assertStatus(t, listUsersRec, http.StatusOK)
+	var listUsers application.SCIMListResponse
+	decodeBody(t, listUsersRec, &listUsers)
+	if listUsers.TotalResults != 1 {
+		t.Fatalf("expected one SCIM user, got %+v", listUsers)
+	}
+
+	patchUserRec := env.request(t, http.MethodPatch, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users/"+scimUser.ID, map[string]interface{}{
+		"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
+		"Operations": []map[string]interface{}{{
+			"op":    "replace",
+			"path":  "active",
+			"value": false,
+		}},
+	}, scimHeaders)
+	assertStatus(t, patchUserRec, http.StatusOK)
+	user, err = env.users.GetByEmail(context.Background(), env.client.ID, "provisioned@acme.com")
+	if err != nil || user.Status != "suspended" {
+		t.Fatalf("expected SCIM patch to suspend user, got %+v err=%v", user, err)
+	}
+
+	createGroupRec := env.request(t, http.MethodPost, "/scim/v2/"+directoryWithToken.Directory.ID+"/Groups", map[string]interface{}{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"externalId":  "group-1",
+		"displayName": "Engineering",
+		"members": []map[string]string{{
+			"value": scimUser.ID,
+		}},
+	}, scimHeaders)
+	assertStatus(t, createGroupRec, http.StatusCreated)
+	var scimGroup application.SCIMGroupResource
+	decodeBody(t, createGroupRec, &scimGroup)
+	if scimGroup.ID == "" || len(scimGroup.Members) != 1 {
+		t.Fatalf("unexpected SCIM group: %+v", scimGroup)
+	}
+
+	deleteUserRec := env.request(t, http.MethodDelete, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users/"+scimUser.ID, nil, scimHeaders)
+	assertStatus(t, deleteUserRec, http.StatusNoContent)
+	deletedGetRec := env.request(t, http.MethodGet, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users/"+scimUser.ID, nil, scimHeaders)
+	assertStatus(t, deletedGetRec, http.StatusNotFound)
+
+	rotateRec := env.request(t, http.MethodPost, "/api/admin/clients/"+env.client.ID+"/scim-directories/"+directoryWithToken.Directory.ID+"/rotate-token", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
+	assertStatus(t, rotateRec, http.StatusOK)
+	var rotated domain.SCIMDirectoryWithToken
+	decodeBody(t, rotateRec, &rotated)
+	oldTokenRec := env.request(t, http.MethodGet, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users", nil, scimHeaders)
+	assertStatus(t, oldTokenRec, http.StatusUnauthorized)
+	newTokenRec := env.request(t, http.MethodGet, "/scim/v2/"+directoryWithToken.Directory.ID+"/Users", nil, map[string]string{"Authorization": "Bearer " + rotated.Token})
+	assertStatus(t, newTokenRec, http.StatusOK)
 }
 
 func signupE2EUser(t *testing.T, env *e2eEnv, email, password string) application.AuthResponse {
@@ -743,6 +1384,232 @@ func tokenFromURL(t *testing.T, rawURL string) string {
 		t.Fatalf("url %q did not include token", rawURL)
 	}
 	return token
+}
+
+func accessTokenFromURL(t *testing.T, rawURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse url %q: %v", rawURL, err)
+	}
+	token := parsed.Query().Get("access_token")
+	if token == "" {
+		t.Fatalf("url %q did not include access_token", rawURL)
+	}
+	return token
+}
+
+func followRedirectOnce(t *testing.T, rawURL string) string {
+	t.Helper()
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		t.Fatalf("follow redirect %q: %v", rawURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected redirect from %q, got %d: %s", rawURL, resp.StatusCode, string(body))
+	}
+	location := resp.Header.Get("Location")
+	if location == "" {
+		t.Fatalf("redirect from %q did not include Location", rawURL)
+	}
+	return location
+}
+
+type testOIDCProfile struct {
+	Subject       string
+	Email         string
+	Name          string
+	EmailVerified bool
+}
+
+type testOIDCProvider struct {
+	server  *httptest.Server
+	key     *rsa.PrivateKey
+	kid     string
+	profile testOIDCProfile
+	mu      sync.Mutex
+	nonces  map[string]string
+}
+
+func newTestOIDCProvider(t *testing.T, profile testOIDCProfile) *testOIDCProvider {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate oidc key: %v", err)
+	}
+	provider := &testOIDCProvider{
+		key:     key,
+		kid:     "test-oidc-key",
+		profile: profile,
+		nonces:  map[string]string{},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"issuer":                                provider.server.URL,
+			"authorization_endpoint":                provider.server.URL + "/authorize",
+			"token_endpoint":                        provider.server.URL + "/token",
+			"jwks_uri":                              provider.server.URL + "/keys",
+			"userinfo_endpoint":                     provider.server.URL + "/userinfo",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"response_types_supported":              []string{"code"},
+			"subject_types_supported":               []string{"public"},
+		})
+	})
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		code := "oidc-code-" + r.URL.Query().Get("state")
+		provider.mu.Lock()
+		provider.nonces[code] = r.URL.Query().Get("nonce")
+		provider.mu.Unlock()
+		redirectURI := r.URL.Query().Get("redirect_uri")
+		callback, _ := url.Parse(redirectURI)
+		q := callback.Query()
+		q.Set("code", code)
+		q.Set("state", r.URL.Query().Get("state"))
+		callback.RawQuery = q.Encode()
+		http.Redirect(w, r, callback.String(), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			return
+		}
+		clientID, clientSecret, _ := r.BasicAuth()
+		if clientID == "" {
+			clientID = r.FormValue("client_id")
+		}
+		if clientSecret == "" {
+			clientSecret = r.FormValue("client_secret")
+		}
+		code := r.FormValue("code")
+		provider.mu.Lock()
+		nonce := provider.nonces[code]
+		delete(provider.nonces, code)
+		provider.mu.Unlock()
+		if nonce == "" || clientID != "enterprise-client" || clientSecret != "enterprise-secret" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_grant"})
+			return
+		}
+		idToken := provider.signIDToken(t, nonce)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"access_token": "provider-access-token",
+			"id_token":     idToken,
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"keys": []map[string]string{rsaPublicJWK(&provider.key.PublicKey, provider.kid)},
+		})
+	})
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"sub":            profile.Subject,
+			"email":          profile.Email,
+			"email_verified": profile.EmailVerified,
+			"name":           profile.Name,
+		})
+	})
+	provider.server = httptest.NewServer(mux)
+	return provider
+}
+
+func (p *testOIDCProvider) URL() string {
+	return p.server.URL
+}
+
+func (p *testOIDCProvider) Close() {
+	p.server.Close()
+}
+
+func (p *testOIDCProvider) signIDToken(t *testing.T, nonce string) string {
+	t.Helper()
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss":            p.server.URL,
+		"sub":            p.profile.Subject,
+		"aud":            "enterprise-client",
+		"exp":            now.Add(5 * time.Minute).Unix(),
+		"iat":            now.Unix(),
+		"nonce":          nonce,
+		"email":          p.profile.Email,
+		"email_verified": p.profile.EmailVerified,
+		"name":           p.profile.Name,
+	})
+	token.Header["kid"] = p.kid
+	signed, err := token.SignedString(p.key)
+	if err != nil {
+		t.Fatalf("sign id token: %v", err)
+	}
+	return signed
+}
+
+func rsaPublicJWK(pub *rsa.PublicKey, kid string) map[string]string {
+	return map[string]string{
+		"kty": "RSA",
+		"use": "sig",
+		"kid": kid,
+		"alg": "RS256",
+		"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+	}
+}
+
+func generateTestCertificateBase64(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test cert key: %v", err)
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "idp.example.com",
+		},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create test cert: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(certDER)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func auditEventsContain(events []*domain.AuditEvent, eventType string) bool {
+	for _, event := range events {
+		if event.EventType == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultBlockedSignupEmailDomains() []string {
+	defaults := application.DefaultBlockedSignupEmailDomains()
+	domains := make([]string, 0, len(defaults))
+	for domain := range defaults {
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 type memoryClientRepo struct {
@@ -1034,6 +1901,18 @@ func (r *memoryUserRepo) UpdateProfile(ctx context.Context, userID, displayName,
 	return nil
 }
 
+func (r *memoryUserRepo) UpdateStatus(ctx context.Context, userID, status string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	user := r.users[userID]
+	if user == nil {
+		return domain.ErrNotFound
+	}
+	user.Status = status
+	user.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
 func (r *memoryUserRepo) SetTOTPSecret(ctx context.Context, userID, secret string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1076,8 +1955,11 @@ type memorySession struct {
 	userID    string
 	clientID  string
 	tokenHash string
+	ip        string
+	ua        string
 	expiresAt time.Time
 	revoked   bool
+	createdAt time.Time
 }
 
 type memorySessionRepo struct {
@@ -1099,12 +1981,16 @@ func (r *memorySessionRepo) Create(ctx context.Context, userID, clientID, ip, ua
 	}
 	r.nextID++
 	id := fmt.Sprintf("session-%d", r.nextID)
+	now := time.Now()
 	r.sessions[id] = &memorySession{
 		id:        id,
 		userID:    userID,
 		clientID:  clientID,
 		tokenHash: application.HashToken(rawToken),
-		expiresAt: time.Now().Add(ttl),
+		ip:        ip,
+		ua:        ua,
+		expiresAt: now.Add(ttl),
+		createdAt: now,
 	}
 	return rawToken, nil
 }
@@ -1119,6 +2005,28 @@ func (r *memorySessionRepo) Validate(ctx context.Context, clientID, rawToken str
 		}
 	}
 	return "", "", domain.ErrInvalidToken
+}
+
+func (r *memorySessionRepo) ListForUser(ctx context.Context, clientID, userID string) ([]*domain.Session, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sessions := []*domain.Session{}
+	for _, session := range r.sessions {
+		if session.clientID != clientID || session.userID != userID || session.revoked || !time.Now().Before(session.expiresAt) {
+			continue
+		}
+		sessions = append(sessions, &domain.Session{
+			ID:        session.id,
+			UserID:    session.userID,
+			ClientID:  session.clientID,
+			UserAgent: session.ua,
+			IPAddress: session.ip,
+			ExpiresAt: session.expiresAt,
+			Revoked:   session.revoked,
+			CreatedAt: session.createdAt,
+		})
+	}
+	return sessions, nil
 }
 
 func (r *memorySessionRepo) Revoke(ctx context.Context, sessionID string) error {
@@ -1139,6 +2047,17 @@ func (r *memorySessionRepo) RevokeByToken(ctx context.Context, clientID, rawToke
 			session.revoked = true
 		}
 	}
+	return nil
+}
+
+func (r *memorySessionRepo) RevokeForUser(ctx context.Context, clientID, userID, sessionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session := r.sessions[sessionID]
+	if session == nil || session.clientID != clientID || session.userID != userID || session.revoked {
+		return domain.ErrNotFound
+	}
+	session.revoked = true
 	return nil
 }
 
@@ -1227,6 +2146,48 @@ func (r *memoryTokenRepo) latestFor(t *testing.T, userID, tokenType string) stri
 		t.Fatalf("no token created for user=%s type=%s", userID, tokenType)
 	}
 	return latest.raw
+}
+
+type memoryRecoveryCodeRepo struct {
+	mu     sync.Mutex
+	hashes map[string]map[string]bool
+}
+
+func newMemoryRecoveryCodeRepo() *memoryRecoveryCodeRepo {
+	return &memoryRecoveryCodeRepo{hashes: map[string]map[string]bool{}}
+}
+
+func (r *memoryRecoveryCodeRepo) ReplaceForUser(ctx context.Context, userID string, codeHashes []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hashes[userID] = map[string]bool{}
+	for _, hash := range codeHashes {
+		r.hashes[userID][hash] = false
+	}
+	return nil
+}
+
+func (r *memoryRecoveryCodeRepo) CountUnused(ctx context.Context, userID string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, used := range r.hashes[userID] {
+		if !used {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *memoryRecoveryCodeRepo) MarkUsedByHash(ctx context.Context, userID, codeHash string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	used, ok := r.hashes[userID][codeHash]
+	if !ok || used {
+		return false, nil
+	}
+	r.hashes[userID][codeHash] = true
+	return true, nil
 }
 
 type memoryCacheItem struct {
@@ -1534,6 +2495,673 @@ func (r *memoryOAuthRepo) Link(ctx context.Context, userID, clientID, provider, 
 	return nil
 }
 
+type memoryOrganizationRepo struct {
+	mu            sync.Mutex
+	orgs          map[string]*domain.Organization
+	memberships   map[string]*domain.OrganizationMembership
+	invitations   map[string]*domain.OrganizationInvitation
+	inviteByToken map[string]string
+}
+
+func newMemoryOrganizationRepo() *memoryOrganizationRepo {
+	return &memoryOrganizationRepo{
+		orgs:          map[string]*domain.Organization{},
+		memberships:   map[string]*domain.OrganizationMembership{},
+		invitations:   map[string]*domain.OrganizationInvitation{},
+		inviteByToken: map[string]string{},
+	}
+}
+
+func (r *memoryOrganizationRepo) CreateOrganization(ctx context.Context, org *domain.Organization, owner *domain.OrganizationMembership) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, existing := range r.orgs {
+		if existing.ClientID == org.ClientID && strings.EqualFold(existing.Slug, org.Slug) {
+			return domain.ErrDuplicateOrganization
+		}
+	}
+	r.orgs[org.ID] = cloneOrganization(org)
+	r.memberships[membershipKey(owner.OrganizationID, owner.UserID)] = cloneOrganizationMembership(owner)
+	return nil
+}
+
+func (r *memoryOrganizationRepo) UpdateOrganization(ctx context.Context, org *domain.Organization) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.orgs[org.ID] == nil || r.orgs[org.ID].ClientID != org.ClientID {
+		return domain.ErrNotFound
+	}
+	for _, existing := range r.orgs {
+		if existing.ID != org.ID && existing.ClientID == org.ClientID && strings.EqualFold(existing.Slug, org.Slug) {
+			return domain.ErrDuplicateOrganization
+		}
+	}
+	r.orgs[org.ID] = cloneOrganization(org)
+	return nil
+}
+
+func (r *memoryOrganizationRepo) GetOrganization(ctx context.Context, clientID, organizationID string) (*domain.Organization, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	org := r.orgs[organizationID]
+	if org == nil || org.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneOrganization(org), nil
+}
+
+func (r *memoryOrganizationRepo) ListOrganizationsForUser(ctx context.Context, clientID, userID string) ([]domain.OrganizationMembershipDetails, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]domain.OrganizationMembershipDetails, 0)
+	for _, membership := range r.memberships {
+		if membership.ClientID != clientID || membership.UserID != userID || membership.Status != "active" {
+			continue
+		}
+		org := r.orgs[membership.OrganizationID]
+		if org == nil || org.ClientID != clientID {
+			continue
+		}
+		out = append(out, domain.OrganizationMembershipDetails{
+			Organization: cloneOrganization(org),
+			Membership:   cloneOrganizationMembership(membership),
+		})
+	}
+	return out, nil
+}
+
+func (r *memoryOrganizationRepo) GetMembership(ctx context.Context, clientID, organizationID, userID string) (*domain.OrganizationMembership, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	membership := r.memberships[membershipKey(organizationID, userID)]
+	if membership == nil || membership.ClientID != clientID || membership.Status != "active" {
+		return nil, domain.ErrNotFound
+	}
+	return cloneOrganizationMembership(membership), nil
+}
+
+func (r *memoryOrganizationRepo) ListMemberships(ctx context.Context, clientID, organizationID string) ([]*domain.OrganizationMembership, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.OrganizationMembership, 0)
+	for _, membership := range r.memberships {
+		if membership.ClientID == clientID && membership.OrganizationID == organizationID && membership.Status == "active" {
+			out = append(out, cloneOrganizationMembership(membership))
+		}
+	}
+	return out, nil
+}
+
+func (r *memoryOrganizationRepo) UpsertMembership(ctx context.Context, membership *domain.OrganizationMembership) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := membershipKey(membership.OrganizationID, membership.UserID)
+	if existing := r.memberships[key]; existing != nil {
+		membership.ID = existing.ID
+		membership.CreatedAt = existing.CreatedAt
+	}
+	if membership.ID == "" {
+		membership.ID = fmt.Sprintf("membership-%d", len(r.memberships)+1)
+	}
+	if membership.CreatedAt.IsZero() {
+		membership.CreatedAt = time.Now().UTC()
+	}
+	if membership.UpdatedAt.IsZero() {
+		membership.UpdatedAt = time.Now().UTC()
+	}
+	membership.Status = "active"
+	r.memberships[key] = cloneOrganizationMembership(membership)
+	return nil
+}
+
+func (r *memoryOrganizationRepo) UpdateMembership(ctx context.Context, membership *domain.OrganizationMembership) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := membershipKey(membership.OrganizationID, membership.UserID)
+	existing := r.memberships[key]
+	if existing == nil || existing.ClientID != membership.ClientID || existing.Status != "active" {
+		return domain.ErrNotFound
+	}
+	cp := cloneOrganizationMembership(membership)
+	cp.ID = existing.ID
+	cp.CreatedAt = existing.CreatedAt
+	cp.Status = "active"
+	cp.UpdatedAt = time.Now().UTC()
+	r.memberships[key] = cp
+	return nil
+}
+
+func (r *memoryOrganizationRepo) DeleteMembership(ctx context.Context, clientID, organizationID, userID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := membershipKey(organizationID, userID)
+	membership := r.memberships[key]
+	if membership == nil || membership.ClientID != clientID {
+		return domain.ErrNotFound
+	}
+	delete(r.memberships, key)
+	return nil
+}
+
+func (r *memoryOrganizationRepo) CreateInvitation(ctx context.Context, invitation *domain.OrganizationInvitation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invitations[invitation.ID] = cloneOrganizationInvitation(invitation)
+	r.inviteByToken[invitation.TokenHash] = invitation.ID
+	return nil
+}
+
+func (r *memoryOrganizationRepo) ListInvitations(ctx context.Context, clientID, organizationID string) ([]*domain.OrganizationInvitation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.OrganizationInvitation, 0)
+	for _, invitation := range r.invitations {
+		if invitation.ClientID == clientID && invitation.OrganizationID == organizationID {
+			out = append(out, cloneOrganizationInvitation(invitation))
+		}
+	}
+	return out, nil
+}
+
+func (r *memoryOrganizationRepo) GetInvitation(ctx context.Context, clientID, organizationID, invitationID string) (*domain.OrganizationInvitation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	invitation := r.invitations[invitationID]
+	if invitation == nil || invitation.ClientID != clientID || invitation.OrganizationID != organizationID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneOrganizationInvitation(invitation), nil
+}
+
+func (r *memoryOrganizationRepo) GetInvitationByTokenHash(ctx context.Context, tokenHash string) (*domain.OrganizationInvitation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := r.inviteByToken[tokenHash]
+	invitation := r.invitations[id]
+	if invitation == nil {
+		return nil, domain.ErrNotFound
+	}
+	return cloneOrganizationInvitation(invitation), nil
+}
+
+func (r *memoryOrganizationRepo) MarkInvitationAccepted(ctx context.Context, invitationID, userID string) error {
+	_ = userID
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	invitation := r.invitations[invitationID]
+	if invitation == nil || invitation.Status != "pending" {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	invitation.Status = "accepted"
+	invitation.AcceptedAt = &now
+	invitation.UpdatedAt = now
+	return nil
+}
+
+func (r *memoryOrganizationRepo) RevokeInvitation(ctx context.Context, clientID, organizationID, invitationID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	invitation := r.invitations[invitationID]
+	if invitation == nil || invitation.ClientID != clientID || invitation.OrganizationID != organizationID || invitation.Status != "pending" {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	invitation.Status = "revoked"
+	invitation.RevokedAt = &now
+	invitation.UpdatedAt = now
+	return nil
+}
+
+type memoryServiceAccountRepo struct {
+	mu            sync.Mutex
+	accounts      map[string]*domain.ServiceAccount
+	keys          map[string]*domain.ServiceAccountKey
+	keyBySecret   map[string]string
+	keysByAccount map[string][]string
+}
+
+func newMemoryServiceAccountRepo() *memoryServiceAccountRepo {
+	return &memoryServiceAccountRepo{
+		accounts:      map[string]*domain.ServiceAccount{},
+		keys:          map[string]*domain.ServiceAccountKey{},
+		keyBySecret:   map[string]string{},
+		keysByAccount: map[string][]string{},
+	}
+}
+
+func (r *memoryServiceAccountRepo) CreateServiceAccount(ctx context.Context, account *domain.ServiceAccount) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.accounts[account.ID] = cloneServiceAccount(account)
+	return nil
+}
+
+func (r *memoryServiceAccountRepo) ListServiceAccounts(ctx context.Context, clientID string) ([]*domain.ServiceAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.ServiceAccount, 0)
+	for _, account := range r.accounts {
+		if account.ClientID == clientID {
+			out = append(out, cloneServiceAccount(account))
+		}
+	}
+	return out, nil
+}
+
+func (r *memoryServiceAccountRepo) GetServiceAccount(ctx context.Context, clientID, serviceAccountID string) (*domain.ServiceAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	account := r.accounts[serviceAccountID]
+	if account == nil || account.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneServiceAccount(account), nil
+}
+
+func (r *memoryServiceAccountRepo) UpdateServiceAccount(ctx context.Context, account *domain.ServiceAccount) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.accounts[account.ID] == nil || r.accounts[account.ID].ClientID != account.ClientID {
+		return domain.ErrNotFound
+	}
+	r.accounts[account.ID] = cloneServiceAccount(account)
+	return nil
+}
+
+func (r *memoryServiceAccountRepo) UpdateServiceAccountLastUsed(ctx context.Context, serviceAccountID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	account := r.accounts[serviceAccountID]
+	if account == nil {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	account.LastUsedAt = &now
+	account.UpdatedAt = now
+	return nil
+}
+
+func (r *memoryServiceAccountRepo) CreateServiceAccountKey(ctx context.Context, key *domain.ServiceAccountKey) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys[key.ID] = cloneServiceAccountKey(key)
+	r.keyBySecret[key.SecretHash] = key.ID
+	r.keysByAccount[key.ServiceAccountID] = append(r.keysByAccount[key.ServiceAccountID], key.ID)
+	return nil
+}
+
+func (r *memoryServiceAccountRepo) ListServiceAccountKeys(ctx context.Context, clientID, serviceAccountID string) ([]*domain.ServiceAccountKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.ServiceAccountKey, 0)
+	for _, keyID := range r.keysByAccount[serviceAccountID] {
+		key := r.keys[keyID]
+		if key != nil && key.ClientID == clientID {
+			out = append(out, cloneServiceAccountKey(key))
+		}
+	}
+	return out, nil
+}
+
+func (r *memoryServiceAccountRepo) GetServiceAccountKey(ctx context.Context, clientID, serviceAccountID, keyID string) (*domain.ServiceAccountKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := r.keys[keyID]
+	if key == nil || key.ClientID != clientID || key.ServiceAccountID != serviceAccountID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneServiceAccountKey(key), nil
+}
+
+func (r *memoryServiceAccountRepo) GetServiceAccountKeyBySecretHash(ctx context.Context, serviceAccountID, secretHash string) (*domain.ServiceAccountKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := r.keys[r.keyBySecret[secretHash]]
+	if key == nil || key.ServiceAccountID != serviceAccountID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneServiceAccountKey(key), nil
+}
+
+func (r *memoryServiceAccountRepo) UpdateServiceAccountKeyLastUsed(ctx context.Context, keyID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := r.keys[keyID]
+	if key == nil {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	key.LastUsedAt = &now
+	key.UpdatedAt = now
+	return nil
+}
+
+func (r *memoryServiceAccountRepo) RevokeServiceAccountKey(ctx context.Context, clientID, serviceAccountID, keyID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := r.keys[keyID]
+	if key == nil || key.ClientID != clientID || key.ServiceAccountID != serviceAccountID || key.Status == "revoked" {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	key.Status = "revoked"
+	key.RevokedAt = &now
+	key.UpdatedAt = now
+	return nil
+}
+
+type memoryEnterpriseSSORepo struct {
+	mu          sync.Mutex
+	connections map[string]*domain.EnterpriseSSOConnection
+	identities  map[string]*domain.EnterpriseSSOIdentity
+}
+
+func newMemoryEnterpriseSSORepo() *memoryEnterpriseSSORepo {
+	return &memoryEnterpriseSSORepo{
+		connections: map[string]*domain.EnterpriseSSOConnection{},
+		identities:  map[string]*domain.EnterpriseSSOIdentity{},
+	}
+}
+
+func (r *memoryEnterpriseSSORepo) CreateConnection(ctx context.Context, connection *domain.EnterpriseSSOConnection) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connections[connection.ID] = cloneEnterpriseSSOConnection(connection)
+	return nil
+}
+
+func (r *memoryEnterpriseSSORepo) ListConnections(ctx context.Context, clientID string) ([]*domain.EnterpriseSSOConnection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*domain.EnterpriseSSOConnection, 0)
+	for _, connection := range r.connections {
+		if connection.ClientID == clientID {
+			out = append(out, cloneEnterpriseSSOConnection(connection))
+		}
+	}
+	return out, nil
+}
+
+func (r *memoryEnterpriseSSORepo) GetConnection(ctx context.Context, clientID, connectionID string) (*domain.EnterpriseSSOConnection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	connection := r.connections[connectionID]
+	if connection == nil || connection.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneEnterpriseSSOConnection(connection), nil
+}
+
+func (r *memoryEnterpriseSSORepo) GetConnectionByID(ctx context.Context, connectionID string) (*domain.EnterpriseSSOConnection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	connection := r.connections[connectionID]
+	if connection == nil {
+		return nil, domain.ErrNotFound
+	}
+	return cloneEnterpriseSSOConnection(connection), nil
+}
+
+func (r *memoryEnterpriseSSORepo) GetConnectionBySlug(ctx context.Context, clientID, slug string) (*domain.EnterpriseSSOConnection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, connection := range r.connections {
+		if connection.ClientID == clientID && connection.Slug == slug {
+			return cloneEnterpriseSSOConnection(connection), nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *memoryEnterpriseSSORepo) GetActiveConnectionByDomain(ctx context.Context, clientID, domainName string) (*domain.EnterpriseSSOConnection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, connection := range r.connections {
+		if connection.ClientID != clientID || connection.Status != domain.SSOConnectionStatusActive {
+			continue
+		}
+		for _, allowed := range connection.Domains {
+			if allowed == domainName {
+				return cloneEnterpriseSSOConnection(connection), nil
+			}
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *memoryEnterpriseSSORepo) UpdateConnection(ctx context.Context, connection *domain.EnterpriseSSOConnection) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing := r.connections[connection.ID]; existing == nil || existing.ClientID != connection.ClientID {
+		return domain.ErrNotFound
+	}
+	r.connections[connection.ID] = cloneEnterpriseSSOConnection(connection)
+	return nil
+}
+
+func (r *memoryEnterpriseSSORepo) DeactivateConnection(ctx context.Context, clientID, connectionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	connection := r.connections[connectionID]
+	if connection == nil || connection.ClientID != clientID {
+		return domain.ErrNotFound
+	}
+	connection.Status = domain.SSOConnectionStatusInactive
+	connection.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *memoryEnterpriseSSORepo) FindIdentity(ctx context.Context, clientID, connectionID, externalID string) (*domain.EnterpriseSSOIdentity, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identities[ssoIdentityKey(connectionID, externalID)]
+	if identity == nil || identity.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneEnterpriseSSOIdentity(identity), nil
+}
+
+func (r *memoryEnterpriseSSORepo) UpsertIdentity(ctx context.Context, identity *domain.EnterpriseSSOIdentity) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := ssoIdentityKey(identity.ConnectionID, identity.ExternalID)
+	existing := r.identities[key]
+	cp := cloneEnterpriseSSOIdentity(identity)
+	now := time.Now().UTC()
+	if existing != nil {
+		cp.ID = existing.ID
+		cp.CreatedAt = existing.CreatedAt
+	} else if cp.ID == "" {
+		cp.ID = fmt.Sprintf("sso-identity-%d", len(r.identities)+1)
+		cp.CreatedAt = now
+	}
+	cp.LastLoginAt = now
+	cp.UpdatedAt = now
+	r.identities[key] = cp
+	return nil
+}
+
+type memorySCIMRepo struct {
+	mu          sync.Mutex
+	directories map[string]*domain.SCIMDirectory
+	users       map[string]*domain.SCIMUser
+	groups      map[string]*domain.SCIMGroup
+}
+
+func newMemorySCIMRepo() *memorySCIMRepo {
+	return &memorySCIMRepo{
+		directories: map[string]*domain.SCIMDirectory{},
+		users:       map[string]*domain.SCIMUser{},
+		groups:      map[string]*domain.SCIMGroup{},
+	}
+}
+
+func (r *memorySCIMRepo) CreateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.directories[directory.ID] = cloneSCIMDirectory(directory)
+	return nil
+}
+
+func (r *memorySCIMRepo) ListDirectories(ctx context.Context, clientID string) ([]*domain.SCIMDirectory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []*domain.SCIMDirectory{}
+	for _, directory := range r.directories {
+		if directory.ClientID == clientID {
+			out = append(out, cloneSCIMDirectory(directory))
+		}
+	}
+	return out, nil
+}
+
+func (r *memorySCIMRepo) GetDirectory(ctx context.Context, clientID, directoryID string) (*domain.SCIMDirectory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	directory := r.directories[directoryID]
+	if directory == nil || directory.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneSCIMDirectory(directory), nil
+}
+
+func (r *memorySCIMRepo) GetDirectoryByID(ctx context.Context, directoryID string) (*domain.SCIMDirectory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	directory := r.directories[directoryID]
+	if directory == nil {
+		return nil, domain.ErrNotFound
+	}
+	return cloneSCIMDirectory(directory), nil
+}
+
+func (r *memorySCIMRepo) GetDirectoryByTokenHash(ctx context.Context, tokenHash string) (*domain.SCIMDirectory, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, directory := range r.directories {
+		if directory.TokenHash == tokenHash {
+			return cloneSCIMDirectory(directory), nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *memorySCIMRepo) UpdateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.directories[directory.ID] == nil || r.directories[directory.ID].ClientID != directory.ClientID {
+		return domain.ErrNotFound
+	}
+	r.directories[directory.ID] = cloneSCIMDirectory(directory)
+	return nil
+}
+
+func (r *memorySCIMRepo) UpsertUser(ctx context.Context, user *domain.SCIMUser) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := scimUserKey(user.DirectoryID, user.ID)
+	r.users[key] = cloneSCIMUser(user)
+	return nil
+}
+
+func (r *memorySCIMRepo) ListUsers(ctx context.Context, clientID, directoryID string) ([]*domain.SCIMUser, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []*domain.SCIMUser{}
+	for _, user := range r.users {
+		if user.ClientID == clientID && user.DirectoryID == directoryID {
+			out = append(out, cloneSCIMUser(user))
+		}
+	}
+	return out, nil
+}
+
+func (r *memorySCIMRepo) GetUser(ctx context.Context, clientID, directoryID, scimUserID string) (*domain.SCIMUser, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	user := r.users[scimUserKey(directoryID, scimUserID)]
+	if user == nil || user.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneSCIMUser(user), nil
+}
+
+func (r *memorySCIMRepo) GetUserByExternalID(ctx context.Context, clientID, directoryID, externalID string) (*domain.SCIMUser, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, user := range r.users {
+		if user.ClientID == clientID && user.DirectoryID == directoryID && user.ExternalID == externalID {
+			return cloneSCIMUser(user), nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *memorySCIMRepo) DeleteUser(ctx context.Context, clientID, directoryID, scimUserID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := scimUserKey(directoryID, scimUserID)
+	user := r.users[key]
+	if user == nil || user.ClientID != clientID {
+		return domain.ErrNotFound
+	}
+	delete(r.users, key)
+	return nil
+}
+
+func (r *memorySCIMRepo) UpsertGroup(ctx context.Context, group *domain.SCIMGroup) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.groups[scimGroupKey(group.DirectoryID, group.ID)] = cloneSCIMGroup(group)
+	return nil
+}
+
+func (r *memorySCIMRepo) ListGroups(ctx context.Context, clientID, directoryID string) ([]*domain.SCIMGroup, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := []*domain.SCIMGroup{}
+	for _, group := range r.groups {
+		if group.ClientID == clientID && group.DirectoryID == directoryID {
+			out = append(out, cloneSCIMGroup(group))
+		}
+	}
+	return out, nil
+}
+
+func (r *memorySCIMRepo) GetGroup(ctx context.Context, clientID, directoryID, scimGroupID string) (*domain.SCIMGroup, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	group := r.groups[scimGroupKey(directoryID, scimGroupID)]
+	if group == nil || group.ClientID != clientID {
+		return nil, domain.ErrNotFound
+	}
+	return cloneSCIMGroup(group), nil
+}
+
+func (r *memorySCIMRepo) GetGroupByExternalID(ctx context.Context, clientID, directoryID, externalID string) (*domain.SCIMGroup, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, group := range r.groups {
+		if group.ClientID == clientID && group.DirectoryID == directoryID && group.ExternalID == externalID {
+			return cloneSCIMGroup(group), nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *memorySCIMRepo) DeleteGroup(ctx context.Context, clientID, directoryID, scimGroupID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := scimGroupKey(directoryID, scimGroupID)
+	group := r.groups[key]
+	if group == nil || group.ClientID != clientID {
+		return domain.ErrNotFound
+	}
+	delete(r.groups, key)
+	return nil
+}
+
 type memoryWebAuthnRepo struct {
 	mu               sync.Mutex
 	byUser           map[string][]webauthn.Credential
@@ -1638,6 +3266,153 @@ func cloneUser(user *domain.User) *domain.User {
 		cp.LastLoginAt = &v
 	}
 	return &cp
+}
+
+func cloneOrganization(org *domain.Organization) *domain.Organization {
+	if org == nil {
+		return nil
+	}
+	cp := *org
+	if org.CreatedByUserID != nil {
+		v := *org.CreatedByUserID
+		cp.CreatedByUserID = &v
+	}
+	cp.Metadata = map[string]interface{}{}
+	for key, value := range org.Metadata {
+		cp.Metadata[key] = value
+	}
+	return &cp
+}
+
+func cloneOrganizationMembership(membership *domain.OrganizationMembership) *domain.OrganizationMembership {
+	if membership == nil {
+		return nil
+	}
+	cp := *membership
+	cp.Permissions = append([]string(nil), membership.Permissions...)
+	return &cp
+}
+
+func cloneOrganizationInvitation(invitation *domain.OrganizationInvitation) *domain.OrganizationInvitation {
+	if invitation == nil {
+		return nil
+	}
+	cp := *invitation
+	cp.Permissions = append([]string(nil), invitation.Permissions...)
+	if invitation.InvitedByUserID != nil {
+		v := *invitation.InvitedByUserID
+		cp.InvitedByUserID = &v
+	}
+	if invitation.AcceptedAt != nil {
+		v := *invitation.AcceptedAt
+		cp.AcceptedAt = &v
+	}
+	if invitation.RevokedAt != nil {
+		v := *invitation.RevokedAt
+		cp.RevokedAt = &v
+	}
+	return &cp
+}
+
+func cloneServiceAccount(account *domain.ServiceAccount) *domain.ServiceAccount {
+	if account == nil {
+		return nil
+	}
+	cp := *account
+	cp.Scopes = append([]string(nil), account.Scopes...)
+	if account.LastUsedAt != nil {
+		v := *account.LastUsedAt
+		cp.LastUsedAt = &v
+	}
+	return &cp
+}
+
+func cloneServiceAccountKey(key *domain.ServiceAccountKey) *domain.ServiceAccountKey {
+	if key == nil {
+		return nil
+	}
+	cp := *key
+	cp.Scopes = append([]string(nil), key.Scopes...)
+	if key.LastUsedAt != nil {
+		v := *key.LastUsedAt
+		cp.LastUsedAt = &v
+	}
+	if key.ExpiresAt != nil {
+		v := *key.ExpiresAt
+		cp.ExpiresAt = &v
+	}
+	if key.RevokedAt != nil {
+		v := *key.RevokedAt
+		cp.RevokedAt = &v
+	}
+	return &cp
+}
+
+func cloneEnterpriseSSOConnection(connection *domain.EnterpriseSSOConnection) *domain.EnterpriseSSOConnection {
+	if connection == nil {
+		return nil
+	}
+	cp := *connection
+	cp.Domains = append([]string(nil), connection.Domains...)
+	cp.OIDC.Scopes = append([]string(nil), connection.OIDC.Scopes...)
+	cp.AttributeMapping = map[string]string{}
+	for key, value := range connection.AttributeMapping {
+		cp.AttributeMapping[key] = value
+	}
+	return &cp
+}
+
+func cloneEnterpriseSSOIdentity(identity *domain.EnterpriseSSOIdentity) *domain.EnterpriseSSOIdentity {
+	if identity == nil {
+		return nil
+	}
+	cp := *identity
+	cp.RawProfile = append([]byte(nil), identity.RawProfile...)
+	return &cp
+}
+
+func ssoIdentityKey(connectionID, externalID string) string {
+	return connectionID + "|" + externalID
+}
+
+func cloneSCIMDirectory(directory *domain.SCIMDirectory) *domain.SCIMDirectory {
+	if directory == nil {
+		return nil
+	}
+	cp := *directory
+	cp.Domains = append([]string(nil), directory.Domains...)
+	return &cp
+}
+
+func cloneSCIMUser(user *domain.SCIMUser) *domain.SCIMUser {
+	if user == nil {
+		return nil
+	}
+	cp := *user
+	cp.RawResource = append([]byte(nil), user.RawResource...)
+	return &cp
+}
+
+func cloneSCIMGroup(group *domain.SCIMGroup) *domain.SCIMGroup {
+	if group == nil {
+		return nil
+	}
+	cp := *group
+	cp.Members = append([]string(nil), group.Members...)
+	cp.RawResource = append([]byte(nil), group.RawResource...)
+	return &cp
+}
+
+func scimUserKey(directoryID, userID string) string {
+	return directoryID + "|user|" + userID
+}
+
+func scimGroupKey(directoryID, groupID string) string {
+	return directoryID + "|group|" + groupID
+}
+
+func membershipKey(organizationID, userID string) string {
+	return organizationID + "|" + userID
 }
 
 func hashE2EKey(key string) string {

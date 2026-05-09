@@ -11,11 +11,14 @@ import (
 )
 
 type ClientHandler struct {
-	svc *application.ClientService
+	svc  *application.ClientService
+	m2m  *M2MHandler
+	sso  *EnterpriseSSOHandler
+	scim *SCIMHandler
 }
 
-func NewClientHandler(svc *application.ClientService) *ClientHandler {
-	return &ClientHandler{svc: svc}
+func NewClientHandler(svc *application.ClientService, m2m *M2MHandler, sso *EnterpriseSSOHandler, scim *SCIMHandler) *ClientHandler {
+	return &ClientHandler{svc: svc, m2m: m2m, sso: sso, scim: scim}
 }
 
 func (h *ClientHandler) RegisterRoutes(mux *http.ServeMux, adminMw func(http.Handler) http.Handler) {
@@ -79,6 +82,31 @@ func (h *ClientHandler) handleClientByID(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	if len(parts) >= 6 && parts[5] == "service-accounts" {
+		if h.m2m == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		h.m2m.handleAdminServiceAccounts(w, r, ctx, clientID, parts)
+		return
+	}
+	if len(parts) >= 6 && parts[5] == "sso-connections" {
+		if h.sso == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		h.sso.handleAdminConnections(w, r, ctx, clientID, parts)
+		return
+	}
+	if len(parts) >= 6 && parts[5] == "scim-directories" {
+		if h.scim == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		h.scim.handleAdminDirectories(w, r, ctx, clientID, parts)
+		return
+	}
+
 	// Check for rotate actions
 	if len(parts) >= 6 {
 		action := parts[5]
@@ -109,6 +137,21 @@ func (h *ClientHandler) handleClientByID(w http.ResponseWriter, r *http.Request)
 
 	if r.Method == http.MethodGet {
 		client, err := h.svc.GetClient(ctx, clientID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, client)
+		return
+	}
+
+	if r.Method == http.MethodPatch {
+		var req application.UpdateClientRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		client, err := h.svc.UpdateClient(ctx, clientID, req)
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
 			return

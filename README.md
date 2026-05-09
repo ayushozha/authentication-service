@@ -5,18 +5,28 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 ## Features
 
 - **Multi-tenancy** -- Register multiple client applications with tenant-scoped users, sessions, refresh tokens, and JWT claims enforcement
+- **Organization RBAC** -- B2B SaaS organizations, owner/admin/member/viewer roles, custom permissions, invitations, member management, and org-scoped access tokens
+- **Machine-to-machine auth** -- OAuth2 client credentials for service accounts with scoped secrets, token introspection, key rotation, and revocation
+- **Enterprise SSO** -- Per-client SAML 2.0 and generic OIDC connections with domain routing, SP metadata, signed SAML response validation, JIT user provisioning, and SSO identity linking
+- **SCIM 2.0 directory sync** -- Inbound enterprise provisioning for users and groups with bearer tokens, deprovisioning, token rotation, and audit events
+- **Admin and customer portal** -- Static API-backed console for client operations, audit queries, M2M, SSO, SCIM, profile, MFA, passkeys, and organization workflows
+- **SDKs and embeddable UI** -- Dependency-free browser, React/Next.js, Node.js, Swift, and Android Java starters with token/session helpers and auth/MFA/org workflows
+- **Native SDK starters** -- Swift Package and Android Gradle/JUnit starters for mobile signup/login/session/profile/organization workflows, secure token-store adapters, and deep-link integration patterns
 - **Email/password authentication** -- Signup and login with bcrypt-hashed passwords (cost 12)
 - **OAuth2 social login** -- Google, GitHub, Microsoft, and Apple identity providers
 - **Magic links** -- Passwordless email-based authentication
-- **Passkeys (WebAuthn/FIDO2)** -- Browser-native passwordless login with hardware or platform authenticators
-- **TOTP two-factor authentication** -- Time-based one-time password support with setup/enable/verify/disable lifecycle
-- **JWT access tokens** -- Per-client token modes (`v1_hs256` legacy and `v2_jwks` RS256), short-lived (15 min default)
+- **Passkeys (WebAuthn/FIDO2)** -- Browser-native passwordless login with hardware/platform authenticators, resident credentials, and conditional UI/autofill support
+- **TOTP two-factor authentication** -- Time-based one-time password support with setup/enable/verify/disable lifecycle and one-time recovery codes
+- **JWT access tokens** -- Per-client token modes (`v1_hs256` legacy and `v2_jwks` RS256), short-lived (15 min default), with optional org and service-account claims
 - **JWKS support** -- Issuer-level JWKS endpoint for RS256 verification with optional client-scoped lookup (`/.well-known/jwks.json`)
 - **Refresh token rotation** -- Single-use refresh tokens stored as SHA-256 hashes with hybrid delivery (HttpOnly cookie or explicit token mode)
 - **Email verification** -- Token-based email address verification via Resend
 - **Password reset** -- Secure token-based password reset flow
 - **Rate limiting** -- Redis-backed sliding window rate limits and account lockout
-- **Queryable audit logging** -- Every authentication event is logged with IP, user agent, metadata, and an admin API for filtered audit review
+- **Password risk controls** -- Configurable password policy with compromised/common-password, low-entropy, and user-info rejection plus audit events
+- **Signup risk controls** -- Disposable/temporary email domain blocking with configurable denylist and audit events
+- **Session and device visibility** -- Authenticated users can list/revoke active sessions, while password logins audit suspicious new IP/device combinations and surface adaptive MFA risk signals
+- **Queryable audit logging and webhooks** -- Every authentication event is logged with IP, user agent, metadata, filtered admin review/export, and optional signed webhook delivery with retries
 - **REST + gRPC** -- Dual protocol support for flexibility
 - **JWT Validator package** -- Importable Go package (`pkg/jwtvalidator`) for downstream services
 - **Security hardening** -- Client ownership checks across auth flows, password-change/reset session revocation, stricter CORS/origin behavior, and secret scanning hooks
@@ -128,6 +138,21 @@ go run ./cmd/server
 | `COOKIE_SAMESITE` | `lax` | No | Refresh cookie SameSite policy (`lax`, `strict`, `none`) |
 | `COOKIE_DOMAIN` | -- | No | Optional cookie domain override for refresh cookie |
 | `BCRYPT_COST` | `12` | No | bcrypt cost factor (range 10-16) |
+| `PASSWORD_MIN_LENGTH` | `8` | No | Minimum password length |
+| `PASSWORD_MAX_LENGTH` | `72` | No | Maximum bcrypt-safe password length |
+| `PASSWORD_MIN_UNIQUE` | `4` | No | Minimum number of unique non-space characters |
+| `PASSWORD_BLOCK_COMMON` | `true` | No | Reject known common/compromised password patterns |
+| `PASSWORD_BLOCK_USER_INFO` | `true` | No | Reject passwords containing the user's email name or display-name tokens |
+| `BLOCKED_EMAIL_DOMAINS` | built-in disposable list | No | Comma-separated email domains to block at signup; set to your own list to override defaults |
+| `WEBHOOK_SIGNING_SECRET` | -- | No | Enables per-client `webhook_url` audit-event delivery and signs payloads with HMAC-SHA256 |
+| `WEBHOOK_RETRY_ATTEMPTS` | `3` | No | Number of audit webhook delivery attempts (1-10) |
+| `WEBHOOK_TIMEOUT` | `5s` | No | Per-attempt audit webhook HTTP timeout |
+| `CAPTCHA_PROVIDER` | -- | No | Optional bot verifier provider: `turnstile`, `hcaptcha`, or `recaptcha` |
+| `CAPTCHA_SECRET` | -- | No | Secret key for the configured CAPTCHA/bot provider |
+| `CAPTCHA_VERIFY_URL` | provider default | No | Override verification endpoint for custom providers or tests |
+| `CAPTCHA_TIMEOUT` | `5s` | No | Per-attempt CAPTCHA verification timeout |
+| `CAPTCHA_SIGNUP_REQUIRED` | `false` | No | Require `captcha_token` on signup |
+| `CAPTCHA_LOGIN_REQUIRED` | `false` | No | Require `captcha_token` on password login |
 | `RESEND_API_KEY` | -- | No | Resend API key for transactional emails |
 | `EMAIL_FROM` | `Auth Service <noreply@example.com>` | No | Sender address for emails |
 | `GOOGLE_CLIENT_ID` | -- | No | Google OAuth client ID |
@@ -146,7 +171,7 @@ go run ./cmd/server
 | `WEBAUTHN_RP_ORIGIN` | `http://localhost:8080` | No | WebAuthn relying party origin |
 | `WEBAUTHN_DISPLAY_NAME` | `Auth Service` | No | WebAuthn display name shown to users |
 
-Per-client WebAuthn overrides can be set in `client.settings` (if present): `webauthn_display_name`, `webauthn_rp_id`, `webauthn_rp_origin`.
+Per-client WebAuthn overrides can be set in `client.settings` (if present): `webauthn_display_name`, `webauthn_rp_id`, `webauthn_rp_origin`, `webauthn_attestation` (`none`, `indirect`, `direct`, `enterprise`), `webauthn_require_attestation`, and `webauthn_allowed_attestation_formats` (for example `packed,tpm,apple`).
 
 ## API Reference
 
@@ -154,15 +179,23 @@ Live docs:
 
 - Production reference: <https://authservice.ayushojha.com/docs>
 - OpenAPI spec: <https://authservice.ayushojha.com/docs/openapi.yaml>
+- Admin/customer portal: <https://authservice.ayushojha.com/portal.html>
+- Browser SDK: <https://authservice.ayushojha.com/authservice.js>
+- SDK starters: `sdks/`
+- Operations runbook: `docs/operations-runbook.md`
+- Passkey QA checklist: `docs/passkey-qa.md`
 
 Integration flow for companies/products:
 
 1. Create one client per product, environment, or tenant boundary using `POST /api/admin/clients`.
 2. Store the returned `api_key` securely and send it as `X-API-Key` on app-initiated auth requests.
 3. Use cookie mode for browser products or `session_mode=token` for mobile, CLI, SSR, desktop, and API-only clients.
-4. Authenticate users with email/password, OAuth2, magic links, TOTP, or passkeys.
-5. Validate JWTs in downstream services with `pkg/jwtvalidator`, RS256/JWKS, or the gRPC `TokenService`.
-6. Operate the integration with audit-event queries, API key rotation, JWT signing rotation, health checks, and JWKS discovery.
+4. Authenticate users with email/password, OAuth2, magic links, TOTP, or passkeys, either by calling the REST API directly, loading `/authservice.js`, or using the SDK starters under `sdks/`.
+5. For B2B products, create organizations, invite users, and mint org-scoped access tokens before calling tenant-aware product APIs.
+6. For backend automation, provision service accounts and call `/oauth/token` with the `client_credentials` grant.
+7. For mobile apps, start from `sdks/ios/AuthServiceClient.swift` or `sdks/android/com/authservice/sdk/AuthServiceClient.java` and back the token-store protocol with Keychain or encrypted shared preferences.
+8. Validate JWTs in downstream services with `pkg/jwtvalidator`, RS256/JWKS, token introspection, or the gRPC `TokenService`.
+9. Operate the integration with audit-event queries/exports/webhooks, API key rotation, JWT signing rotation, health checks, and JWKS discovery.
 
 Route access requirements:
 
@@ -170,6 +203,8 @@ Route access requirements:
 - Public auth routes (no API key): `POST /api/auth/verify-email`, `POST /api/auth/reset-password`, `GET /api/auth/magic-link/verify`, `GET|POST /api/auth/oauth/{provider}/callback`.
 - User-protected routes additionally require `Authorization: Bearer <access_token>`.
 - Admin routes require `X-Admin-Key`.
+- Machine-to-machine token routes use service-account `client_id` and `client_secret` via JSON/form body or HTTP Basic auth.
+- Static browser assets such as `/authservice.js`, `/login.html`, `/signup.html`, and `/portal.html` are public shells; protected operations still call the APIs with the admin key, client API key, or access token you provide.
 
 ### Authentication
 
@@ -181,6 +216,120 @@ POST /api/auth/logout              Revoke the current session (cookie or refresh
 GET  /api/auth/me                  Get the authenticated user profile
 PATCH /api/auth/me                 Update the authenticated user profile
 POST /api/auth/change-password     Change password (requires current password)
+GET  /api/auth/sessions            List active refresh sessions for the current user
+DELETE /api/auth/sessions          Revoke all current-user sessions for this client
+DELETE /api/auth/sessions/{id}     Revoke one current-user session
+```
+
+### Organizations and RBAC
+
+```
+GET    /api/auth/organizations                              List organizations for the current user
+POST   /api/auth/organizations                              Create an organization; creator becomes owner
+GET    /api/auth/organizations/{org_id}                     Get an organization and current membership
+PATCH  /api/auth/organizations/{org_id}                     Update organization name or slug (requires org write permission)
+GET    /api/auth/organizations/{org_id}/members             List active members (requires members read permission)
+PATCH  /api/auth/organizations/{org_id}/members/{user_id}   Update member role/permissions (requires members write permission)
+DELETE /api/auth/organizations/{org_id}/members/{user_id}   Remove a member (requires members write permission)
+GET    /api/auth/organizations/{org_id}/invitations         List invitations (requires invitations read permission)
+POST   /api/auth/organizations/{org_id}/invitations         Invite a user by email (requires invitations write permission)
+POST   /api/auth/organizations/{org_id}/invitations/{id}/revoke
+POST   /api/auth/organization-invitations/accept            Accept an invitation token as the invited user
+POST   /api/auth/organizations/{org_id}/token               Mint an org-scoped access token
+```
+
+Built-in roles are `owner`, `admin`, `member`, and `viewer`. Permissions are `org:read`, `org:write`, `members:read`, `members:write`, `invitations:read`, and `invitations:write`.
+
+### Machine-to-Machine Auth
+
+```
+POST /oauth/token                                      OAuth2 client credentials token endpoint
+POST /oauth/introspect                                 Token introspection endpoint
+GET  /api/admin/clients/{client_id}/service-accounts   List service accounts
+POST /api/admin/clients/{client_id}/service-accounts   Create service account and initial secret
+GET  /api/admin/clients/{client_id}/service-accounts/{service_account_id}
+PATCH /api/admin/clients/{client_id}/service-accounts/{service_account_id}
+DELETE /api/admin/clients/{client_id}/service-accounts/{service_account_id}
+GET  /api/admin/clients/{client_id}/service-accounts/{service_account_id}/keys
+POST /api/admin/clients/{client_id}/service-accounts/{service_account_id}/keys
+DELETE /api/admin/clients/{client_id}/service-accounts/{service_account_id}/keys/{key_id}
+POST /api/admin/clients/{client_id}/service-accounts/{service_account_id}/keys/{key_id}/rotate
+```
+
+Use the service account ID as OAuth `client_id` and the returned secret as `client_secret`. Secrets are shown once, stored as SHA-256 hashes, and can be revoked or rotated independently.
+
+### Enterprise SSO
+
+```
+GET  /api/auth/sso?domain=acme.com                          Start SSO by verified email domain
+GET  /api/auth/sso/{connection_id_or_slug}                   Start SSO by connection ID or slug
+GET  /api/auth/sso/callback/{connection_id}                  OIDC redirect callback
+POST /api/auth/sso/callback/{connection_id}                  SAML ACS callback
+GET  /api/auth/sso/metadata/{connection_id}                  SAML service provider metadata
+GET  /api/admin/clients/{client_id}/sso-connections          List enterprise SSO connections
+POST /api/admin/clients/{client_id}/sso-connections          Create SAML or OIDC connection
+GET  /api/admin/clients/{client_id}/sso-connections/{id}
+PATCH /api/admin/clients/{client_id}/sso-connections/{id}
+DELETE /api/admin/clients/{client_id}/sso-connections/{id}   Deactivate connection
+```
+
+OIDC connections use discovery from the configured issuer and verify ID tokens, audience, issuer, expiry, signature, and nonce. SAML connections expose SP metadata, generate HTTP-Redirect AuthnRequests, and validate signed SAML responses against IdP metadata or configured X.509 certificates.
+
+### SCIM 2.0 Directory Sync
+
+```
+GET  /scim/v2/{directory_id}/ServiceProviderConfig
+GET  /scim/v2/{directory_id}/ResourceTypes
+GET  /scim/v2/{directory_id}/Schemas
+GET  /scim/v2/{directory_id}/Users
+POST /scim/v2/{directory_id}/Users
+GET  /scim/v2/{directory_id}/Users/{scim_user_id}
+PUT  /scim/v2/{directory_id}/Users/{scim_user_id}
+PATCH /scim/v2/{directory_id}/Users/{scim_user_id}
+DELETE /scim/v2/{directory_id}/Users/{scim_user_id}
+GET  /scim/v2/{directory_id}/Groups
+POST /scim/v2/{directory_id}/Groups
+GET  /scim/v2/{directory_id}/Groups/{scim_group_id}
+PUT  /scim/v2/{directory_id}/Groups/{scim_group_id}
+PATCH /scim/v2/{directory_id}/Groups/{scim_group_id}
+DELETE /scim/v2/{directory_id}/Groups/{scim_group_id}
+GET  /api/admin/clients/{client_id}/scim-directories
+POST /api/admin/clients/{client_id}/scim-directories
+GET  /api/admin/clients/{client_id}/scim-directories/{directory_id}
+PATCH /api/admin/clients/{client_id}/scim-directories/{directory_id}
+POST /api/admin/clients/{client_id}/scim-directories/{directory_id}/rotate-token
+```
+
+SCIM endpoints use `Authorization: Bearer <directory_token>`. User `active=false` and `DELETE` deprovision the linked AuthService user by setting status to `suspended`.
+
+### Admin and Customer Portal
+
+```
+GET /portal.html                    API-backed operations console and account portal
+GET /authservice.js                 Browser SDK and embeddable UI helpers
+```
+
+The portal is a static browser shell for day-to-day administration and customer self-service. Admin operators can create clients, rotate API/JWT secrets, inspect audit events, provision service accounts, manage enterprise SSO connections, and manage SCIM directories. Authenticated users can load and update their profile, change passwords, configure TOTP/recovery codes, register/delete passkeys, create organizations, send invitations, accept invitations, and mint org-scoped tokens.
+
+The SDKs expose helpers for signup, login, refresh, logout, `/me`, profile updates, session listing/revocation, TOTP, recovery codes, passkeys, organizations, magic links, OAuth/SSO redirects, M2M token exchange, and embeddable sign-in/user widgets. Browser usage starts with `AuthService.createClient({ baseUrl, apiKey, sessionMode: "token" })`; React/Next.js, Node.js, iOS, and Android starters live under `sdks/`.
+
+```html
+<div id="signin"></div>
+<div id="user"></div>
+<script src="/authservice.js"></script>
+<script>
+  const auth = AuthService.createClient({
+    baseUrl: "https://auth.example.com",
+    apiKey: "raw-api-key-save-this",
+    sessionMode: "token"
+  });
+
+  auth.mountSignIn("#signin", {
+    onSuccess() {
+      auth.mountUserButton("#user").refresh();
+    }
+  });
+</script>
 ```
 
 ### Email Verification and Password Reset
@@ -210,7 +359,12 @@ POST /api/auth/totp/setup          Generate TOTP secret and QR code URI (require
 POST /api/auth/totp/enable         Confirm TOTP setup with a valid code (requires auth)
 POST /api/auth/totp/verify         Complete 2FA login with TOTP code
 POST /api/auth/totp/disable        Disable TOTP on the account (requires auth)
+GET  /api/auth/recovery-codes      Count unused recovery codes (requires auth)
+POST /api/auth/recovery-codes      Rotate and return one-time recovery codes (requires auth)
+POST /api/auth/recovery-codes/verify Complete 2FA login with a recovery code
 ```
+
+Recovery codes are shown once, stored only as hashes, and consumed after a successful recovery-code login.
 
 ### OAuth2 Social Login
 
@@ -238,20 +392,26 @@ DELETE /api/auth/passkeys/{id}             Delete a passkey by ID (canonical pat
 
 `passkey/login/finish` requires `session_id` query param from login begin response.
 
+Client settings can request direct or enterprise attestation during registration and reject credentials whose attestation format is `none` or outside an allowed list. Set `webauthn_attestation`, `webauthn_require_attestation`, and `webauthn_allowed_attestation_formats` with `PATCH /api/admin/clients/{id}` for regulated or managed-device deployments.
+
 ### Admin (Client Management)
 
 ```
 POST /api/admin/clients                       Create a new client (tenant)
 GET  /api/admin/clients                       List all clients
 GET  /api/admin/clients/{id}                  Get client by ID
+PATCH /api/admin/clients/{id}                 Update mutable client settings, origins, webhook URL, or status
 POST /api/admin/clients/{id}/rotate-secret    Rotate client JWT secret
 POST /api/admin/clients/{id}/rotate-api-key   Rotate client API key
 POST /api/admin/clients/{id}/rotate-jwt       Alias for rotate-secret
 POST /api/admin/clients/{id}/rotate-key       Alias for rotate-api-key
 GET  /api/admin/audit-events                  Query audit events
+GET  /api/admin/audit-events/export           Export audit events as CSV or NDJSON
 ```
 
-`GET /api/admin/audit-events` supports `client_id`, `user_id`, `event_type`, and `limit` query parameters. The limit defaults to 50 and is capped at 500.
+`GET /api/admin/audit-events` and `/export` support `client_id`, `user_id`, `event_type`, and `limit` query parameters. The limit defaults to 50 and is capped at 500. Export supports `format=csv` (default), `format=jsonl`, or `format=ndjson`.
+
+When `WEBHOOK_SIGNING_SECRET` is set, audit events are also delivered to the client's `webhook_url` as JSON with retries. Each delivery includes `X-AuthService-Event: audit.event`, `X-AuthService-Delivery`, `X-AuthService-Timestamp`, and `X-AuthService-Signature`. Verify the signature by computing `HMAC-SHA256(secret, timestamp + "." + raw_body)` and comparing it to the `v1=<hex>` header value.
 
 ### Health
 
@@ -325,6 +485,124 @@ curl -X POST http://localhost:8080/api/auth/signup \
 
 Use `session_mode=token` on signup/login/refresh when a non-browser client needs the refresh token in JSON. Browser clients can omit it and use the HttpOnly `auth_refresh` cookie.
 
+When CAPTCHA/bot protection is enabled, include `captcha_token` on signup and/or password login. Supported provider presets are Cloudflare Turnstile, hCaptcha, and reCAPTCHA; custom verification endpoints can be supplied with `CAPTCHA_VERIFY_URL`.
+
+### B2B Organization Integration
+
+Create an organization after the first user signs up:
+
+```bash
+curl -X POST http://localhost:8080/api/auth/organizations \
+  -H "X-API-Key: raw-api-key-save-this" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Inc"}'
+```
+
+Invite a teammate:
+
+```bash
+curl -X POST http://localhost:8080/api/auth/organizations/{org_id}/invitations \
+  -H "X-API-Key: raw-api-key-save-this" \
+  -H "Authorization: Bearer $OWNER_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"teammate@acme.com","role":"member"}'
+```
+
+After the invited user accepts the returned one-time token, mint an organization-scoped access token:
+
+```bash
+curl -X POST http://localhost:8080/api/auth/organizations/{org_id}/token \
+  -H "X-API-Key: raw-api-key-save-this" \
+  -H "Authorization: Bearer $USER_ACCESS_TOKEN"
+```
+
+Downstream APIs should enforce `client_id` plus `org_id`, `org_role`, and `org_permissions`. Organization actions are audit logged with event types such as `organization_created`, `organization_invitation_created`, `organization_invitation_accepted`, `organization_member_updated`, and `organization_member_removed`.
+
+### Machine-to-Machine Integration
+
+Provision a service account under a client:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/clients/{client_id}/service-accounts \
+  -H "X-Admin-Key: your-admin-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Billing Worker","scopes":["invoices:read","invoices:write"]}'
+```
+
+Exchange its credentials for a scoped access token:
+
+```bash
+curl -X POST http://localhost:8080/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=$SERVICE_ACCOUNT_ID" \
+  -d "client_secret=$SERVICE_ACCOUNT_SECRET" \
+  -d "scope=invoices:read"
+```
+
+Introspect a token:
+
+```bash
+curl -X POST http://localhost:8080/oauth/introspect \
+  -u "$SERVICE_ACCOUNT_ID:$SERVICE_ACCOUNT_SECRET" \
+  -d "token=$ACCESS_TOKEN"
+```
+
+Machine tokens include `token_use=client_credentials`, `service_account_id`, `service_account_name`, `scope`, and `scopes`. Downstream services should enforce the parent `client_id` plus required scopes.
+
+### Enterprise SSO Integration
+
+Create a generic OIDC connection for Okta, Azure AD, Google Workspace, or Ping:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/clients/{client_id}/sso-connections \
+  -H "X-Admin-Key: your-admin-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"Acme Okta",
+    "slug":"acme-okta",
+    "protocol":"oidc",
+    "domains":["acme.com"],
+    "oidc":{"issuer":"https://acme.okta.com/oauth2/default","client_id":"...","client_secret":"..."}
+  }'
+```
+
+Create a SAML connection and give the IdP the generated metadata URL:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/clients/{client_id}/sso-connections \
+  -H "X-Admin-Key: your-admin-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"Acme SAML",
+    "protocol":"saml",
+    "domains":["acme.com"],
+    "saml":{"idp_entity_id":"https://idp.example.com/metadata","idp_sso_url":"https://idp.example.com/sso","idp_certificate":"BASE64_DER_CERT"}
+  }'
+```
+
+Start login with `GET /api/auth/sso?domain=acme.com` or `GET /api/auth/sso/{connection_id_or_slug}` using the client API key. Successful SSO creates or links a user by provider subject and returns the same access/refresh token flow as other login methods.
+
+### SCIM Directory Integration
+
+Provision a SCIM directory and save the returned token once:
+
+```bash
+curl -X POST http://localhost:8080/api/admin/clients/{client_id}/scim-directories \
+  -H "X-Admin-Key: your-admin-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Directory","domains":["acme.com"]}'
+```
+
+Configure your IdP SCIM base URL as:
+
+```text
+https://auth.example.com/scim/v2/{directory_id}
+```
+
+Use the returned token as the bearer token. AuthService supports SCIM `Users` and `Groups`, including `POST`, `GET`, `PUT`, `PATCH`, and `DELETE`; user provisioning creates or links a local user by email and SCIM `externalId`.
+
 ### Key Rotation
 
 Rotate the JWT signing secret (invalidates all existing access tokens for that client):
@@ -363,7 +641,7 @@ Run the full suite:
 go test ./...
 ```
 
-The REST E2E suite includes auth lifecycle, refresh rotation, logout, email verification, magic links, TOTP, OAuth state/PKCE, passkey route handling, audit queries, client admin, and Redis-required feature failures.
+The REST E2E suite includes auth lifecycle, refresh rotation, logout, email verification, magic links, TOTP, OAuth state/PKCE, passkey route handling, organization RBAC, machine-to-machine client credentials, audit queries, client admin, and Redis-required feature failures.
 
 Browser-grade tests use Chrome/Chromium through Chrome DevTools Protocol. They drive real WebAuthn browser APIs for passkey registration/login and run the public auth pages across desktop, iOS mobile-web, and Android mobile-web profiles. Set `CHROME_BIN` if Chrome is not on the default path:
 
@@ -442,14 +720,23 @@ jwksValidator := jwtvalidator.New(jwtvalidator.Config{
 ```go
 type Claims struct {
     jwt.RegisteredClaims
-    Email         string `json:"email"`
-    Role          string `json:"role"`
-    EmailVerified bool   `json:"email_verified"`
-    ClientID      string `json:"client_id"`
+    Email                   string   `json:"email"`
+    Role                    string   `json:"role"`
+    EmailVerified           bool     `json:"email_verified"`
+    ClientID                string   `json:"client_id"`
+    TokenUse                string   `json:"token_use,omitempty"`
+    Scope                   string   `json:"scope,omitempty"`
+    Scopes                  []string `json:"scopes,omitempty"`
+    ServiceAccountID        string   `json:"service_account_id,omitempty"`
+    ServiceAccountName      string   `json:"service_account_name,omitempty"`
+    OrganizationID          string   `json:"org_id,omitempty"`
+    OrganizationSlug        string   `json:"org_slug,omitempty"`
+    OrganizationRole        string   `json:"org_role,omitempty"`
+    OrganizationPermissions []string `json:"org_permissions,omitempty"`
 }
 ```
 
-The `UserID()` method returns the `sub` (Subject) claim, which is the user's UUID.
+The `UserID()` method returns the `sub` (Subject) claim. For user tokens it is the user's UUID; for machine tokens it is the service account ID. Organization fields are present only on tokens minted by `POST /api/auth/organizations/{org_id}/token`.
 
 ### Context Helpers
 
@@ -497,6 +784,15 @@ message ValidateTokenResponse {
   bool email_verified = 5;
   string client_id = 6;
   string error = 7;
+  string org_id = 8;
+  string org_slug = 9;
+  string org_role = 10;
+  repeated string org_permissions = 11;
+  string token_use = 12;
+  string scope = 13;
+  repeated string scopes = 14;
+  string service_account_id = 15;
+  string service_account_name = 16;
 }
 ```
 
@@ -530,6 +826,10 @@ authentication-service/
       client.go                 Client (tenant) entity
       signing_key.go            Per-client asymmetric signing key entity (JWKS)
       user.go                   User entity
+      organization.go           Organization, membership, invitation, role, and permission entities
+      service_account.go        Service account and scoped key entities
+      enterprise_sso.go         Enterprise SAML/OIDC connection and identity entities
+      scim.go                   SCIM directory, user, and group entities
       session.go                Session entity
       oauth_account.go          OAuth account entity
       webauthn_credential.go    WebAuthn credential entity
@@ -547,11 +847,23 @@ authentication-service/
       totp_service.go           TOTP 2FA logic
       oauth_service.go          OAuth2 flow logic
       passkey_service.go        WebAuthn/passkey logic
+      organization_service.go   Organization RBAC, invitations, member management, and org token issuance
+      m2m_service.go            OAuth2 client credentials, service-account keys, and introspection
+      enterprise_sso_service.go Enterprise SSO setup, OIDC callbacks, SAML metadata, and login completion
+      scim_service.go           SCIM directory token, user provisioning, group sync, and deprovisioning logic
     infrastructure/
       postgres/                 PostgreSQL repository implementations
         migrations/             SQL migration files (auto-run on startup)
           008_add_jwks_signing_keys.sql   token_mode + signing key tables
+          009_create_organizations.sql    organizations, memberships, invitations
+          010_create_service_accounts.sql service accounts and hashed scoped keys
+          011_create_enterprise_sso.sql   SAML/OIDC connections and linked identities
+          012_create_scim.sql             SCIM directories, users, and groups
         signing_key_repo.go     Signing key persistence for JWKS/RS256
+        organization_repo.go    Organization RBAC persistence
+        service_account_repo.go Service account persistence
+        enterprise_sso_repo.go  Enterprise SSO connection and identity persistence
+        scim_repo.go            SCIM directory sync persistence
       redis/                    Redis client and rate limiter
       email/                    Resend email client
     interfaces/
@@ -565,6 +877,10 @@ authentication-service/
         totp_handler.go         TOTP 2FA handlers
         oauth_handler.go        OAuth2 handlers
         passkey_handler.go      WebAuthn/passkey handlers
+        organization_handler.go Organization and member/invitation handlers
+        m2m_handler.go          Client credentials token/introspection and service-account admin handlers
+        enterprise_sso_handler.go Enterprise SSO admin, begin, callback, and metadata handlers
+        scim_handler.go         SCIM 2.0 bearer-token Users/Groups handlers
         client_handler.go       Admin client management handlers
       grpc/                     gRPC server implementation
   pkg/
@@ -572,6 +888,18 @@ authentication-service/
       validator.go              Token parsing and HTTP middleware
       claims.go                 Claims type definition
       context.go                Context helpers for claims storage
+  sdks/
+    README.md                   Mobile SDK usage notes
+    node/authservice-node.js     Node 18+ SDK for SSR, API routes, workers, and M2M
+    react/authservice-react.js   React/Next.js provider, hooks, and UI components
+    ios/AuthServiceClient.swift Swift URLSession client with token-store hooks
+    android/com/authservice/sdk/AuthServiceClient.java
+                                Android Java client with token-store hooks
+  public/                       Static browser shells
+    authservice.js              Dependency-free browser SDK and embeddable widgets
+    login.html                  Login, OAuth, magic link, TOTP, and passkey login
+    signup.html                 Signup and passkey registration
+    portal.html                 Admin console and customer account portal
   proto/auth/v1/                Protocol Buffer definitions
     auth.proto                  AuthService RPCs
     token.proto                 TokenService RPCs

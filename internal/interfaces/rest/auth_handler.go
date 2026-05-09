@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/application"
@@ -37,6 +38,8 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, authMw func(http.Handle
 	mux.HandleFunc("/api/auth/refresh", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.refresh)))
 	mux.HandleFunc("/api/auth/logout", CORSHandler(h.cfg.AllowOrigin, MethodCheck(http.MethodPost, h.logout)))
 	mux.HandleFunc("/api/auth/me", CORSHandler(h.cfg.AllowOrigin, authMw(h.me)))
+	mux.HandleFunc("/api/auth/sessions", CORSHandler(h.cfg.AllowOrigin, authMw(h.sessions)))
+	mux.HandleFunc("/api/auth/sessions/", CORSHandler(h.cfg.AllowOrigin, authMw(h.sessionByID)))
 	mux.HandleFunc("/api/auth/change-password", CORSHandler(h.cfg.AllowOrigin, authMw(MethodCheck(http.MethodPost, h.changePassword))))
 }
 
@@ -63,6 +66,8 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		case domain.ErrRateLimit:
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+		case domain.ErrBotVerification:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
@@ -88,9 +93,10 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Email       string `json:"email"`
-		Password    string `json:"password"`
-		SessionMode string `json:"session_mode"`
+		Email        string `json:"email"`
+		Password     string `json:"password"`
+		SessionMode  string `json:"session_mode"`
+		CaptchaToken string `json:"captcha_token"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -101,11 +107,14 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	resp, refreshToken, err := h.authSvc.Login(ctx, client, application.LoginRequest{
-		Email:    req.Email,
-		Password: req.Password,
+		Email:        req.Email,
+		Password:     req.Password,
+		CaptchaToken: req.CaptchaToken,
 	}, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
 		switch err {
+		case domain.ErrBotVerification:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		case domain.ErrInvalidPassword:
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		case domain.ErrAccountSuspended:
@@ -250,6 +259,67 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+}
+
+func (h *AuthHandler) sessions(w http.ResponseWriter, r *http.Request) {
+	client := GetClient(r)
+	claims := GetUserClaims(r)
+	if client == nil || claims == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	switch r.Method {
+	case http.MethodGet:
+		sessions, err := h.authSvc.ListSessions(ctx, client, claims.Subject)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list sessions"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
+	case http.MethodDelete:
+		if err := h.authSvc.RevokeAllSessions(ctx, client, claims.Subject, clientIP(r), r.UserAgent()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not revoke sessions"})
+			return
+		}
+		ClearRefreshCookie(w, h.cfg)
+		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (h *AuthHandler) sessionByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	client := GetClient(r)
+	claims := GetUserClaims(r)
+	if client == nil || claims == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	sessionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/sessions/"), "/")
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id required"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := h.authSvc.RevokeSession(ctx, client, claims.Subject, sessionID, clientIP(r), r.UserAgent()); err != nil {
+		if err == domain.ErrNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not revoke session"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
 func (h *AuthHandler) changePassword(w http.ResponseWriter, r *http.Request) {

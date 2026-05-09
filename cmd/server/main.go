@@ -48,12 +48,48 @@ func main() {
 	oauthRepo := postgres.NewOAuthRepo(db)
 	webauthnRepo := postgres.NewWebAuthnRepo(db)
 	tokenRepo := postgres.NewTokenRepo(db)
+	recoveryCodeRepo := postgres.NewRecoveryCodeRepo(db)
 	auditRepo := postgres.NewAuditRepo(db)
 	signingKeyRepo := postgres.NewSigningKeyRepo(db)
+	orgRepo := postgres.NewOrganizationRepo(db)
+	serviceAccountRepo := postgres.NewServiceAccountRepo(db)
+	ssoRepo := postgres.NewEnterpriseSSORepo(db)
+	scimRepo := postgres.NewSCIMRepo(db)
 	application.SetSigningKeyRepository(signingKeyRepo)
+	application.SetPasswordPolicy(application.PasswordPolicy{
+		MinLength:     cfg.PasswordMinLength,
+		MaxLength:     cfg.PasswordMaxLength,
+		MinUnique:     cfg.PasswordMinUnique,
+		BlockCommon:   cfg.PasswordBlockCommon,
+		BlockUserInfo: cfg.PasswordBlockUserInfo,
+	})
+	application.SetBlockedSignupEmailDomains(cfg.BlockedEmailDomains)
+	application.SetBotProtection(application.BotProtectionConfig{
+		SignupRequired: cfg.CaptchaSignupRequired,
+		LoginRequired:  cfg.CaptchaLoginRequired,
+		Verifier: application.NewHTTPBotVerifier(
+			cfg.CaptchaProvider,
+			cfg.CaptchaSecret,
+			cfg.CaptchaVerifyURL,
+			cfg.CaptchaTimeout,
+		),
+	})
 
 	// Rate limiter
 	rl := redisclient.NewRateLimiter(rdb)
+
+	// Audit writes are always stored locally. When configured, the same events are
+	// also delivered to the client webhook URL with HMAC signatures and retries.
+	var auditEvents application.AuditRepository = auditRepo
+	if cfg.WebhookSigningSecret != "" {
+		auditEvents = application.NewWebhookAuditRepository(
+			auditRepo,
+			clientRepo,
+			cfg.WebhookSigningSecret,
+			cfg.WebhookRetryAttempts,
+			cfg.WebhookTimeout,
+		)
+	}
 
 	// Email client
 	var mailer application.EmailSender
@@ -66,13 +102,17 @@ func main() {
 
 	// Application services
 	clientSvc := application.NewClientService(clientRepo)
-	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditRepo, rl)
+	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditEvents, rl)
 	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer)
 	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer)
-	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, auditRepo, rl)
-	totpSvc := application.NewTOTPService(userRepo, sessionRepo, rdb, auditRepo)
-	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditRepo)
+	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, auditEvents, rl)
+	totpSvc := application.NewTOTPService(userRepo, sessionRepo, rdb, auditEvents, recoveryCodeRepo)
+	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditEvents)
 	auditSvc := application.NewAuditService(auditRepo)
+	orgSvc := application.NewOrganizationService(orgRepo, userRepo, auditEvents)
+	m2mSvc := application.NewM2MService(serviceAccountRepo, clientRepo, auditEvents)
+	ssoSvc := application.NewEnterpriseSSOService(ssoRepo, userRepo, clientRepo, sessionRepo, rdb, auditEvents)
+	scimSvc := application.NewSCIMService(scimRepo, userRepo, auditEvents)
 
 	// Wire signup email hook
 	verifySvc.WireSignupHook(cfg.BaseURL)
@@ -96,7 +136,7 @@ func main() {
 	// Passkey service (optional)
 	var passkeySvc *application.PasskeyService
 	passkeySvc, err = application.NewPasskeyService(
-		userRepo, webauthnRepo, sessionRepo, rdb, auditRepo,
+		userRepo, webauthnRepo, sessionRepo, rdb, auditEvents,
 		cfg.WebAuthnRPName, cfg.WebAuthnRPID, cfg.WebAuthnRPOrigin,
 	)
 	if err != nil {
@@ -119,7 +159,7 @@ func main() {
 	// Router
 	router := rest.NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, clientSvc, auditSvc,
+		oauthSvc, passkeySvc, clientSvc, auditSvc, orgSvc, m2mSvc, ssoSvc, scimSvc,
 		oauthProviders, handlerCfg,
 		cfg.AdminAPIKey, cfg.ServeFrontend, cfg.PublicDir,
 	)

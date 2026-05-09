@@ -22,6 +22,10 @@ func NewRouter(
 	passkeySvc *application.PasskeyService,
 	clientSvc *application.ClientService,
 	auditSvc *application.AuditService,
+	orgSvc *application.OrganizationService,
+	m2mSvc *application.M2MService,
+	ssoSvc *application.EnterpriseSSOService,
+	scimSvc *application.SCIMService,
 	oauthProviders map[string]*application.OAuthProviderConfig,
 	cfg *HandlerConfig,
 	adminAPIKey string,
@@ -62,6 +66,20 @@ func NewRouter(
 		passkeyHandler := NewPasskeyHandler(passkeySvc, cfg)
 		passkeyHandler.RegisterRoutes(authMux, authMw)
 	}
+	if orgSvc != nil {
+		orgHandler := NewOrganizationHandler(orgSvc, cfg)
+		orgHandler.RegisterRoutes(authMux, authMw)
+	}
+	m2mHandler := NewM2MHandler(m2mSvc, cfg)
+	m2mHandler.RegisterOAuthRoutes(mux)
+	ssoHandler := NewEnterpriseSSOHandler(ssoSvc, cfg)
+	if ssoSvc != nil {
+		ssoHandler.RegisterAuthRoutes(authMux, mux)
+	}
+	scimHandler := NewSCIMHandler(scimSvc, cfg)
+	if scimSvc != nil {
+		scimHandler.RegisterRoutes(mux)
+	}
 
 	// Public auth routes (no API key required).
 	verifyHandler.RegisterPublicRoutes(mux)
@@ -71,7 +89,7 @@ func NewRouter(
 	mux.Handle("/api/auth/", apiKeyMw(authMux))
 
 	// Admin routes (protected by admin key)
-	clientHandler := NewClientHandler(clientSvc)
+	clientHandler := NewClientHandler(clientSvc, m2mHandler, ssoHandler, scimHandler)
 	clientHandler.RegisterRoutes(mux, adminMw)
 	if auditSvc != nil {
 		auditHandler := NewAuditHandler(auditSvc)

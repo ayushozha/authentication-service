@@ -75,6 +75,8 @@ func (h *PasskeyHandler) registerFinish(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no registration in progress"})
 		case domain.ErrNotFound:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		case domain.ErrPasskeyAttestation:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "passkey attestation rejected"})
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "registration failed"})
 		}

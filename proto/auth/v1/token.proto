@@ -20,4 +20,13 @@ message ValidateTokenResponse {
   bool email_verified = 5;
   string client_id = 6;
   string error = 7;
+  string org_id = 8;
+  string org_slug = 9;
+  string org_role = 10;
+  repeated string org_permissions = 11;
+  string token_use = 12;
+  string scope = 13;
+  repeated string scopes = 14;
+  string service_account_id = 15;
+  string service_account_name = 16;
 }

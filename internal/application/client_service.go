@@ -21,10 +21,19 @@ func NewClientService(clients ClientRepository) *ClientService {
 }
 
 type CreateClientRequest struct {
-	Name           string   `json:"name"`
-	Slug           string   `json:"slug"`
-	AllowedOrigins []string `json:"allowed_origins"`
-	WebhookURL     string   `json:"webhook_url"`
+	Name           string                 `json:"name"`
+	Slug           string                 `json:"slug"`
+	AllowedOrigins []string               `json:"allowed_origins"`
+	WebhookURL     string                 `json:"webhook_url"`
+	Settings       map[string]interface{} `json:"settings"`
+}
+
+type UpdateClientRequest struct {
+	Name           *string                `json:"name"`
+	AllowedOrigins []string               `json:"allowed_origins"`
+	WebhookURL     *string                `json:"webhook_url"`
+	Settings       map[string]interface{} `json:"settings"`
+	Status         *string                `json:"status"`
 }
 
 type CreateClientResponse struct {
@@ -51,7 +60,7 @@ func (s *ClientService) CreateClient(ctx context.Context, req CreateClientReques
 		JWTSecret:      jwtSecret,
 		AllowedOrigins: req.AllowedOrigins,
 		WebhookURL:     req.WebhookURL,
-		Settings:       map[string]interface{}{},
+		Settings:       cloneSettings(req.Settings),
 		Status:         "active",
 		TokenMode:      "v2_jwks",
 		APIKeyHash:     hashKey(apiKey),
@@ -64,6 +73,33 @@ func (s *ClientService) CreateClient(ctx context.Context, req CreateClientReques
 	}
 
 	return &CreateClientResponse{Client: client, APIKey: apiKey, JWTSecret: jwtSecret}, nil
+}
+
+func (s *ClientService) UpdateClient(ctx context.Context, clientID string, req UpdateClientRequest) (*domain.Client, error) {
+	client, err := s.clients.GetByID(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Name != nil {
+		client.Name = *req.Name
+	}
+	if req.AllowedOrigins != nil {
+		client.AllowedOrigins = append([]string(nil), req.AllowedOrigins...)
+	}
+	if req.WebhookURL != nil {
+		client.WebhookURL = *req.WebhookURL
+	}
+	if req.Settings != nil {
+		client.Settings = cloneSettings(req.Settings)
+	}
+	if req.Status != nil {
+		client.Status = *req.Status
+	}
+	client.UpdatedAt = time.Now().UTC()
+	if err := s.clients.Update(ctx, client); err != nil {
+		return nil, err
+	}
+	return s.clients.GetByID(ctx, clientID)
 }
 
 func (s *ClientService) GetClient(ctx context.Context, id string) (*domain.Client, error) {
@@ -124,4 +160,15 @@ func generateSecureKey(byteLen int) (string, error) {
 func hashKey(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:])
+}
+
+func cloneSettings(settings map[string]interface{}) map[string]interface{} {
+	if settings == nil {
+		return map[string]interface{}{}
+	}
+	clone := make(map[string]interface{}, len(settings))
+	for key, value := range settings {
+		clone[key] = value
+	}
+	return clone
 }
