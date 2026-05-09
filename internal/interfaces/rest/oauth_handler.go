@@ -77,7 +77,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 				if errorMsg == "" {
 					errorMsg = "missing code or state"
 				}
-				http.Redirect(w, r, h.cfg.BaseURL+"/login?error="+errorMsg, http.StatusFound)
+				http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+errorMsg, http.StatusFound)
 				return
 			}
 
@@ -86,12 +86,12 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 
 			_, accessToken, refreshToken, err := h.svc.HandleCallback(ctx, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
-				http.Redirect(w, r, h.cfg.BaseURL+"/login?error="+err.Error(), http.StatusFound)
+				http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+err.Error(), http.StatusFound)
 				return
 			}
 
 			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-			http.Redirect(w, r, h.cfg.BaseURL+"/login?access_token="+accessToken, http.StatusFound)
+			http.Redirect(w, r, h.cfg.BaseURL+"/login.html?access_token="+accessToken, http.StatusFound)
 		}))
 	}
 }

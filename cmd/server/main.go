@@ -72,6 +72,7 @@ func main() {
 	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, auditRepo, rl)
 	totpSvc := application.NewTOTPService(userRepo, sessionRepo, rdb, auditRepo)
 	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditRepo)
+	auditSvc := application.NewAuditService(auditRepo)
 
 	// Wire signup email hook
 	verifySvc.WireSignupHook(cfg.BaseURL)
@@ -118,7 +119,7 @@ func main() {
 	// Router
 	router := rest.NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, clientSvc,
+		oauthSvc, passkeySvc, clientSvc, auditSvc,
 		oauthProviders, handlerCfg,
 		cfg.AdminAPIKey, cfg.ServeFrontend, cfg.PublicDir,
 	)

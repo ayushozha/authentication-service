@@ -21,6 +21,7 @@ func NewRouter(
 	oauthSvc *application.OAuthService,
 	passkeySvc *application.PasskeyService,
 	clientSvc *application.ClientService,
+	auditSvc *application.AuditService,
 	oauthProviders map[string]*application.OAuthProviderConfig,
 	cfg *HandlerConfig,
 	adminAPIKey string,
@@ -72,6 +73,10 @@ func NewRouter(
 	// Admin routes (protected by admin key)
 	clientHandler := NewClientHandler(clientSvc)
 	clientHandler.RegisterRoutes(mux, adminMw)
+	if auditSvc != nil {
+		auditHandler := NewAuditHandler(auditSvc)
+		auditHandler.RegisterRoutes(mux, adminMw)
+	}
 
 	// API documentation
 	mux.HandleFunc("/docs", DocsUIHandler)

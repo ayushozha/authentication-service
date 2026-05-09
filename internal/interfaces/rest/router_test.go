@@ -203,6 +203,7 @@ func newJWKSRouterForTest(t *testing.T) (*Router, []*domain.Client) {
 		nil,
 		application.NewClientService(clientRepo),
 		nil,
+		nil,
 		&HandlerConfig{AllowOrigin: "*"},
 		"admin-key",
 		false,

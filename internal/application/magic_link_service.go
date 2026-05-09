@@ -33,6 +33,9 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 	if s.mailer == nil {
 		return domain.ErrEmailNotConfigured
 	}
+	if s.cache == nil {
+		return domain.ErrRedisRequired
+	}
 	emailKey := strings.ToLower(strings.TrimSpace(email))
 
 	if allowed, _, _ := s.rl.Allow(ctx, "rate:email:magic:"+emailKey, 3, 1*time.Hour); !allowed {
@@ -44,7 +47,7 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 		log.Printf("magic link lookup error: %v", err)
 	}
 
-	if user != nil && s.cache != nil {
+	if user != nil {
 		token, err := GenerateToken(32)
 		if err != nil {
 			log.Printf("generate magic token error: %v", err)
@@ -53,7 +56,7 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 		state, _ := json.Marshal(magicLinkState{UserID: user.ID, ClientID: client.ID})
 		if err := s.cache.Set(ctx, "magic:"+HashToken(token), string(state), 15*time.Minute); err != nil {
 			log.Printf("store magic token error: %v", err)
-			return nil
+			return domain.ErrRedisRequired
 		}
 		magicURL := baseURL + "/api/auth/magic-link/verify?token=" + token
 		go func() {

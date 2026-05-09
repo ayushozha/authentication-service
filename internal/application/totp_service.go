@@ -28,6 +28,9 @@ type TOTPSetupResponse struct {
 }
 
 func (s *TOTPService) Setup(ctx context.Context, client *domain.Client, userID, issuerName string) (*TOTPSetupResponse, error) {
+	if s.cache == nil {
+		return nil, domain.ErrRedisRequired
+	}
 	user, err := s.users.GetByID(ctx, userID)
 	if err != nil || user == nil {
 		return nil, domain.ErrNotFound
@@ -49,10 +52,8 @@ func (s *TOTPService) Setup(ctx context.Context, client *domain.Client, userID, 
 		return nil, err
 	}
 
-	if s.cache != nil {
-		_ = s.cache.Set(ctx, "totp_setup:"+user.ID, key.Secret(), 10*time.Minute)
-	} else {
-		_ = s.users.SetTOTPSecret(ctx, user.ID, key.Secret())
+	if err := s.cache.Set(ctx, "totp_setup:"+user.ID, key.Secret(), 10*time.Minute); err != nil {
+		return nil, domain.ErrRedisRequired
 	}
 
 	return &TOTPSetupResponse{
@@ -63,10 +64,11 @@ func (s *TOTPService) Setup(ctx context.Context, client *domain.Client, userID, 
 }
 
 func (s *TOTPService) Enable(ctx context.Context, client *domain.Client, userID, code, ip, ua string) error {
-	var secret string
-	if s.cache != nil {
-		secret, _ = s.cache.Get(ctx, "totp_setup:"+userID)
+	if s.cache == nil {
+		return domain.ErrRedisRequired
 	}
+	var secret string
+	secret, _ = s.cache.Get(ctx, "totp_setup:"+userID)
 	if secret == "" {
 		user, err := s.users.GetByID(ctx, userID)
 		if err != nil || user == nil {

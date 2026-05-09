@@ -16,7 +16,7 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 - **Email verification** -- Token-based email address verification via Resend
 - **Password reset** -- Secure token-based password reset flow
 - **Rate limiting** -- Redis-backed sliding window rate limits and account lockout
-- **Audit logging** -- Every authentication event is logged with IP, user agent, and metadata
+- **Queryable audit logging** -- Every authentication event is logged with IP, user agent, metadata, and an admin API for filtered audit review
 - **REST + gRPC** -- Dual protocol support for flexibility
 - **JWT Validator package** -- Importable Go package (`pkg/jwtvalidator`) for downstream services
 - **Security hardening** -- Client ownership checks across auth flows, password-change/reset session revocation, stricter CORS/origin behavior, and secret scanning hooks
@@ -150,6 +150,20 @@ Per-client WebAuthn overrides can be set in `client.settings` (if present): `web
 
 ## API Reference
 
+Live docs:
+
+- Production reference: <https://authservice.ayushojha.com/docs>
+- OpenAPI spec: <https://authservice.ayushojha.com/docs/openapi.yaml>
+
+Integration flow for companies/products:
+
+1. Create one client per product, environment, or tenant boundary using `POST /api/admin/clients`.
+2. Store the returned `api_key` securely and send it as `X-API-Key` on app-initiated auth requests.
+3. Use cookie mode for browser products or `session_mode=token` for mobile, CLI, SSR, desktop, and API-only clients.
+4. Authenticate users with email/password, OAuth2, magic links, TOTP, or passkeys.
+5. Validate JWTs in downstream services with `pkg/jwtvalidator`, RS256/JWKS, or the gRPC `TokenService`.
+6. Operate the integration with audit-event queries, API key rotation, JWT signing rotation, health checks, and JWKS discovery.
+
 Route access requirements:
 
 - `X-API-Key` required for app-initiated auth routes under `/api/auth/*` (signup/login/refresh/logout/profile/totp setup+verify, magic-link send, OAuth begin, passkey begin/finish routes, etc.).
@@ -163,7 +177,7 @@ Route access requirements:
 POST /api/auth/signup              Register a new user
 POST /api/auth/login               Login with email and password
 POST /api/auth/refresh             Refresh access token (uses auth_refresh cookie)
-POST /api/auth/logout              Revoke the current session
+POST /api/auth/logout              Revoke the current session (cookie or refresh_token body)
 GET  /api/auth/me                  Get the authenticated user profile
 PATCH /api/auth/me                 Update the authenticated user profile
 POST /api/auth/change-password     Change password (requires current password)
@@ -234,7 +248,10 @@ POST /api/admin/clients/{id}/rotate-secret    Rotate client JWT secret
 POST /api/admin/clients/{id}/rotate-api-key   Rotate client API key
 POST /api/admin/clients/{id}/rotate-jwt       Alias for rotate-secret
 POST /api/admin/clients/{id}/rotate-key       Alias for rotate-api-key
+GET  /api/admin/audit-events                  Query audit events
 ```
+
+`GET /api/admin/audit-events` supports `client_id`, `user_id`, `event_type`, and `limit` query parameters. The limit defaults to 50 and is capped at 500.
 
 ### Health
 
@@ -301,9 +318,12 @@ curl -X POST http://localhost:8080/api/auth/signup \
   -d '{
     "email": "user@example.com",
     "password": "securepassword",
-    "display_name": "Jane Doe"
+    "display_name": "Jane Doe",
+    "session_mode": "token"
   }'
 ```
+
+Use `session_mode=token` on signup/login/refresh when a non-browser client needs the refresh token in JSON. Browser clients can omit it and use the HttpOnly `auth_refresh` cookie.
 
 ### Key Rotation
 
@@ -333,6 +353,22 @@ Alias route also supported:
 ```bash
 curl -X POST http://localhost:8080/api/admin/clients/{id}/rotate-key \
   -H "X-Admin-Key: your-admin-api-key"
+```
+
+## Testing
+
+Run the full suite:
+
+```bash
+go test ./...
+```
+
+The REST E2E suite includes auth lifecycle, refresh rotation, logout, email verification, magic links, TOTP, OAuth state/PKCE, passkey route handling, audit queries, client admin, and Redis-required feature failures.
+
+Browser-grade tests use Chrome/Chromium through Chrome DevTools Protocol. They drive real WebAuthn browser APIs for passkey registration/login and run the public auth pages across desktop, iOS mobile-web, and Android mobile-web profiles. Set `CHROME_BIN` if Chrome is not on the default path:
+
+```bash
+CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" go test ./internal/interfaces/rest -run 'TestBrowserGradePasskey|TestBrowserPublicAuthPages' -count=1 -v
 ```
 
 ## JWT Validator Package

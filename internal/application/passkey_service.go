@@ -107,7 +107,9 @@ func (s *PasskeyService) BeginRegistration(ctx context.Context, client *domain.C
 		SessionData: *sessionData,
 	}
 	sessionJSON, _ := json.Marshal(state)
-	_ = s.cache.Set(ctx, registrationKey(client.ID, user.ID), string(sessionJSON), 5*time.Minute)
+	if err := s.cache.Set(ctx, registrationKey(client.ID, user.ID), string(sessionJSON), 5*time.Minute); err != nil {
+		return nil, domain.ErrRedisRequired
+	}
 
 	return options, nil
 }
@@ -185,7 +187,9 @@ func (s *PasskeyService) BeginLogin(ctx context.Context, client *domain.Client) 
 		SessionData: *sessionData,
 	}
 	sessionJSON, _ := json.Marshal(state)
-	_ = s.cache.Set(ctx, loginKey(sessionID), string(sessionJSON), 5*time.Minute)
+	if err := s.cache.Set(ctx, loginKey(sessionID), string(sessionJSON), 5*time.Minute); err != nil {
+		return nil, "", domain.ErrRedisRequired
+	}
 
 	return map[string]interface{}{
 		"publicKey":  options.Response,

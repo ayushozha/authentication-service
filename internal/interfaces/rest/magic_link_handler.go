@@ -50,6 +50,10 @@ func (h *MagicLinkHandler) send(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 			return
 		}
+		if err == domain.ErrRedisRequired {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "magic links require Redis"})
+			return
+		}
 		if err == domain.ErrRateLimit {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 			return
@@ -94,5 +98,5 @@ func (h *MagicLinkHandler) verify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	http.Redirect(w, r, h.cfg.BaseURL+"/login?access_token="+resp.AccessToken, http.StatusFound)
+	http.Redirect(w, r, h.cfg.BaseURL+"/login.html?access_token="+resp.AccessToken, http.StatusFound)
 }

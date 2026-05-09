@@ -2,62 +2,153 @@ openapi: 3.1.0
 info:
   title: Authentication Service API
   description: |
-    Multi-tenant authentication service with support for email/password, OAuth2, magic links, TOTP 2FA, and passkeys (WebAuthn).
+    AuthService is a self-hosted, multi-tenant authentication platform for teams that want provider-grade auth without handing user data, pricing leverage, or service-to-service trust to a third party.
 
-    ## Authentication
+    It provides email/password auth, OAuth2 social login, magic links, TOTP 2FA, passkeys/WebAuthn, refresh-token rotation, tenant-scoped JWTs, JWKS, audit logs, REST, gRPC, and an importable Go JWT validator.
 
-    This service uses a multi-tenant architecture. Each project registers as a **client** and receives:
-    - **API Key** — identifies the client; sent as `X-API-Key` header
-    - **JWT Secret** — used by downstream services to validate tokens locally
+    ## What This Replaces
 
-    ### Header Reference
+    Use AuthService when you would otherwise reach for Auth0, Clerk, Firebase Auth, Supabase Auth, Cognito, Stytch, WorkOS, or Keycloak but need a lightweight service your company can own, deploy, inspect, and extend.
 
-    | Header | Used By | Description |
-    |--------|---------|-------------|
-    | `X-API-Key` | Client apps | Per-project API key for auth requests |
-    | `Authorization: Bearer <token>` | Client apps | User access token (JWT) |
-    | `X-Admin-Key` | Service admin | Master admin key for client management |
+    | Need | AuthService Capability |
+    |------|------------------------|
+    | Product authentication | Signup, login, refresh, logout, profile, password change |
+    | Passwordless login | Magic links and passkeys/WebAuthn |
+    | MFA | TOTP setup, enable, login verify, and disable lifecycle |
+    | Social identity | Google, GitHub, Microsoft, and Apple OAuth2 |
+    | Multi-product tenancy | Client-specific users, sessions, origins, signing keys, and API keys |
+    | Microservice token trust | Local JWT validation with HS256 or RS256/JWKS plus gRPC token validation |
+    | Enterprise-style evidence | Queryable audit events with tenant, user, type, and limit filters |
 
-    ## Session Modes
+    ## Integration Quickstart
 
-    Authentication endpoints support two session modes:
+    1. **Create a client** for each product, environment, or tenant boundary with `POST /api/admin/clients`.
+    2. **Store the returned `api_key` securely**. Send it as `X-API-Key` on app-initiated auth requests.
+    3. **Choose a session model**:
+       - Browser apps: omit `session_mode` and let AuthService set the `HttpOnly` `auth_refresh` cookie.
+       - Native apps, CLIs, server-side rendered apps, and API-only products: pass `session_mode=token` to receive `refresh_token` in JSON.
+    4. **Authenticate users** through signup, login, OAuth, magic links, TOTP, or passkeys.
+    5. **Validate access tokens** in downstream services using JWKS, the Go validator package, or the gRPC TokenService.
+    6. **Operate the integration** with admin client rotation, tenant-scoped JWKS lookup, and audit-event queries.
 
-    - **Cookie mode** (default) — refresh token is set as an `HttpOnly` secure cookie (`auth_refresh`)
-    - **Token mode** — pass `session_mode=token` in the request body to receive the refresh token in the JSON response
+    ```bash
+    curl -X POST https://authservice.ayushojha.com/api/auth/login \
+      -H "X-API-Key: $AUTH_SERVICE_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "email": "user@example.com",
+        "password": "correct-horse-battery-staple",
+        "session_mode": "token"
+      }'
+    ```
+
+    ## Core Concepts
+
+    | Concept | Meaning |
+    |---------|---------|
+    | Client | A product, app, environment, or tenant boundary registered in AuthService |
+    | API key | Client credential sent as `X-API-Key`; never expose it in untrusted public code |
+    | Admin key | Operator credential sent as `X-Admin-Key` for client and audit APIs |
+    | Access token | Short-lived JWT used as `Authorization: Bearer <token>` |
+    | Refresh token | Long-lived, single-use session credential rotated on every refresh |
+    | Token mode | JSON refresh-token delivery for mobile, CLI, API, or SSR integrations |
+    | Cookie mode | Default browser session mode using an `HttpOnly` `auth_refresh` cookie |
+    | JWKS | Public key discovery endpoint for RS256 token validation |
+
+    ## Header Reference
+
+    | Header | Required For | Description |
+    |--------|--------------|-------------|
+    | `X-API-Key` | App-initiated `/api/auth/*` requests | Identifies the client/tenant and enforces tenant ownership |
+    | `Authorization: Bearer <token>` | User-protected endpoints | Carries the user's short-lived access token |
+    | `X-Admin-Key` | `/api/admin/*` endpoints | Authenticates service operators and provisioning automation |
+
+    ## Recommended Integration Patterns
+
+    ### Browser SaaS or Web App
+
+    Use cookie mode for refresh tokens, configure `allowed_origins` for the exact production origins, and keep `X-API-Key` on your backend when possible. If you call AuthService directly from the browser, treat the client API key as product-scoped and rotate it when exposed.
+
+    ### Mobile, Desktop, CLI, or API-only Product
+
+    Use `session_mode=token`, store refresh tokens in the platform's secure storage, call `/api/auth/refresh` before access-token expiry, and send `Authorization: Bearer <access_token>` to your own APIs.
+
+    ### Microservices
+
+    Prefer RS256/JWKS clients for scalable local validation. Cache `/.well-known/jwks.json?client_id=<client_id>` and enforce the `client_id`, `sub`, `role`, and `email_verified` claims in each service. Go services can use `pkg/jwtvalidator`; non-Go services can validate against JWKS with any standards-compliant JWT library.
+
+    ### Multi-product or B2B Platform
+
+    Create one client per product, environment, or security boundary. This keeps API keys, refresh tokens, audit logs, WebAuthn relying-party settings, CORS origins, and token validation scoped to the right product.
+
+    ## Security Model
+
+    - Access tokens are short-lived JWTs; the default TTL is 15 minutes.
+    - Refresh tokens are single-use, SHA-256 hashed at rest, and rotated on refresh.
+    - Password changes and password resets revoke existing sessions.
+    - API key middleware binds auth flows to the active client.
+    - JWT middleware rejects tokens whose `client_id` does not match the request client.
+    - OAuth state uses PKCE and tenant-bound signed state.
+    - Redis-backed flows protect magic links, OAuth state, passkey ceremonies, TOTP login challenges, and rate limits.
+    - CORS is evaluated against configured service origins and per-client `allowed_origins`.
+
+    ## Production Checklist
+
+    - Set `BASE_URL` to the public HTTPS origin of the service.
+    - Set `COOKIE_SECURE=true` in production.
+    - Use `COOKIE_SAMESITE=lax` for same-site apps or `none` for trusted cross-site browser flows over HTTPS.
+    - Configure exact `allowed_origins` on every client.
+    - Use RS256/JWKS mode for new service-to-service integrations.
+    - Keep `ADMIN_API_KEY`, client API keys, OAuth provider secrets, and Resend keys in a secret manager.
+    - Monitor `GET /api/admin/audit-events` for suspicious sign-in, reset, and MFA activity.
+    - Rotate API keys and signing material during incidents or ownership changes.
 
     ## Token Lifecycle
 
-    - **Access tokens** expire in 15 minutes (900 seconds)
-    - **Refresh tokens** are single-use and rotated on each refresh
-    - Changing a password or resetting it revokes all sessions
+    - **Access tokens** expire in 15 minutes by default (`expires_in: 900`).
+    - **Refresh tokens** are single-use and rotated on each refresh.
+    - **Cookie sessions** receive the rotated refresh token in `auth_refresh`.
+    - **Token sessions** receive the rotated refresh token in the JSON response.
+    - **Session revocation** happens on logout, password change, and password reset.
   version: 1.0.0
   contact:
     name: Ayush Ojha
     url: https://ayushojha.com
   license:
     name: MIT
+externalDocs:
+  description: Repository README, architecture notes, deployment guide, and provider gap analysis
+  url: https://github.com/Ayush10/authentication-service
 
 servers:
   - url: https://authservice.ayushojha.com
     description: Production
+  - url: http://localhost:8080
+    description: Local development
 
 tags:
   - name: Authentication
-    description: Core signup, login, logout, token refresh, and user profile
+    description: Core account lifecycle, session management, profile updates, password changes, and token refresh
   - name: Email Verification
-    description: Email verification and password reset flows
+    description: Public email verification plus secure password reset and resend flows
   - name: Magic Links
-    description: Passwordless authentication via email magic links
+    description: Passwordless email authentication with JSON token mode or browser redirects
   - name: TOTP
-    description: Time-based one-time password (2FA) setup, verification, and management
+    description: Time-based one-time password MFA setup, enablement, login verification, and disablement
   - name: OAuth2
-    description: Social login via Google, GitHub, Microsoft, and Apple
+    description: Tenant-bound social login via Google, GitHub, Microsoft, and Apple with PKCE-backed state
   - name: Passkeys
-    description: WebAuthn/FIDO2 passwordless authentication
+    description: WebAuthn/FIDO2 registration, login, listing, and deletion for modern passwordless UX
   - name: Admin
-    description: Client (tenant) management — requires master admin key
+    description: Client provisioning, key rotation, and audit-event operations requiring the master admin key
   - name: Utility
-    description: Health checks and key discovery
+    description: Health checks and JWKS key discovery for token validation
+
+x-tagGroups:
+  - name: Build User Login
+    tags: [Authentication, Email Verification, Magic Links, TOTP, OAuth2, Passkeys]
+  - name: Operate AuthService
+    tags: [Admin, Utility]
 
 paths:
   # ──────────────────────────────────────────────
@@ -72,6 +163,19 @@ paths:
 
         **Rate limit:** 5 requests per hour per IP.
       tags: [Authentication]
+      x-codeSamples:
+        - lang: cURL
+          label: Create a user in token mode
+          source: |
+            curl -X POST https://authservice.ayushojha.com/api/auth/signup \
+              -H "X-API-Key: $AUTH_SERVICE_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "email": "user@example.com",
+                "password": "correct-horse-battery-staple",
+                "display_name": "Jane Doe",
+                "session_mode": "token"
+              }'
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -80,6 +184,20 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/SignupRequest"
+            examples:
+              browserCookieSession:
+                summary: Browser app using HttpOnly refresh cookie
+                value:
+                  email: user@example.com
+                  password: correct-horse-battery-staple
+                  display_name: Jane Doe
+              tokenSession:
+                summary: Mobile, CLI, or API client receiving refresh token in JSON
+                value:
+                  email: user@example.com
+                  password: correct-horse-battery-staple
+                  display_name: Jane Doe
+                  session_mode: token
       responses:
         "201":
           description: Account created
@@ -117,6 +235,18 @@ paths:
 
         **Rate limit:** 10 requests per 15 minutes per IP. Account locks for 30 minutes after repeated failures.
       tags: [Authentication]
+      x-codeSamples:
+        - lang: cURL
+          label: Login and receive JSON refresh token
+          source: |
+            curl -X POST https://authservice.ayushojha.com/api/auth/login \
+              -H "X-API-Key: $AUTH_SERVICE_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "email": "user@example.com",
+                "password": "correct-horse-battery-staple",
+                "session_mode": "token"
+              }'
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -125,6 +255,18 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/LoginRequest"
+            examples:
+              browserCookieSession:
+                summary: Browser app using HttpOnly refresh cookie
+                value:
+                  email: user@example.com
+                  password: correct-horse-battery-staple
+              tokenSession:
+                summary: Native app or backend integration using token mode
+                value:
+                  email: user@example.com
+                  password: correct-horse-battery-staple
+                  session_mode: token
       responses:
         "200":
           description: Login successful (or 2FA required)
@@ -164,6 +306,17 @@ paths:
         - `refresh_token` in the request body (token mode)
         - `auth_refresh` cookie (cookie mode)
       tags: [Authentication]
+      x-codeSamples:
+        - lang: cURL
+          label: Rotate a token-mode refresh token
+          source: |
+            curl -X POST https://authservice.ayushojha.com/api/auth/refresh \
+              -H "X-API-Key: $AUTH_SERVICE_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "refresh_token": "$AUTH_REFRESH_TOKEN",
+                "session_mode": "token"
+              }'
       security:
         - ApiKeyAuth: []
       requestBody:
@@ -172,6 +325,15 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/RefreshRequest"
+            examples:
+              cookieMode:
+                summary: Browser refresh using auth_refresh cookie
+                value: {}
+              tokenMode:
+                summary: Token refresh for native, CLI, or API integrations
+                value:
+                  refresh_token: rfr_opaque_refresh_token
+                  session_mode: token
       responses:
         "200":
           description: Token refreshed
@@ -190,10 +352,24 @@ paths:
     post:
       operationId: logout
       summary: Sign out and revoke session
-      description: Revokes the current refresh token and clears the session cookie.
+      description: Revokes the current refresh token and clears the session cookie. Browser clients can rely on the `auth_refresh` cookie; token-mode clients can send `refresh_token` in the request body.
       tags: [Authentication]
       security:
         - ApiKeyAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+            examples:
+              cookieMode:
+                summary: Browser logout using auth_refresh cookie
+                value: {}
+              tokenMode:
+                summary: Revoke an explicit refresh token
+                value:
+                  refresh_token: rfr_opaque_refresh_token
       responses:
         "200":
           description: Logged out
@@ -208,6 +384,13 @@ paths:
       summary: Get current user profile
       description: Returns the profile of the authenticated user.
       tags: [Authentication]
+      x-codeSamples:
+        - lang: cURL
+          label: Read the authenticated user
+          source: |
+            curl https://authservice.ayushojha.com/api/auth/me \
+              -H "X-API-Key: $AUTH_SERVICE_API_KEY" \
+              -H "Authorization: Bearer $AUTH_ACCESS_TOKEN"
       security:
         - ApiKeyAuth: []
         - BearerAuth: []
@@ -238,6 +421,9 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdateProfileRequest"
+            example:
+              display_name: Jane Doe
+              timezone: America/New_York
       responses:
         "200":
           description: Profile updated
@@ -274,6 +460,9 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ChangePasswordRequest"
+            example:
+              old_password: current-password
+              new_password: new-correct-horse-battery-staple
       responses:
         "200":
           description: Password changed
@@ -314,6 +503,8 @@ paths:
                 token:
                   type: string
                   description: Verification token from the email link
+            example:
+              token: ver_email_token_from_link
       responses:
         "200":
           description: Email verified
@@ -383,6 +574,8 @@ paths:
                 email:
                   type: string
                   format: email
+            example:
+              email: user@example.com
       responses:
         "200":
           description: If the email exists, a reset link was sent
@@ -404,6 +597,9 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ResetPasswordRequest"
+            example:
+              token: pwd_reset_token_from_link
+              new_password: new-correct-horse-battery-staple
       responses:
         "200":
           description: Password reset
@@ -443,6 +639,8 @@ paths:
                 email:
                   type: string
                   format: email
+            example:
+              email: user@example.com
       responses:
         "200":
           description: Magic link sent (if user exists)
@@ -471,7 +669,7 @@ paths:
         Completes passwordless login via magic link. This is a public endpoint.
 
         - With `Accept: application/json` or `session_mode=token` — returns JSON with tokens
-        - Otherwise — redirects to `{base_url}/login?access_token={token}`
+        - Otherwise — redirects to `{base_url}/login.html?access_token={token}`
       tags: [Magic Links]
       parameters:
         - name: token
@@ -557,6 +755,8 @@ paths:
                   type: string
                   description: 6-digit TOTP code from authenticator app
                   example: "123456"
+            example:
+              code: "123456"
       responses:
         "200":
           description: TOTP enabled
@@ -592,6 +792,18 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/TOTPVerifyRequest"
+            examples:
+              cookieMode:
+                summary: Browser completion using refresh cookie
+                value:
+                  two_factor_token: tfa_login_challenge_token
+                  code: "123456"
+              tokenMode:
+                summary: Native or API completion using token mode
+                value:
+                  two_factor_token: tfa_login_challenge_token
+                  code: "123456"
+                  session_mode: token
       responses:
         "200":
           description: Authentication successful
@@ -639,6 +851,8 @@ paths:
                   type: string
                   description: Current 6-digit TOTP code
                   example: "654321"
+            example:
+              code: "654321"
       responses:
         "200":
           description: TOTP disabled
@@ -680,13 +894,6 @@ paths:
           schema:
             type: string
             enum: [google, github, microsoft, apple]
-        - name: session_mode
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [token]
-          description: Set to `token` to receive refresh token in JSON instead of cookie
       responses:
         "302":
           description: Redirect to OAuth provider
@@ -702,8 +909,8 @@ paths:
       operationId: oauthCallback
       summary: OAuth2 callback
       description: |
-        Handles the OAuth provider's redirect. On success, redirects to `{base_url}/login?access_token={token}` and sets a session cookie.
-        On failure, redirects to `{base_url}/login?error={message}`.
+        Handles the OAuth provider's redirect. On success, redirects to `{base_url}/login.html?access_token={token}` and sets a session cookie.
+        On failure, redirects to `{base_url}/login.html?error={message}`.
 
         This is a public endpoint called by the OAuth provider.
       tags: [OAuth2]
@@ -726,6 +933,38 @@ paths:
           schema:
             type: string
           description: Signed state parameter
+      responses:
+        "302":
+          description: Redirect to application with token or error
+    post:
+      operationId: oauthCallbackFormPost
+      summary: OAuth2 callback (form post)
+      description: |
+        Handles providers that return OAuth callback parameters with `response_mode=form_post`.
+
+        On success, redirects to `{base_url}/login.html?access_token={token}` and sets a session cookie. On failure, redirects to `{base_url}/login.html?error={message}`.
+      tags: [OAuth2]
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google, github, microsoft, apple]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [code, state]
+              properties:
+                code:
+                  type: string
+                  description: Authorization code from the OAuth provider
+                state:
+                  type: string
+                  description: Signed state parameter
       responses:
         "302":
           description: Redirect to application with token or error
@@ -994,6 +1233,19 @@ paths:
       description: |
         Creates a new tenant (client) and returns the API key and JWT secret. **Save these values** — they are only shown at creation time.
       tags: [Admin]
+      x-codeSamples:
+        - lang: cURL
+          label: Provision a production client
+          source: |
+            curl -X POST https://authservice.ayushojha.com/api/admin/clients \
+              -H "X-Admin-Key: $AUTH_SERVICE_ADMIN_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "name": "Acme Dashboard",
+                "slug": "acme-dashboard-prod",
+                "allowed_origins": ["https://app.acme.com"],
+                "webhook_url": "https://app.acme.com/webhooks/auth"
+              }'
       security:
         - AdminKeyAuth: []
       requestBody:
@@ -1002,6 +1254,23 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateClientRequest"
+            examples:
+              productionWebApp:
+                summary: Production web application client
+                value:
+                  name: Acme Dashboard
+                  slug: acme-dashboard-prod
+                  allowed_origins:
+                    - https://app.acme.com
+                    - https://www.acme.com
+                  webhook_url: https://app.acme.com/webhooks/auth
+              stagingEnvironment:
+                summary: Separate staging client for safer testing
+                value:
+                  name: Acme Dashboard Staging
+                  slug: acme-dashboard-staging
+                  allowed_origins:
+                    - https://staging.acme.com
       responses:
         "201":
           description: Client created
@@ -1082,11 +1351,41 @@ paths:
   /api/admin/clients/{id}/rotate-jwt:
     post:
       operationId: rotateJwtSecret
+      summary: Rotate JWT secret (alias)
+      description: |
+        Alias for `/api/admin/clients/{id}/rotate-secret`. Generates a new JWT secret for the client. The old secret is immediately invalidated — all existing tokens signed with it will fail validation.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: New JWT secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateSecretResponse"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/clients/{id}/rotate-secret:
+    post:
+      operationId: rotateJwtSecretCanonical
       summary: Rotate JWT secret
       description: |
         Generates a new JWT secret for the client. The old secret is immediately invalidated — all existing tokens signed with it will fail validation.
 
-        Also available at `/api/admin/clients/{id}/rotate-secret`.
+        Use this during incident response, tenant ownership changes, or planned signing-secret rotation.
       tags: [Admin]
       security:
         - AdminKeyAuth: []
@@ -1114,11 +1413,9 @@ paths:
   /api/admin/clients/{id}/rotate-key:
     post:
       operationId: rotateApiKey
-      summary: Rotate API key
+      summary: Rotate API key (alias)
       description: |
-        Generates a new API key for the client. The old key is immediately invalidated.
-
-        Also available at `/api/admin/clients/{id}/rotate-api-key`.
+        Alias for `/api/admin/clients/{id}/rotate-api-key`. Generates a new API key for the client. The old key is immediately invalidated.
       tags: [Admin]
       security:
         - AdminKeyAuth: []
@@ -1136,6 +1433,102 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RotateKeyResponse"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/clients/{id}/rotate-api-key:
+    post:
+      operationId: rotateApiKeyCanonical
+      summary: Rotate API key
+      description: |
+        Generates a new API key for the client. The old key is immediately invalidated.
+
+        Use this if a client API key was exposed in an untrusted surface, checked into source control, or transferred to a new owner.
+      tags: [Admin]
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: New API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateKeyResponse"
+        "401":
+          description: Invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/audit-events:
+    get:
+      operationId: listAuditEvents
+      summary: Query audit events
+      description: Returns authentication audit events, newest first. Use filters to narrow by tenant, user, or event type.
+      tags: [Admin]
+      x-codeSamples:
+        - lang: cURL
+          label: Review recent failed logins for a client
+          source: |
+            curl "https://authservice.ayushojha.com/api/admin/audit-events?client_id=$CLIENT_ID&event_type=login_failed&limit=100" \
+              -H "X-Admin-Key: $AUTH_SERVICE_ADMIN_KEY"
+      security:
+        - AdminKeyAuth: []
+      parameters:
+        - name: client_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filter events for a client/tenant
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Filter events for a user
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by event type, for example `signup`, `login_success`, or `totp_enabled`
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+          description: Maximum number of events to return
+      responses:
+        "200":
+          description: Audit events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEventsResponse"
+        "400":
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: Invalid admin key
           content:
@@ -1169,9 +1562,22 @@ paths:
       operationId: getJwks
       summary: Get JSON Web Key Set
       description: |
-        Returns the JWKS for a client, used to validate RS256-signed tokens. Provide either `X-API-Key` header or `client_id` query parameter.
+        Returns public signing keys used to validate RS256-signed tokens.
+
+        Without a client hint, the endpoint returns the issuer-level active JWKS. Provide either `X-API-Key` or `client_id` to narrow the response to one client.
       tags: [Utility]
+      x-codeSamples:
+        - lang: cURL
+          label: Fetch client-scoped signing keys
+          source: |
+            curl "https://authservice.ayushojha.com/.well-known/jwks.json?client_id=$CLIENT_ID"
       parameters:
+        - name: X-API-Key
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Client API key for client-scoped JWKS lookup
         - name: client_id
           in: query
           required: false
@@ -1186,14 +1592,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JWKS"
-        "400":
-          description: Neither X-API-Key nor client_id provided
+        "401":
+          description: Invalid client
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "401":
-          description: Invalid client
+        "500":
+          description: JWKS could not be loaded
           content:
             application/json:
               schema:
@@ -1238,6 +1644,10 @@ components:
           type: string
           description: Display name (defaults to email prefix)
           example: John Doe
+        session_mode:
+          type: string
+          enum: [token]
+          description: Set to `token` to receive refresh token in JSON instead of cookie
 
     LoginRequest:
       type: object
@@ -1264,6 +1674,13 @@ components:
         session_mode:
           type: string
           enum: [token]
+
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: Refresh token to revoke when using token session mode
 
     ChangePasswordRequest:
       type: object
@@ -1497,6 +1914,42 @@ components:
         api_key:
           type: string
           description: New API key
+
+    AuditEventsResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        client_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        event_type:
+          type: string
+          example: login_success
+        ip_address:
+          type: string
+          example: 203.0.113.10
+        user_agent:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
 
     TOTPSetupResponse:
       type: object

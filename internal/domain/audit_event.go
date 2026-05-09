@@ -12,3 +12,10 @@ type AuditEvent struct {
 	Metadata  map[string]interface{} `json:"metadata"`
 	CreatedAt time.Time              `json:"created_at"`
 }
+
+type AuditEventFilter struct {
+	ClientID  string
+	UserID    string
+	EventType string
+	Limit     int
+}

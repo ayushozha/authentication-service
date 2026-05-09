@@ -57,6 +57,7 @@ type SignupRequest struct {
 	Email       string `json:"email"`
 	Password    string `json:"password"`
 	DisplayName string `json:"display_name"`
+	SessionMode string `json:"session_mode,omitempty"`
 }
 
 type LoginRequest struct {
@@ -83,21 +84,21 @@ func SetSigningKeyRepository(repo SigningKeyRepository) {
 	signingKeys = repo
 }
 
-func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req SignupRequest, ip, ua string, bcryptCost int, accessTTL, refreshTTL time.Duration) (*AuthResponse, error) {
+func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req SignupRequest, ip, ua string, bcryptCost int, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
 	// Rate limit
 	if allowed, _, _ := s.rl.Allow(ctx, "rate:signup:"+ip, 5, 1*time.Hour); !allowed {
-		return nil, domain.ErrRateLimit
+		return nil, "", domain.ErrRateLimit
 	}
 
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	if email == "" {
-		return nil, fmt.Errorf("email is required")
+		return nil, "", fmt.Errorf("email is required")
 	}
 	if _, err := mail.ParseAddress(email); err != nil {
-		return nil, fmt.Errorf("invalid email")
+		return nil, "", fmt.Errorf("invalid email")
 	}
 	if msg := ValidatePasswordStrength(req.Password); msg != "" {
-		return nil, fmt.Errorf("%s", msg)
+		return nil, "", fmt.Errorf("%s", msg)
 	}
 
 	displayName := strings.TrimSpace(req.DisplayName)
@@ -107,23 +108,23 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 
 	existing, err := s.users.GetByEmail(ctx, client.ID, email)
 	if err != nil && err != domain.ErrNotFound {
-		return nil, fmt.Errorf("internal error")
+		return nil, "", fmt.Errorf("internal error")
 	}
 	if existing != nil {
-		return nil, domain.ErrDuplicateEmail
+		return nil, "", domain.ErrDuplicateEmail
 	}
 
 	hash, err := HashPassword(req.Password, bcryptCost)
 	if err != nil {
-		return nil, fmt.Errorf("internal error")
+		return nil, "", fmt.Errorf("internal error")
 	}
 
 	user, err := s.users.Create(ctx, client.ID, email, hash, displayName)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_users_client_email") {
-			return nil, domain.ErrDuplicateEmail
+			return nil, "", domain.ErrDuplicateEmail
 		}
-		return nil, fmt.Errorf("could not create account")
+		return nil, "", fmt.Errorf("could not create account")
 	}
 
 	uid := user.ID
@@ -135,12 +136,12 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 
 	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
-		return nil, fmt.Errorf("internal error")
+		return nil, "", fmt.Errorf("internal error")
 	}
 
-	_, err = s.sessions.Create(ctx, user.ID, client.ID, ip, ua, refreshTTL)
+	refreshToken, err := s.sessions.Create(ctx, user.ID, client.ID, ip, ua, refreshTTL)
 	if err != nil {
-		return nil, fmt.Errorf("internal error")
+		return nil, "", fmt.Errorf("internal error")
 	}
 
 	return &AuthResponse{
@@ -148,7 +149,7 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 		TokenType:   "Bearer",
 		ExpiresIn:   int(accessTTL.Seconds()),
 		User:        user,
-	}, nil
+	}, refreshToken, nil
 }
 
 func (s *AuthService) Login(ctx context.Context, client *domain.Client, req LoginRequest, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
@@ -185,14 +186,15 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 
 	// Check 2FA
 	if user.TOTPEnabled {
+		if s.cache == nil {
+			return nil, "", domain.ErrRedisRequired
+		}
 		twoFAToken, err := GenerateToken(32)
 		if err != nil {
 			return nil, "", fmt.Errorf("internal error")
 		}
-		if s.cache != nil {
-			if err := s.cache.Set(ctx, "2fa:"+HashToken(twoFAToken), user.ID, 5*time.Minute); err != nil {
-				return nil, "", fmt.Errorf("internal error")
-			}
+		if err := s.cache.Set(ctx, "2fa:"+HashToken(twoFAToken), user.ID, 5*time.Minute); err != nil {
+			return nil, "", domain.ErrRedisRequired
 		}
 		return &AuthResponse{
 			Requires2FA:  true,
@@ -226,6 +228,9 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 func (s *AuthService) Refresh(ctx context.Context, client *domain.Client, rawRefreshToken, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
 	userID, sessionID, err := s.sessions.Validate(ctx, client.ID, rawRefreshToken)
 	if err != nil {
+		if err == domain.ErrInvalidToken {
+			return nil, "", domain.ErrInvalidToken
+		}
 		return nil, "", fmt.Errorf("internal error")
 	}
 	if userID == "" {

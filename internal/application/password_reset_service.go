@@ -30,7 +30,7 @@ func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, ema
 		if err != nil {
 			log.Printf("create reset token error: %v", err)
 		} else {
-			resetURL := baseURL + "/reset-password?token=" + token
+			resetURL := baseURL + "/reset-password.html?token=" + token
 			go func() {
 				if err := s.mailer.SendPasswordReset(user.Email, user.DisplayName, resetURL); err != nil {
 					log.Printf("send password reset email error: %v", err)

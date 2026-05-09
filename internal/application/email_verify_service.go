@@ -30,7 +30,7 @@ func (s *EmailVerifyService) WireSignupHook(baseURL string) {
 			log.Printf("create verify token on signup error: %v", err)
 			return
 		}
-		verifyURL := baseURL + "/verify-email?token=" + token
+		verifyURL := baseURL + "/verify-email.html?token=" + token
 		go func() {
 			if err := s.mailer.SendVerifyEmail(email, displayName, verifyURL); err != nil {
 				log.Printf("send verify email error: %v", err)
@@ -65,7 +65,7 @@ func (s *EmailVerifyService) ResendVerification(ctx context.Context, userID, bas
 	if err != nil {
 		return err
 	}
-	verifyURL := baseURL + "/verify-email?token=" + token
+	verifyURL := baseURL + "/verify-email.html?token=" + token
 	go func() {
 		if err := s.mailer.SendVerifyEmail(user.Email, user.DisplayName, verifyURL); err != nil {
 			log.Printf("send verify email error: %v", err)

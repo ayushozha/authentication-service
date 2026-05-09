@@ -41,6 +41,8 @@ func (h *TOTPHandler) setup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == domain.ErrTOTPAlreadyOn {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		} else if err == domain.ErrRedisRequired {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
 		} else {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}
@@ -68,6 +70,8 @@ func (h *TOTPHandler) enable(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid code"})
 		case domain.ErrTOTPNoPending:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case domain.ErrRedisRequired:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
 		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}

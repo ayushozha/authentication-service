@@ -43,7 +43,7 @@ func (s *AuthServer) Signup(ctx context.Context, req *SignupRequest) (*AuthRespo
 		}
 	}
 
-	resp, err := s.auth.Signup(ctx, client, application.SignupRequest{
+	resp, refreshToken, err := s.auth.Signup(ctx, client, application.SignupRequest{
 		Email:       req.Email,
 		Password:    req.Password,
 		DisplayName: req.DisplayName,
@@ -53,10 +53,11 @@ func (s *AuthServer) Signup(ctx context.Context, req *SignupRequest) (*AuthRespo
 	}
 
 	return &AuthResponse{
-		AccessToken: resp.AccessToken,
-		TokenType:   resp.TokenType,
-		ExpiresIn:   int32(resp.ExpiresIn),
-		User:        userToResponse(resp.User),
+		AccessToken:  resp.AccessToken,
+		RefreshToken: refreshToken,
+		TokenType:    resp.TokenType,
+		ExpiresIn:    int32(resp.ExpiresIn),
+		User:         userToResponse(resp.User),
 	}, nil
 }
 

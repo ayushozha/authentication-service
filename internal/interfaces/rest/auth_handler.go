@@ -56,7 +56,7 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, err := h.authSvc.Signup(ctx, client, req, clientIP(r), r.UserAgent(), h.cfg.BcryptCost, h.cfg.AccessTTL, h.cfg.RefreshTTL)
+	resp, refreshToken, err := h.authSvc.Signup(ctx, client, req, clientIP(r), r.UserAgent(), h.cfg.BcryptCost, h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
 		switch err {
 		case domain.ErrDuplicateEmail:
@@ -67,6 +67,14 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 		return
+	}
+
+	if refreshToken != "" {
+		if isTokenSessionMode(r, req.SessionMode) {
+			resp.RefreshToken = refreshToken
+		} else {
+			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, resp)
@@ -106,6 +114,8 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "account temporarily locked, try again in 30 minutes"})
 		case domain.ErrRateLimit:
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+		case domain.ErrRedisRequired:
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
 		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}
@@ -185,11 +195,20 @@ func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
 		return
 	}
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
+
+	rawRefreshToken := body.RefreshToken
 	cookie, err := r.Cookie("auth_refresh")
 	if err == nil {
+		rawRefreshToken = cookie.Value
+	}
+	if rawRefreshToken != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		_ = h.authSvc.Logout(ctx, client.ID, cookie.Value)
+		_ = h.authSvc.Logout(ctx, client.ID, rawRefreshToken)
 	}
 	ClearRefreshCookie(w, h.cfg)
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
