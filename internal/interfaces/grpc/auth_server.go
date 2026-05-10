@@ -2,11 +2,14 @@ package grpc
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/application"
+	"github.com/Ayush10/authentication-service/internal/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -153,6 +156,9 @@ func (s *AuthServer) GetUser(ctx context.Context, req *GetUserRequest) (*UserRes
 	if req.UserID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "user_id is required")
 	}
+	if _, err := s.authorizeUserRPC(ctx, req.APIKey, req.AccessToken, req.UserID); err != nil {
+		return nil, err
+	}
 	user, err := s.auth.GetUser(ctx, req.UserID)
 	if err != nil {
 		return nil, domainToGRPCError(err)
@@ -167,6 +173,9 @@ func (s *AuthServer) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*U
 	if req.UserID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "user_id is required")
 	}
+	if _, err := s.authorizeUserRPC(ctx, req.APIKey, req.AccessToken, req.UserID); err != nil {
+		return nil, err
+	}
 	user, err := s.auth.UpdateProfile(ctx, req.UserID, application.UpdateProfileRequest{
 		DisplayName: req.DisplayName,
 		Timezone:    req.Timezone,
@@ -175,6 +184,56 @@ func (s *AuthServer) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*U
 		return nil, domainToGRPCError(err)
 	}
 	return userToResponse(user), nil
+}
+
+func (s *AuthServer) authorizeUserRPC(ctx context.Context, apiKey, accessToken, targetUserID string) (*application.AccessClaims, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = firstMetadataValue(ctx, "x-api-key")
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		accessToken = bearerTokenFromMetadata(ctx)
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, status.Errorf(codes.Unauthenticated, "api_key is required")
+	}
+	if strings.TrimSpace(accessToken) == "" {
+		return nil, status.Errorf(codes.Unauthenticated, "access_token is required")
+	}
+	client, err := s.clients.GetClientByAPIKey(ctx, apiKey)
+	if err != nil {
+		return nil, domainToGRPCError(err)
+	}
+	claims, err := application.ValidateAccessToken(ctx, client, accessToken)
+	if err != nil {
+		return nil, status.Errorf(codes.Unauthenticated, "invalid access token")
+	}
+	if claims.Subject != targetUserID {
+		return nil, domainToGRPCError(domain.ErrForbidden)
+	}
+	return claims, nil
+}
+
+func firstMetadataValue(ctx context.Context, key string) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if vals := md.Get(key); len(vals) > 0 {
+		return strings.TrimSpace(vals[0])
+	}
+	return ""
+}
+
+func bearerTokenFromMetadata(ctx context.Context) string {
+	authz := firstMetadataValue(ctx, "authorization")
+	if authz == "" {
+		return ""
+	}
+	parts := strings.Fields(authz)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+		return parts[1]
+	}
+	return ""
 }
 
 func (s *AuthServer) ChangePassword(ctx context.Context, req *ChangePasswordRequest) (*Empty, error) {

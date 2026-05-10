@@ -5,6 +5,8 @@ auth-server
 # /public/*.html  # Frontend pages are tracked in git
 tmp/
 .history/
+__pycache__/
+*.pyc
 sdks/ios/.build/
 sdks/ios/.swiftpm/
 sdks/android/.gradle/

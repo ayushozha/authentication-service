@@ -25,6 +25,7 @@ type Config struct {
 	PasswordResetService *application.PasswordResetService
 	MagicLinkService     *application.MagicLinkService
 	ClientService        *application.ClientService
+	AdminService         *application.AdminService
 	AdminAPIKey          string
 	BcryptCost           int
 	AccessTTL            time.Duration
@@ -43,7 +44,7 @@ func NewServer(cfg Config) *Server {
 		grpc.UnaryInterceptor(chainUnaryInterceptors(
 			loggingInterceptor,
 			recoveryInterceptor,
-			adminAPIKeyInterceptor(cfg.AdminAPIKey),
+			adminAuthInterceptor(cfg.AdminService, cfg.AdminAPIKey),
 		)),
 	)
 
@@ -66,6 +67,7 @@ func NewServer(cfg Config) *Server {
 
 	admin := &AdminServer{
 		clients:     cfg.ClientService,
+		admins:      cfg.AdminService,
 		adminAPIKey: cfg.AdminAPIKey,
 	}
 

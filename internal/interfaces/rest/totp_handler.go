@@ -85,9 +85,11 @@ func (h *TOTPHandler) enable(w http.ResponseWriter, r *http.Request) {
 func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	var req struct {
-		TwoFAToken  string `json:"two_factor_token"`
-		Code        string `json:"code"`
-		SessionMode string `json:"session_mode"`
+		TwoFAToken     string `json:"two_factor_token"`
+		Code           string `json:"code"`
+		SessionMode    string `json:"session_mode"`
+		RememberDevice bool   `json:"remember_device"`
+		DeviceName     string `json:"device_name"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -101,7 +103,7 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, refreshToken, err := h.svc.Verify(ctx, client, req.TwoFAToken, req.Code, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+	resp, refreshToken, err := h.svc.Verify(ctx, client, req.TwoFAToken, req.Code, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL, req.RememberDevice, req.DeviceName)
 	if err != nil {
 		switch err {
 		case domain.ErrInvalidToken:
@@ -153,9 +155,11 @@ func (h *TOTPHandler) recoveryCodes(w http.ResponseWriter, r *http.Request) {
 func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	var req struct {
-		TwoFAToken  string `json:"two_factor_token"`
-		Code        string `json:"code"`
-		SessionMode string `json:"session_mode"`
+		TwoFAToken     string `json:"two_factor_token"`
+		Code           string `json:"code"`
+		SessionMode    string `json:"session_mode"`
+		RememberDevice bool   `json:"remember_device"`
+		DeviceName     string `json:"device_name"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -169,7 +173,7 @@ func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, refreshToken, err := h.svc.VerifyRecoveryCode(ctx, client, req.TwoFAToken, req.Code, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+	resp, refreshToken, err := h.svc.VerifyRecoveryCode(ctx, client, req.TwoFAToken, req.Code, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL, req.RememberDevice, req.DeviceName)
 	if err != nil {
 		switch err {
 		case domain.ErrInvalidToken:

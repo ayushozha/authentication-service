@@ -8,16 +8,18 @@ import (
 )
 
 type Config struct {
-	Port          string
-	GRPCPort      string
-	PublicDir     string
-	ServeFrontend bool
-	DatabaseURL   string
-	RedisURL      string
-	RedisPrefix   string
-	AllowOrigin   string
-	AdminAPIKey   string
-	BaseURL       string
+	Port             string
+	GRPCPort         string
+	PublicDir        string
+	ServeFrontend    bool
+	DatabaseURL      string
+	RedisURL         string
+	RedisPrefix      string
+	AllowOrigin      string
+	AdminAPIKey      string
+	AdminTokenSecret string
+	AdminAccessTTL   time.Duration
+	BaseURL          string
 
 	// JWT defaults
 	JWTAccessTTL  time.Duration
@@ -66,17 +68,48 @@ type Config struct {
 	WebhookRetryAttempts int
 	WebhookTimeout       time.Duration
 
+	AuditRetentionDays       int
+	AuditStreamProviders     []string
+	AuditStreamTimeout       time.Duration
+	AuditStreamRetryAttempts int
+	DatadogLogsURL           string
+	DatadogAPIKey            string
+	SplunkHECURL             string
+	SplunkHECToken           string
+	ElasticBulkURL           string
+	ElasticAPIKey            string
+	ElasticIndex             string
+	AWSRegion                string
+	AWSAccessKeyID           string
+	AWSSecretAccessKey       string
+	AWSSessionToken          string
+	AuditS3Bucket            string
+	AuditS3Prefix            string
+	AuditCloudWatchLogGroup  string
+	AuditCloudWatchLogStream string
+	GCPProjectID             string
+	GCPLogID                 string
+	GCPAccessToken           string
+	GCPLoggingURL            string
+	AzureMonitorIngestURL    string
+	AzureMonitorBearerToken  string
+
 	CaptchaProvider       string
 	CaptchaSecret         string
 	CaptchaVerifyURL      string
 	CaptchaTimeout        time.Duration
 	CaptchaSignupRequired bool
 	CaptchaLoginRequired  bool
+
+	RiskProviderURL     string
+	RiskProviderAPIKey  string
+	RiskProviderTimeout time.Duration
 }
 
 func loadConfig() Config {
 	accessTTL, _ := time.ParseDuration(envStr("JWT_ACCESS_TTL", "15m"))
 	refreshTTL, _ := time.ParseDuration(envStr("JWT_REFRESH_TTL", "168h"))
+	adminAccessTTL, _ := time.ParseDuration(envStr("ADMIN_ACCESS_TTL", "8h"))
 	bcryptCost, _ := strconv.Atoi(envStr("BCRYPT_COST", "12"))
 	if bcryptCost < 10 || bcryptCost > 16 {
 		bcryptCost = 12
@@ -92,9 +125,25 @@ func loadConfig() Config {
 	if err != nil || webhookTimeout <= 0 {
 		webhookTimeout = 5 * time.Second
 	}
+	auditRetentionDays, _ := strconv.Atoi(envStr("AUDIT_RETENTION_DAYS", "2555"))
+	if auditRetentionDays <= 0 {
+		auditRetentionDays = 2555
+	}
+	auditStreamRetryAttempts, _ := strconv.Atoi(envStr("AUDIT_STREAM_RETRY_ATTEMPTS", "3"))
+	if auditStreamRetryAttempts < 1 || auditStreamRetryAttempts > 10 {
+		auditStreamRetryAttempts = 3
+	}
+	auditStreamTimeout, err := time.ParseDuration(envStr("AUDIT_STREAM_TIMEOUT", "5s"))
+	if err != nil || auditStreamTimeout <= 0 {
+		auditStreamTimeout = 5 * time.Second
+	}
 	captchaTimeout, err := time.ParseDuration(envStr("CAPTCHA_TIMEOUT", "5s"))
 	if err != nil || captchaTimeout <= 0 {
 		captchaTimeout = 5 * time.Second
+	}
+	riskProviderTimeout, err := time.ParseDuration(envStr("RISK_PROVIDER_TIMEOUT", "5s"))
+	if err != nil || riskProviderTimeout <= 0 {
+		riskProviderTimeout = 5 * time.Second
 	}
 	blockedEmailDomains := envList("BLOCKED_EMAIL_DOMAINS", []string{
 		"10minutemail.com",
@@ -113,16 +162,18 @@ func loadConfig() Config {
 	cookieSecure := envStr("COOKIE_SECURE", "false") == "true"
 
 	return Config{
-		Port:          envStr("PORT", "8080"),
-		GRPCPort:      envStr("GRPC_PORT", "9090"),
-		PublicDir:     envStr("PUBLIC_DIR", "./public"),
-		ServeFrontend: serveFrontend,
-		DatabaseURL:   envStr("DATABASE_URL", ""),
-		RedisURL:      envStr("REDIS_URL", ""),
-		RedisPrefix:   envStr("REDIS_KEY_PREFIX", "auth:"),
-		AllowOrigin:   envStr("ALLOW_ORIGIN", "*"),
-		AdminAPIKey:   envStr("ADMIN_API_KEY", ""),
-		BaseURL:       envStr("BASE_URL", "http://localhost:8080"),
+		Port:             envStr("PORT", "8080"),
+		GRPCPort:         envStr("GRPC_PORT", "9090"),
+		PublicDir:        envStr("PUBLIC_DIR", "./public"),
+		ServeFrontend:    serveFrontend,
+		DatabaseURL:      envStr("DATABASE_URL", ""),
+		RedisURL:         envStr("REDIS_URL", ""),
+		RedisPrefix:      envStr("REDIS_KEY_PREFIX", "auth:"),
+		AllowOrigin:      envStr("ALLOW_ORIGIN", "*"),
+		AdminAPIKey:      envStr("ADMIN_API_KEY", ""),
+		AdminTokenSecret: envStr("ADMIN_TOKEN_SECRET", envStr("ADMIN_API_KEY", "")),
+		AdminAccessTTL:   adminAccessTTL,
+		BaseURL:          envStr("BASE_URL", "http://localhost:8080"),
 
 		JWTAccessTTL:  accessTTL,
 		JWTRefreshTTL: refreshTTL,
@@ -166,12 +217,42 @@ func loadConfig() Config {
 		WebhookRetryAttempts: webhookRetryAttempts,
 		WebhookTimeout:       webhookTimeout,
 
+		AuditRetentionDays:       auditRetentionDays,
+		AuditStreamProviders:     envList("AUDIT_STREAMS", nil),
+		AuditStreamTimeout:       auditStreamTimeout,
+		AuditStreamRetryAttempts: auditStreamRetryAttempts,
+		DatadogLogsURL:           envStr("DATADOG_LOGS_URL", ""),
+		DatadogAPIKey:            envStr("DATADOG_API_KEY", ""),
+		SplunkHECURL:             envStr("SPLUNK_HEC_URL", ""),
+		SplunkHECToken:           envStr("SPLUNK_HEC_TOKEN", ""),
+		ElasticBulkURL:           envStr("ELASTIC_BULK_URL", ""),
+		ElasticAPIKey:            envStr("ELASTIC_API_KEY", ""),
+		ElasticIndex:             envStr("ELASTIC_INDEX", "authservice-audit"),
+		AWSRegion:                envStr("AWS_REGION", ""),
+		AWSAccessKeyID:           envStr("AWS_ACCESS_KEY_ID", ""),
+		AWSSecretAccessKey:       envStr("AWS_SECRET_ACCESS_KEY", ""),
+		AWSSessionToken:          envStr("AWS_SESSION_TOKEN", ""),
+		AuditS3Bucket:            envStr("AUDIT_S3_BUCKET", ""),
+		AuditS3Prefix:            envStr("AUDIT_S3_PREFIX", "authservice/audit"),
+		AuditCloudWatchLogGroup:  envStr("AUDIT_CLOUDWATCH_LOG_GROUP", ""),
+		AuditCloudWatchLogStream: envStr("AUDIT_CLOUDWATCH_LOG_STREAM", ""),
+		GCPProjectID:             envStr("GCP_PROJECT_ID", ""),
+		GCPLogID:                 envStr("GCP_LOG_ID", "authservice-audit"),
+		GCPAccessToken:           envStr("GCP_ACCESS_TOKEN", ""),
+		GCPLoggingURL:            envStr("GCP_LOGGING_URL", ""),
+		AzureMonitorIngestURL:    envStr("AZURE_MONITOR_INGEST_URL", ""),
+		AzureMonitorBearerToken:  envStr("AZURE_MONITOR_BEARER_TOKEN", ""),
+
 		CaptchaProvider:       envStr("CAPTCHA_PROVIDER", ""),
 		CaptchaSecret:         envStr("CAPTCHA_SECRET", ""),
 		CaptchaVerifyURL:      envStr("CAPTCHA_VERIFY_URL", ""),
 		CaptchaTimeout:        captchaTimeout,
 		CaptchaSignupRequired: envStr("CAPTCHA_SIGNUP_REQUIRED", "false") == "true",
 		CaptchaLoginRequired:  envStr("CAPTCHA_LOGIN_REQUIRED", "false") == "true",
+
+		RiskProviderURL:     envStr("RISK_PROVIDER_URL", ""),
+		RiskProviderAPIKey:  envStr("RISK_PROVIDER_API_KEY", ""),
+		RiskProviderTimeout: riskProviderTimeout,
 	}
 }
 

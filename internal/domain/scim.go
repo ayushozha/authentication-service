@@ -8,15 +8,20 @@ const (
 )
 
 type SCIMDirectory struct {
-	ID          string    `json:"id"`
-	ClientID    string    `json:"client_id"`
-	Name        string    `json:"name"`
-	Status      string    `json:"status"`
-	TokenHash   string    `json:"-"`
-	TokenPrefix string    `json:"token_prefix"`
-	Domains     []string  `json:"domains"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string     `json:"id"`
+	ClientID       string     `json:"client_id"`
+	OrganizationID string     `json:"organization_id,omitempty"`
+	Name           string     `json:"name"`
+	Provider       string     `json:"provider,omitempty"`
+	Status         string     `json:"status"`
+	TokenHash      string     `json:"-"`
+	TokenPrefix    string     `json:"token_prefix"`
+	Domains        []string   `json:"domains"`
+	LastSyncAt     *time.Time `json:"last_sync_at,omitempty"`
+	LastErrorAt    *time.Time `json:"last_error_at,omitempty"`
+	LastError      string     `json:"last_error,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type SCIMDirectoryWithToken struct {

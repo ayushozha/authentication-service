@@ -29,10 +29,24 @@ type AuthService struct {
 	cache    CacheClient
 	audit    AuditRepository
 	rl       RateLimiter
+	adaptive *AdaptiveSecurityService
+	sso      EnterpriseSSORepository
+}
+
+type RefreshTokenReuseRepository interface {
+	IsRefreshTokenRevoked(ctx context.Context, clientID, rawToken string) (bool, string, error)
 }
 
 func NewAuthService(users UserRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, rl RateLimiter) *AuthService {
 	return &AuthService{users: users, sessions: sessions, cache: cache, audit: audit, rl: rl}
+}
+
+func (s *AuthService) SetAdaptiveSecurity(adaptive *AdaptiveSecurityService) {
+	s.adaptive = adaptive
+}
+
+func (s *AuthService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
+	s.sso = repo
 }
 
 type AccessClaims struct {
@@ -41,6 +55,7 @@ type AccessClaims struct {
 	Role                    string   `json:"role"`
 	EmailVerified           bool     `json:"email_verified"`
 	ClientID                string   `json:"client_id"`
+	AuthorizedParty         string   `json:"azp,omitempty"`
 	TokenUse                string   `json:"token_use,omitempty"`
 	Scope                   string   `json:"scope,omitempty"`
 	Scopes                  []string `json:"scopes,omitempty"`
@@ -53,6 +68,9 @@ type AccessClaims struct {
 }
 
 type accessTokenOptions struct {
+	issuer                  string
+	audiences               []string
+	authorizedParty         string
 	organizationID          string
 	organizationSlug        string
 	organizationRole        string
@@ -91,6 +109,17 @@ func WithServiceAccountScope(account *domain.ServiceAccount, scopes []string) Ac
 	}
 }
 
+func WithOIDCAccessTokenClaims(issuer, authorizedParty string, audiences, scopes []string) AccessTokenOption {
+	return func(opts *accessTokenOptions) {
+		opts.issuer = strings.TrimSpace(issuer)
+		opts.authorizedParty = strings.TrimSpace(authorizedParty)
+		opts.audiences = append([]string(nil), audiences...)
+		opts.scopes = append([]string(nil), scopes...)
+		opts.scope = domain.ScopeString(scopes)
+		opts.tokenUse = "access"
+	}
+}
+
 type AuthResponse struct {
 	AccessToken  string       `json:"access_token,omitempty"`
 	RefreshToken string       `json:"refresh_token,omitempty"`
@@ -101,6 +130,7 @@ type AuthResponse struct {
 	Requires2FA  bool         `json:"requires_2fa,omitempty"`
 	TwoFAToken   string       `json:"two_factor_token,omitempty"`
 	TwoFAMethods []string     `json:"two_factor_methods,omitempty"`
+	SessionMode  string       `json:"-"`
 }
 
 type SignupRequest struct {
@@ -128,10 +158,13 @@ type UpdateProfileRequest struct {
 }
 
 type LoginRisk struct {
-	Level     string   `json:"level"`
-	Reasons   []string `json:"reasons,omitempty"`
-	NewIP     bool     `json:"new_ip,omitempty"`
-	NewDevice bool     `json:"new_device,omitempty"`
+	Level     string                 `json:"level"`
+	Score     int                    `json:"score,omitempty"`
+	Reasons   []string               `json:"reasons,omitempty"`
+	Signals   []domain.RiskSignal    `json:"signals,omitempty"`
+	Context   map[string]interface{} `json:"context,omitempty"`
+	NewIP     bool                   `json:"new_ip,omitempty"`
+	NewDevice bool                   `json:"new_device,omitempty"`
 }
 
 type PasswordPolicy struct {
@@ -285,7 +318,7 @@ func deviceFingerprint(ua string) string {
 }
 
 func (r LoginRisk) isSuspicious() bool {
-	return r.Level == "medium"
+	return r.Level == "medium" || r.Level == "high" || r.Level == "critical"
 }
 
 func riskResponse(risk LoginRisk) *LoginRisk {
@@ -300,8 +333,14 @@ func riskAuditMetadata(method string, risk LoginRisk, extra map[string]interface
 		"method":     method,
 		"risk_level": risk.Level,
 	}
+	if risk.Score > 0 {
+		metadata["risk_score"] = risk.Score
+	}
 	if len(risk.Reasons) > 0 {
 		metadata["risk_reasons"] = append([]string(nil), risk.Reasons...)
+	}
+	if len(risk.Signals) > 0 {
+		metadata["risk_signals"] = risk.Signals
 	}
 	if risk.NewIP {
 		metadata["new_ip"] = true
@@ -313,6 +352,30 @@ func riskAuditMetadata(method string, risk LoginRisk, extra map[string]interface
 		metadata[key] = value
 	}
 	return metadata
+}
+
+func loginRiskFromAssessment(assessment domain.RiskAssessment) LoginRisk {
+	risk := LoginRisk{
+		Level:   assessment.Level,
+		Score:   assessment.Score,
+		Signals: append([]domain.RiskSignal(nil), assessment.Signals...),
+		Context: assessment.Context,
+	}
+	if risk.Level == "" {
+		risk.Level = "low"
+	}
+	for _, signal := range assessment.Signals {
+		if signal.Type != "" {
+			risk.Reasons = append(risk.Reasons, signal.Type)
+		}
+		switch signal.Type {
+		case "new_ip":
+			risk.NewIP = true
+		case "new_device":
+			risk.NewDevice = true
+		}
+	}
+	return risk
 }
 
 func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req SignupRequest, ip, ua string, bcryptCost int, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
@@ -335,6 +398,12 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 	if isBlockedSignupEmailDomain(email) {
 		s.audit.Log(ctx, client.ID, nil, "signup_blocked", ip, ua, map[string]interface{}{"reason": "blocked_email_domain", "email": email})
 		return nil, "", fmt.Errorf("email domain is not allowed")
+	}
+	if connection, enforced, err := enforcedSSOConnectionForEmail(ctx, s.sso, client.ID, email); err != nil {
+		return nil, "", fmt.Errorf("internal error")
+	} else if enforced {
+		s.audit.Log(ctx, client.ID, nil, "signup_blocked", ip, ua, map[string]interface{}{"reason": "sso_required", "email": email, "connection_id": connection.ID})
+		return nil, "", domain.ErrSSORequired
 	}
 
 	displayName := strings.TrimSpace(req.DisplayName)
@@ -407,6 +476,12 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 		s.audit.Log(ctx, client.ID, nil, "login_blocked", ip, ua, map[string]interface{}{"reason": "bot_verification", "email": emailKey})
 		return nil, "", err
 	}
+	if connection, enforced, err := enforcedSSOConnectionForEmail(ctx, s.sso, client.ID, emailKey); err != nil {
+		return nil, "", fmt.Errorf("internal error")
+	} else if enforced {
+		s.audit.Log(ctx, client.ID, nil, "login_blocked", ip, ua, map[string]interface{}{"reason": "sso_required", "email": emailKey, "connection_id": connection.ID})
+		return nil, "", domain.ErrSSORequired
+	}
 
 	user, err := s.users.GetByEmail(ctx, client.ID, req.Email)
 	if err != nil && err != domain.ErrNotFound {
@@ -414,6 +489,9 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 	}
 	if user == nil || user.PasswordHash == nil || !CheckPassword(*user.PasswordHash, req.Password) {
 		s.rl.RecordFailedLogin(ctx, client.ID+":"+emailKey)
+		if s.adaptive != nil {
+			s.adaptive.RecordFailedLogin(ctx, client.ID, emailKey)
+		}
 		var uid *string
 		if user != nil {
 			uid = &user.ID
@@ -426,15 +504,41 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 		return nil, "", domain.ErrAccountSuspended
 	}
 
-	s.rl.ClearFailedLogins(ctx, client.ID+":"+emailKey)
 	risk := s.assessLoginRisk(ctx, client.ID, user.ID, ip, ua)
+	requireMFA := user.TOTPEnabled
+	mfaMethods := []string{"totp", "recovery_code"}
+	if s.adaptive != nil {
+		decision, err := s.adaptive.EvaluateLogin(ctx, client, user, emailKey, ip, ua)
+		if err != nil {
+			if err == domain.ErrStepUpEnrollmentRequired {
+				uid := user.ID
+				s.audit.Log(ctx, client.ID, &uid, "adaptive_mfa_enrollment_required", ip, ua, map[string]interface{}{"email": emailKey})
+				return nil, "", err
+			}
+			return nil, "", err
+		}
+		risk = loginRiskFromAssessment(decision.Risk)
+		if decision.Block {
+			uid := user.ID
+			s.audit.Log(ctx, client.ID, &uid, "adaptive_security_login_blocked", ip, ua, riskAuditMetadata("password", risk, map[string]interface{}{"email": emailKey}))
+			return nil, "", domain.ErrSecurityPolicyBlocked
+		}
+		requireMFA = decision.RequireMFA
+		if len(decision.Factors) > 0 {
+			mfaMethods = decision.Factors
+		}
+	}
+	s.rl.ClearFailedLogins(ctx, client.ID+":"+emailKey)
+	if s.adaptive != nil {
+		s.adaptive.ClearFailedLoginVelocity(ctx, client.ID, emailKey)
+	}
 	if risk.isSuspicious() {
 		uid := user.ID
 		s.audit.Log(ctx, client.ID, &uid, "suspicious_login", ip, ua, riskAuditMetadata("password", risk, map[string]interface{}{"email": emailKey}))
 	}
 
 	// Check 2FA
-	if user.TOTPEnabled {
+	if requireMFA {
 		if s.cache == nil {
 			return nil, "", domain.ErrRedisRequired
 		}
@@ -452,7 +556,7 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 		return &AuthResponse{
 			Requires2FA:  true,
 			TwoFAToken:   twoFAToken,
-			TwoFAMethods: []string{"totp", "recovery_code"},
+			TwoFAMethods: mfaMethods,
 			Risk:         riskResponse(risk),
 		}, "", nil
 	}
@@ -470,6 +574,9 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 	if err != nil {
 		return nil, "", fmt.Errorf("internal error")
 	}
+	if s.adaptive != nil {
+		s.adaptive.RememberLoginDevice(ctx, client, user, ip, ua, "", false, risk.Context)
+	}
 
 	return &AuthResponse{
 		AccessToken: accessToken,
@@ -484,6 +591,22 @@ func (s *AuthService) Refresh(ctx context.Context, client *domain.Client, rawRef
 	userID, sessionID, err := s.sessions.Validate(ctx, client.ID, rawRefreshToken)
 	if err != nil {
 		if err == domain.ErrInvalidToken {
+			if detector, ok := s.sessions.(RefreshTokenReuseRepository); ok {
+				if reused, reusedUserID, detectErr := detector.IsRefreshTokenRevoked(ctx, client.ID, rawRefreshToken); detectErr == nil && reused {
+					if s.audit != nil {
+						var uid *string
+						if strings.TrimSpace(reusedUserID) != "" {
+							uid = &reusedUserID
+						}
+						s.audit.Log(ctx, client.ID, uid, "token_refresh_reuse", ip, ua, map[string]interface{}{"session_reuse_detected": true})
+					} else {
+						Metrics().ObserveTokenRefreshReuse(client.ID)
+					}
+				}
+			}
+			if s.adaptive != nil {
+				s.adaptive.LogSuspiciousTokenReuse(ctx, client, ip, ua)
+			}
 			return nil, "", domain.ErrInvalidToken
 		}
 		return nil, "", fmt.Errorf("internal error")
@@ -575,6 +698,13 @@ func (s *AuthService) ChangePassword(ctx context.Context, client *domain.Client,
 	if err != nil || user == nil {
 		return domain.ErrNotFound
 	}
+	if connection, enforced, err := enforcedSSOConnectionForEmail(ctx, s.sso, client.ID, user.Email); err != nil {
+		return fmt.Errorf("internal error")
+	} else if enforced {
+		uid := user.ID
+		s.audit.Log(ctx, client.ID, &uid, "password_change_blocked", ip, ua, map[string]interface{}{"reason": "sso_required", "connection_id": connection.ID})
+		return domain.ErrSSORequired
+	}
 
 	if msg := ValidatePassword(req.NewPassword, user.Email, user.DisplayName); msg != "" {
 		uid := user.ID
@@ -641,7 +771,9 @@ func createHS256Token(secret string, ttl time.Duration, user *domain.User, opts 
 	now := time.Now()
 	claims := AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    opts.issuer,
 			Subject:   user.ID,
+			Audience:  jwt.ClaimStrings(opts.audiences),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			ID:        uuid.NewString(),
@@ -650,6 +782,7 @@ func createHS256Token(secret string, ttl time.Duration, user *domain.User, opts 
 		Role:                    user.Role,
 		EmailVerified:           user.EmailVerified,
 		ClientID:                user.ClientID,
+		AuthorizedParty:         opts.authorizedParty,
 		TokenUse:                opts.tokenUse,
 		Scope:                   opts.scope,
 		Scopes:                  opts.scopes,
@@ -673,7 +806,9 @@ func createRS256Token(key *domain.SigningKey, ttl time.Duration, user *domain.Us
 	now := time.Now()
 	claims := AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    opts.issuer,
 			Subject:   user.ID,
+			Audience:  jwt.ClaimStrings(opts.audiences),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			ID:        uuid.NewString(),
@@ -682,6 +817,7 @@ func createRS256Token(key *domain.SigningKey, ttl time.Duration, user *domain.Us
 		Role:                    user.Role,
 		EmailVerified:           user.EmailVerified,
 		ClientID:                user.ClientID,
+		AuthorizedParty:         opts.authorizedParty,
 		TokenUse:                opts.tokenUse,
 		Scope:                   opts.scope,
 		Scopes:                  opts.scopes,

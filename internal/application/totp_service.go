@@ -17,10 +17,15 @@ type TOTPService struct {
 	cache         CacheClient
 	audit         AuditRepository
 	recoveryCodes RecoveryCodeRepository
+	adaptive      *AdaptiveSecurityService
 }
 
 func NewTOTPService(users UserRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, recoveryCodes RecoveryCodeRepository) *TOTPService {
 	return &TOTPService{users: users, sessions: sessions, cache: cache, audit: audit, recoveryCodes: recoveryCodes}
+}
+
+func (s *TOTPService) SetAdaptiveSecurity(adaptive *AdaptiveSecurityService) {
+	s.adaptive = adaptive
 }
 
 type TOTPSetupResponse struct {
@@ -109,7 +114,7 @@ func (s *TOTPService) Enable(ctx context.Context, client *domain.Client, userID,
 	return nil
 }
 
-func (s *TOTPService) Verify(ctx context.Context, client *domain.Client, twoFAToken, code, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
+func (s *TOTPService) Verify(ctx context.Context, client *domain.Client, twoFAToken, code, ip, ua string, accessTTL, refreshTTL time.Duration, rememberDevice bool, deviceName string) (*AuthResponse, string, error) {
 	if s.cache == nil {
 		return nil, "", domain.ErrRedisRequired
 	}
@@ -149,6 +154,9 @@ func (s *TOTPService) Verify(ctx context.Context, client *domain.Client, twoFATo
 	refreshToken, err := s.sessions.Create(ctx, user.ID, client.ID, ip, ua, refreshTTL)
 	if err != nil {
 		return nil, "", err
+	}
+	if s.adaptive != nil {
+		s.adaptive.RememberLoginDevice(ctx, client, user, ip, ua, deviceName, rememberDevice, nil)
 	}
 
 	return &AuthResponse{
@@ -213,7 +221,7 @@ func (s *TOTPService) CountRecoveryCodes(ctx context.Context, client *domain.Cli
 	return &RecoveryCodesResponse{UnusedCount: count}, nil
 }
 
-func (s *TOTPService) VerifyRecoveryCode(ctx context.Context, client *domain.Client, twoFAToken, code, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
+func (s *TOTPService) VerifyRecoveryCode(ctx context.Context, client *domain.Client, twoFAToken, code, ip, ua string, accessTTL, refreshTTL time.Duration, rememberDevice bool, deviceName string) (*AuthResponse, string, error) {
 	if s.cache == nil {
 		return nil, "", domain.ErrRedisRequired
 	}
@@ -260,6 +268,9 @@ func (s *TOTPService) VerifyRecoveryCode(ctx context.Context, client *domain.Cli
 	refreshToken, err := s.sessions.Create(ctx, user.ID, client.ID, ip, ua, refreshTTL)
 	if err != nil {
 		return nil, "", err
+	}
+	if s.adaptive != nil {
+		s.adaptive.RememberLoginDevice(ctx, client, user, ip, ua, deviceName, rememberDevice, nil)
 	}
 
 	return &AuthResponse{

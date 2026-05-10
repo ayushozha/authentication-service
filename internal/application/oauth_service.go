@@ -25,10 +25,15 @@ type OAuthService struct {
 	sessions SessionRepository
 	cache    CacheClient
 	audit    AuditRepository
+	sso      EnterpriseSSORepository
 }
 
 func NewOAuthService(users UserRepository, clients ClientRepository, oauth OAuthRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository) *OAuthService {
 	return &OAuthService{users: users, clients: clients, oauth: oauth, sessions: sessions, cache: cache, audit: audit}
+}
+
+func (s *OAuthService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
+	s.sso = repo
 }
 
 type OAuthProviderConfig struct {
@@ -42,10 +47,11 @@ type oauthStatePayload struct {
 	Provider     string `json:"provider"`
 	Nonce        string `json:"nonce"`
 	CodeVerifier string `json:"code_verifier"`
+	SessionMode  string `json:"session_mode,omitempty"`
 	CreatedAt    int64  `json:"created_at"`
 }
 
-func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, providerCfg *OAuthProviderConfig, providerName string) (redirectURL string, err error) {
+func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, providerCfg *OAuthProviderConfig, providerName, sessionMode string) (redirectURL string, err error) {
 	if s.cache == nil {
 		return "", domain.ErrRedisRequired
 	}
@@ -62,6 +68,7 @@ func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, pr
 		Provider:     providerName,
 		Nonce:        nonce,
 		CodeVerifier: codeVerifier,
+		SessionMode:  strings.ToLower(strings.TrimSpace(sessionMode)),
 		CreatedAt:    time.Now().UTC().Unix(),
 	}
 	state, err := encodeOAuthState(statePayload)
@@ -81,35 +88,36 @@ func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, pr
 	), nil
 }
 
-func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthProviderConfig, providerName, code, state, ip, ua string, accessTTL, refreshTTL time.Duration) (client *domain.Client, accessToken, refreshToken string, err error) {
+func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthProviderConfig, providerName, code, state, ip, ua string, accessTTL, refreshTTL time.Duration) (client *domain.Client, accessToken, refreshToken, sessionMode string, err error) {
 	if s.cache == nil {
-		return nil, "", "", domain.ErrRedisRequired
+		return nil, "", "", "", domain.ErrRedisRequired
 	}
 	statePayload, err := decodeOAuthState(state)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("invalid_state")
+		return nil, "", "", "", fmt.Errorf("invalid_state")
 	}
 	if statePayload.Provider != providerName || statePayload.ClientID == "" || statePayload.CodeVerifier == "" || statePayload.Nonce == "" {
-		return nil, "", "", fmt.Errorf("invalid_state")
+		return nil, "", "", "", fmt.Errorf("invalid_state")
 	}
+	sessionMode = statePayload.SessionMode
 	cacheKey := "oauth_state:" + HashToken(state)
 	cachedStateJSON, err := s.cache.Get(ctx, cacheKey)
 	if err != nil || cachedStateJSON == "" {
-		return nil, "", "", fmt.Errorf("invalid_state")
+		return nil, "", "", "", fmt.Errorf("invalid_state")
 	}
 	_ = s.cache.Del(ctx, cacheKey)
 	if cachedStateJSON != mustStateJSON(statePayload) {
-		return nil, "", "", fmt.Errorf("invalid_state")
+		return nil, "", "", "", fmt.Errorf("invalid_state")
 	}
 
 	client, err = s.clients.GetByID(ctx, statePayload.ClientID)
 	if err != nil || client == nil {
-		return nil, "", "", fmt.Errorf("invalid_client")
+		return nil, "", "", "", fmt.Errorf("invalid_client")
 	}
 
 	token, err := providerCfg.OAuth2Config.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", statePayload.CodeVerifier))
 	if err != nil {
-		return nil, "", "", fmt.Errorf("exchange_failed")
+		return nil, "", "", "", fmt.Errorf("exchange_failed")
 	}
 
 	var (
@@ -123,33 +131,39 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthPro
 	if providerName == "apple" {
 		providerUserID, email, err = parseAppleIDToken(ctx, token.Extra("id_token"), providerCfg.OAuth2Config.ClientID)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("parse_failed")
+			return nil, "", "", "", fmt.Errorf("parse_failed")
 		}
 		rawProfile = []byte("{}")
 	} else {
 		resp, err := oauthClient.Get(providerCfg.UserInfoURL)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("userinfo_failed")
+			return nil, "", "", "", fmt.Errorf("userinfo_failed")
 		}
 		defer resp.Body.Close()
 
 		rawProfile, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
-			return nil, "", "", fmt.Errorf("read_failed")
+			return nil, "", "", "", fmt.Errorf("read_failed")
 		}
 
 		providerUserID, email, displayName, avatar, err = providerCfg.ParseUser(rawProfile)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("parse_failed")
+			return nil, "", "", "", fmt.Errorf("parse_failed")
 		}
 		if providerName == "github" && email == "" {
 			email, _ = fetchGithubPrimaryEmail(ctx, oauthClient)
 		}
 	}
+	if connection, enforced, err := enforcedSSOConnectionForEmail(ctx, s.sso, client.ID, email); err != nil {
+		return nil, "", "", "", fmt.Errorf("internal")
+	} else if enforced {
+		s.audit.Log(ctx, client.ID, nil, "oauth_blocked", ip, ua, map[string]interface{}{"reason": "sso_required", "provider": providerName, "email": email, "connection_id": connection.ID})
+		return nil, "", "", "", domain.ErrSSORequired
+	}
 
 	oauthAcc, err := s.oauth.FindByProvider(ctx, client.ID, providerName, providerUserID)
 	if err != nil && err != domain.ErrNotFound {
-		return nil, "", "", fmt.Errorf("internal")
+		return nil, "", "", "", fmt.Errorf("internal")
 	}
 	if err == domain.ErrNotFound {
 		oauthAcc = nil
@@ -159,7 +173,14 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthPro
 	if oauthAcc != nil {
 		user, err = s.users.GetByID(ctx, oauthAcc.UserID)
 		if err != nil || user == nil {
-			return nil, "", "", fmt.Errorf("user_not_found")
+			return nil, "", "", "", fmt.Errorf("user_not_found")
+		}
+		if connection, enforced, err := enforcedSSOConnectionForEmail(ctx, s.sso, client.ID, user.Email); err != nil {
+			return nil, "", "", "", fmt.Errorf("internal")
+		} else if enforced {
+			uid := user.ID
+			s.audit.Log(ctx, client.ID, &uid, "oauth_blocked", ip, ua, map[string]interface{}{"reason": "sso_required", "provider": providerName, "connection_id": connection.ID})
+			return nil, "", "", "", domain.ErrSSORequired
 		}
 	} else {
 		if email != "" {
@@ -171,7 +192,7 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthPro
 			}
 			user, err = s.users.CreateOAuth(ctx, client.ID, email, displayName, avatar)
 			if err != nil {
-				return nil, "", "", fmt.Errorf("create_failed")
+				return nil, "", "", "", fmt.Errorf("create_failed")
 			}
 			uid := user.ID
 			s.audit.Log(ctx, client.ID, &uid, "signup", ip, ua, map[string]interface{}{"method": "oauth_" + providerName})
@@ -180,7 +201,7 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthPro
 	}
 
 	if user.Status != "active" {
-		return nil, "", "", fmt.Errorf("account_suspended")
+		return nil, "", "", "", fmt.Errorf("account_suspended")
 	}
 
 	if !user.EmailVerified && email != "" {
@@ -193,15 +214,15 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthPro
 
 	at, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", "", err
 	}
 
 	rt, err := s.sessions.Create(ctx, user.ID, client.ID, ip, ua, refreshTTL)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", "", err
 	}
 
-	return client, at, rt, nil
+	return client, at, rt, sessionMode, nil
 }
 
 func BuildOAuthProviders(cfg OAuthConfig) map[string]*OAuthProviderConfig {

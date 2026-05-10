@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
@@ -35,11 +36,13 @@ func (r *EnterpriseSSORepo) CreateConnection(ctx context.Context, connection *do
 
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO enterprise_sso_connections
-			(id, client_id, name, slug, protocol, status, domains, enforce_for_domains, oidc_config, saml_config, attribute_mapping, created_at, updated_at)
+			(id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+			 oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error, metadata_refreshed_at, created_at, updated_at)
 		VALUES
-			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		connection.ID, connection.ClientID, connection.Name, connection.Slug, connection.Protocol, connection.Status,
-		pq.Array(connection.Domains), connection.EnforceForDomains, oidcJSON, samlJSON, mappingJSON,
+			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+		connection.ID, connection.ClientID, nullString(connection.OrganizationID), connection.Name, connection.Slug,
+		connection.Provider, connection.Protocol, connection.Status, pq.Array(connection.Domains), connection.EnforceForDomains,
+		oidcJSON, samlJSON, mappingJSON, connection.LastLoginAt, connection.LastErrorAt, connection.LastError, connection.MetadataRefreshedAt,
 		connection.CreatedAt, connection.UpdatedAt,
 	)
 	return err
@@ -47,8 +50,9 @@ func (r *EnterpriseSSORepo) CreateConnection(ctx context.Context, connection *do
 
 func (r *EnterpriseSSORepo) ListConnections(ctx context.Context, clientID string) ([]*domain.EnterpriseSSOConnection, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, client_id, name, slug, protocol, status, domains, enforce_for_domains,
-		       oidc_config, saml_config, attribute_mapping, created_at, updated_at
+		SELECT id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+		       oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error,
+		       metadata_refreshed_at, created_at, updated_at
 		FROM enterprise_sso_connections
 		WHERE client_id = $1
 		ORDER BY created_at DESC`, clientID)
@@ -68,34 +72,62 @@ func (r *EnterpriseSSORepo) ListConnections(ctx context.Context, clientID string
 	return connections, rows.Err()
 }
 
+func (r *EnterpriseSSORepo) ListConnectionsForOrganization(ctx context.Context, clientID, organizationID string) ([]*domain.EnterpriseSSOConnection, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+		       oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error,
+		       metadata_refreshed_at, created_at, updated_at
+		FROM enterprise_sso_connections
+		WHERE client_id = $1 AND organization_id = $2
+		ORDER BY created_at DESC`, clientID, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	connections := []*domain.EnterpriseSSOConnection{}
+	for rows.Next() {
+		connection, err := scanEnterpriseSSOConnection(rows)
+		if err != nil {
+			return nil, err
+		}
+		connections = append(connections, connection)
+	}
+	return connections, rows.Err()
+}
+
 func (r *EnterpriseSSORepo) GetConnection(ctx context.Context, clientID, connectionID string) (*domain.EnterpriseSSOConnection, error) {
 	return scanEnterpriseSSOConnection(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, slug, protocol, status, domains, enforce_for_domains,
-		       oidc_config, saml_config, attribute_mapping, created_at, updated_at
+		SELECT id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+		       oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error,
+		       metadata_refreshed_at, created_at, updated_at
 		FROM enterprise_sso_connections
 		WHERE client_id = $1 AND id = $2`, clientID, connectionID))
 }
 
 func (r *EnterpriseSSORepo) GetConnectionByID(ctx context.Context, connectionID string) (*domain.EnterpriseSSOConnection, error) {
 	return scanEnterpriseSSOConnection(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, slug, protocol, status, domains, enforce_for_domains,
-		       oidc_config, saml_config, attribute_mapping, created_at, updated_at
+		SELECT id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+		       oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error,
+		       metadata_refreshed_at, created_at, updated_at
 		FROM enterprise_sso_connections
 		WHERE id = $1`, connectionID))
 }
 
 func (r *EnterpriseSSORepo) GetConnectionBySlug(ctx context.Context, clientID, slug string) (*domain.EnterpriseSSOConnection, error) {
 	return scanEnterpriseSSOConnection(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, slug, protocol, status, domains, enforce_for_domains,
-		       oidc_config, saml_config, attribute_mapping, created_at, updated_at
+		SELECT id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+		       oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error,
+		       metadata_refreshed_at, created_at, updated_at
 		FROM enterprise_sso_connections
 		WHERE client_id = $1 AND slug = $2`, clientID, slug))
 }
 
 func (r *EnterpriseSSORepo) GetActiveConnectionByDomain(ctx context.Context, clientID, domainName string) (*domain.EnterpriseSSOConnection, error) {
 	return scanEnterpriseSSOConnection(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, slug, protocol, status, domains, enforce_for_domains,
-		       oidc_config, saml_config, attribute_mapping, created_at, updated_at
+		SELECT id, client_id, organization_id, name, slug, provider, protocol, status, domains, enforce_for_domains,
+		       oidc_config, saml_config, attribute_mapping, last_login_at, last_error_at, last_error,
+		       metadata_refreshed_at, created_at, updated_at
 		FROM enterprise_sso_connections
 		WHERE client_id = $1 AND status = 'active' AND $2 = ANY(domains)
 		ORDER BY created_at DESC
@@ -118,19 +150,27 @@ func (r *EnterpriseSSORepo) UpdateConnection(ctx context.Context, connection *do
 
 	_, err = r.db.ExecContext(ctx, `
 		UPDATE enterprise_sso_connections
-		SET name = $3,
-		    slug = $4,
-		    protocol = $5,
-		    status = $6,
-		    domains = $7,
-		    enforce_for_domains = $8,
-		    oidc_config = $9,
-		    saml_config = $10,
-		    attribute_mapping = $11,
-		    updated_at = $12
+		SET organization_id = $3,
+		    name = $4,
+		    slug = $5,
+		    provider = $6,
+		    protocol = $7,
+		    status = $8,
+		    domains = $9,
+		    enforce_for_domains = $10,
+		    oidc_config = $11,
+		    saml_config = $12,
+		    attribute_mapping = $13,
+		    last_login_at = $14,
+		    last_error_at = $15,
+		    last_error = $16,
+		    metadata_refreshed_at = $17,
+		    updated_at = $18
 		WHERE client_id = $1 AND id = $2`,
-		connection.ClientID, connection.ID, connection.Name, connection.Slug, connection.Protocol, connection.Status,
-		pq.Array(connection.Domains), connection.EnforceForDomains, oidcJSON, samlJSON, mappingJSON, connection.UpdatedAt,
+		connection.ClientID, connection.ID, nullString(connection.OrganizationID), connection.Name, connection.Slug,
+		connection.Provider, connection.Protocol, connection.Status, pq.Array(connection.Domains), connection.EnforceForDomains,
+		oidcJSON, samlJSON, mappingJSON, connection.LastLoginAt, connection.LastErrorAt, connection.LastError,
+		connection.MetadataRefreshedAt, connection.UpdatedAt,
 	)
 	return err
 }
@@ -140,6 +180,22 @@ func (r *EnterpriseSSORepo) DeactivateConnection(ctx context.Context, clientID, 
 		UPDATE enterprise_sso_connections
 		SET status = 'inactive', updated_at = NOW()
 		WHERE client_id = $1 AND id = $2`, clientID, connectionID)
+	return err
+}
+
+func (r *EnterpriseSSORepo) MarkConnectionLogin(ctx context.Context, clientID, connectionID string, at time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE enterprise_sso_connections
+		SET last_login_at = $3, last_error_at = NULL, last_error = '', updated_at = NOW()
+		WHERE client_id = $1 AND id = $2`, clientID, connectionID, at)
+	return err
+}
+
+func (r *EnterpriseSSORepo) MarkConnectionError(ctx context.Context, clientID, connectionID, message string, at time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE enterprise_sso_connections
+		SET last_error_at = $3, last_error = $4, updated_at = NOW()
+		WHERE client_id = $1 AND id = $2`, clientID, connectionID, at, message)
 	return err
 }
 
@@ -206,11 +262,14 @@ func scanEnterpriseSSOConnection(row enterpriseSSOScanner) (*domain.EnterpriseSS
 	var connection domain.EnterpriseSSOConnection
 	var domains []string
 	var oidcJSON, samlJSON, mappingJSON []byte
+	var organizationID, provider sql.NullString
+	var lastLoginAt, lastErrorAt, metadataRefreshedAt sql.NullTime
 
 	err := row.Scan(
-		&connection.ID, &connection.ClientID, &connection.Name, &connection.Slug,
+		&connection.ID, &connection.ClientID, &organizationID, &connection.Name, &connection.Slug, &provider,
 		&connection.Protocol, &connection.Status, pq.Array(&domains), &connection.EnforceForDomains,
-		&oidcJSON, &samlJSON, &mappingJSON, &connection.CreatedAt, &connection.UpdatedAt,
+		&oidcJSON, &samlJSON, &mappingJSON, &lastLoginAt, &lastErrorAt, &connection.LastError,
+		&metadataRefreshedAt, &connection.CreatedAt, &connection.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, domain.ErrNotFound
@@ -220,6 +279,21 @@ func scanEnterpriseSSOConnection(row enterpriseSSOScanner) (*domain.EnterpriseSS
 	}
 
 	connection.Domains = domains
+	if organizationID.Valid {
+		connection.OrganizationID = organizationID.String
+	}
+	if provider.Valid {
+		connection.Provider = provider.String
+	}
+	if lastLoginAt.Valid {
+		connection.LastLoginAt = &lastLoginAt.Time
+	}
+	if lastErrorAt.Valid {
+		connection.LastErrorAt = &lastErrorAt.Time
+	}
+	if metadataRefreshedAt.Valid {
+		connection.MetadataRefreshedAt = &metadataRefreshedAt.Time
+	}
 	if len(oidcJSON) > 0 {
 		_ = json.Unmarshal(oidcJSON, &connection.OIDC)
 	}
@@ -233,4 +307,9 @@ func scanEnterpriseSSOConnection(row enterpriseSSOScanner) (*domain.EnterpriseSS
 		connection.AttributeMapping = map[string]string{}
 	}
 	return &connection, nil
+}
+
+func nullString(value string) sql.NullString {
+	value = strings.TrimSpace(value)
+	return sql.NullString{String: value, Valid: value != ""}
 }

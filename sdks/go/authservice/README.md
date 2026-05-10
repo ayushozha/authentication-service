@@ -1,0 +1,11 @@
+# AuthService Go SDK
+
+Official generated AuthService SDK package for Go.
+
+Package: github.com/Ayush10/authentication-service/sdks/go/authservice
+
+Framework adapters: net/http, Gin, Chi, Echo, and Fiber.
+
+The generated client covers signup, login, refresh, logout, current user, organizations, OAuth client credentials, token introspection, admin client provisioning, service accounts, enterprise SSO, SCIM directories, audit export, JWT verification, and signed webhook verification.
+
+Publish this package through the native registry for the language. The source is generated from tools/sdkgen and is intentionally kept dependency-light, with security dependencies delegated to the ecosystem standard JWT/JWKS libraries.

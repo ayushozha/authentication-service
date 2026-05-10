@@ -46,6 +46,7 @@ func (h *EnterpriseSSOHandler) beginLoginByDomain(w http.ResponseWriter, r *http
 		SessionMode: r.URL.Query().Get("session_mode"),
 	}, h.externalBaseURL(r))
 	if err != nil {
+		application.Metrics().ObserveSSOError("begin_domain", err)
 		h.writeSSOError(w, err)
 		return
 	}
@@ -76,6 +77,7 @@ func (h *EnterpriseSSOHandler) beginLoginByConnection(w http.ResponseWriter, r *
 		SessionMode:  r.URL.Query().Get("session_mode"),
 	}, h.externalBaseURL(r))
 	if err != nil {
+		application.Metrics().ObserveSSOError("begin_connection", err)
 		h.writeSSOError(w, err)
 		return
 	}
@@ -107,16 +109,20 @@ func (h *EnterpriseSSOHandler) handleCallback(w http.ResponseWriter, r *http.Req
 		resp, refreshToken, err = h.svc.HandleOIDCCallback(ctx, connectionID, r.URL.Query().Get("code"), r.URL.Query().Get("state"), clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	}
 	if err != nil {
+		application.Metrics().ObserveSSOError("callback", err)
 		http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+err.Error(), http.StatusFound)
 		return
 	}
-	if isTokenSessionMode(r, "") {
+	tokenMode := isTokenSessionMode(r, resp.SessionMode)
+	if tokenMode && strings.Contains(r.Header.Get("Accept"), "application/json") {
 		resp.RefreshToken = refreshToken
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-	http.Redirect(w, r, h.cfg.BaseURL+"/login.html?access_token="+resp.AccessToken, http.StatusFound)
+	if !tokenMode {
+		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+	}
+	redirectWithAuthCode(w, r, h.cfg, resp, refreshToken, tokenMode)
 }
 
 func (h *EnterpriseSSOHandler) handleMetadata(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +141,7 @@ func (h *EnterpriseSSOHandler) handleMetadata(w http.ResponseWriter, r *http.Req
 
 	metadata, err := h.svc.SAMLMetadata(ctx, connectionID)
 	if err != nil {
+		application.Metrics().ObserveSSOError("metadata", err)
 		h.writeSSOError(w, err)
 		return
 	}
@@ -157,6 +164,7 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 				return
 			}
+			SetAdminAuditAfter(r, map[string]interface{}{"count": len(connections)})
 			writeJSON(w, http.StatusOK, sanitizeSSOConnections(connections))
 		case http.MethodPost:
 			var req application.CreateEnterpriseSSOConnectionRequest
@@ -169,6 +177,8 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 				h.writeSSOError(w, err)
 				return
 			}
+			SetAdminAuditTarget(r, "sso_connection", connection.ID, clientID)
+			SetAdminAuditAfter(r, safeSSOConnectionMetadata(connection))
 			writeJSON(w, http.StatusCreated, sanitizeSSOConnection(connection))
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -182,8 +192,11 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 				h.writeSSOError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeSSOConnectionMetadata(connection))
 			writeJSON(w, http.StatusOK, sanitizeSSOConnection(connection))
 		case http.MethodPatch:
+			before, _ := h.svc.GetConnection(ctx, clientID, connectionID)
+			SetAdminAuditBefore(r, safeSSOConnectionMetadata(before))
 			var req application.UpdateEnterpriseSSOConnectionRequest
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -194,12 +207,16 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 				h.writeSSOError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeSSOConnectionMetadata(connection))
 			writeJSON(w, http.StatusOK, sanitizeSSOConnection(connection))
 		case http.MethodDelete:
+			before, _ := h.svc.GetConnection(ctx, clientID, connectionID)
+			SetAdminAuditBefore(r, safeSSOConnectionMetadata(before))
 			if err := h.svc.DeactivateConnection(ctx, clientID, connectionID); err != nil {
 				h.writeSSOError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, map[string]interface{}{"connection_id": connectionID, "status": domain.SSOConnectionStatusInactive})
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -259,4 +276,21 @@ func sanitizeSSOConnection(connection *domain.EnterpriseSSOConnection) *domain.E
 	clone.OIDC.ClientSecret = ""
 	clone.SAML.SPPrivateKeyPEM = ""
 	return &clone
+}
+
+func safeSSOConnectionMetadata(connection *domain.EnterpriseSSOConnection) map[string]interface{} {
+	if connection == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"id":              connection.ID,
+		"client_id":       connection.ClientID,
+		"organization_id": connection.OrganizationID,
+		"name":            connection.Name,
+		"slug":            connection.Slug,
+		"provider":        connection.Provider,
+		"protocol":        connection.Protocol,
+		"status":          connection.Status,
+		"domains":         connection.Domains,
+	}
 }

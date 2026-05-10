@@ -14,12 +14,13 @@ import (
 )
 
 type M2MHandler struct {
-	svc *application.M2MService
-	cfg *HandlerConfig
+	svc      *application.M2MService
+	adaptive *application.AdaptiveSecurityService
+	cfg      *HandlerConfig
 }
 
-func NewM2MHandler(svc *application.M2MService, cfg *HandlerConfig) *M2MHandler {
-	return &M2MHandler{svc: svc, cfg: cfg}
+func NewM2MHandler(svc *application.M2MService, adaptive *application.AdaptiveSecurityService, cfg *HandlerConfig) *M2MHandler {
+	return &M2MHandler{svc: svc, adaptive: adaptive, cfg: cfg}
 }
 
 func (h *M2MHandler) RegisterOAuthRoutes(mux *http.ServeMux) {
@@ -84,6 +85,7 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, map[string]interface{}{"count": len(accounts)})
 			writeJSON(w, http.StatusOK, map[string]interface{}{"service_accounts": accounts})
 		case http.MethodPost:
 			var req application.CreateServiceAccountRequest
@@ -95,6 +97,8 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditTarget(r, "service_account", resp.ServiceAccount.ID, clientID)
+			SetAdminAuditAfter(r, safeServiceAccountMetadata(resp.ServiceAccount))
 			writeJSON(w, http.StatusCreated, resp)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -114,8 +118,11 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeServiceAccountMetadata(account))
 			writeJSON(w, http.StatusOK, account)
 		case http.MethodPatch:
+			before, _ := h.svc.GetServiceAccount(ctx, clientID, serviceAccountID)
+			SetAdminAuditBefore(r, safeServiceAccountMetadata(before))
 			var req application.UpdateServiceAccountRequest
 			if err := decodeJSONBody(w, r, &req); err != nil {
 				return
@@ -125,13 +132,17 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeServiceAccountMetadata(account))
 			writeJSON(w, http.StatusOK, account)
 		case http.MethodDelete:
+			before, _ := h.svc.GetServiceAccount(ctx, clientID, serviceAccountID)
+			SetAdminAuditBefore(r, safeServiceAccountMetadata(before))
 			account, err := h.svc.UpdateServiceAccount(ctx, clientID, serviceAccountID, application.UpdateServiceAccountRequest{Status: "disabled"}, clientIP(r), r.UserAgent())
 			if err != nil {
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeServiceAccountMetadata(account))
 			writeJSON(w, http.StatusOK, account)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -150,6 +161,7 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, map[string]interface{}{"count": len(keys), "service_account_id": serviceAccountID})
 			writeJSON(w, http.StatusOK, map[string]interface{}{"keys": keys})
 		case http.MethodPost:
 			var req application.CreateServiceAccountKeyRequest
@@ -161,6 +173,8 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 				writeM2MError(w, err)
 				return
 			}
+			SetAdminAuditTarget(r, "service_account_key", resp.Key.ID, clientID)
+			SetAdminAuditAfter(r, safeServiceAccountKeyMetadata(resp.Key))
 			writeJSON(w, http.StatusCreated, resp)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -177,10 +191,12 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		SetAdminAuditBefore(r, map[string]interface{}{"key_id": keyID, "service_account_id": serviceAccountID})
 		if err := h.svc.RevokeServiceAccountKey(ctx, clientID, serviceAccountID, keyID, clientIP(r), r.UserAgent()); err != nil {
 			writeM2MError(w, err)
 			return
 		}
+		SetAdminAuditAfter(r, map[string]interface{}{"key_id": keyID, "service_account_id": serviceAccountID, "status": "revoked"})
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 		return
 	}
@@ -189,15 +205,36 @@ func (h *M2MHandler) handleAdminServiceAccounts(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		if !h.requireAdminAction(w, r, ctx, clientID, domain.SecurityActionServiceAccountKeyRotate) {
+			return
+		}
 		resp, err := h.svc.RotateServiceAccountKey(ctx, clientID, serviceAccountID, keyID, clientIP(r), r.UserAgent())
 		if err != nil {
 			writeM2MError(w, err)
 			return
 		}
+		SetAdminAuditTarget(r, "service_account_key", resp.Key.ID, clientID)
+		SetAdminAuditAfter(r, safeServiceAccountKeyMetadata(resp.Key))
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+}
+
+func (h *M2MHandler) requireAdminAction(w http.ResponseWriter, r *http.Request, ctx context.Context, clientID, action string) bool {
+	if h == nil || h.adaptive == nil {
+		return true
+	}
+	decision, err := h.adaptive.EvaluateAdminAction(ctx, clientID, action, GetAdminActor(r), stepUpTokenFromRequest(r), clientIP(r), r.UserAgent())
+	if err != nil {
+		writeAdaptiveSecurityError(w, err)
+		return false
+	}
+	if decision != nil && (decision.Blocked || decision.StepUpRequired) {
+		writeAdaptiveActionDecision(w, decision)
+		return false
+	}
+	return true
 }
 
 func decodeOAuthRequest(w http.ResponseWriter, r *http.Request, out interface{}) error {
@@ -261,5 +298,34 @@ func writeM2MError(w http.ResponseWriter, err error) {
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+}
+
+func safeServiceAccountMetadata(account *domain.ServiceAccount) map[string]interface{} {
+	if account == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"id":          account.ID,
+		"client_id":   account.ClientID,
+		"name":        account.Name,
+		"description": account.Description,
+		"scopes":      account.Scopes,
+		"status":      account.Status,
+	}
+}
+
+func safeServiceAccountKeyMetadata(key *domain.ServiceAccountKey) map[string]interface{} {
+	if key == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"id":                 key.ID,
+		"client_id":          key.ClientID,
+		"service_account_id": key.ServiceAccountID,
+		"name":               key.Name,
+		"key_prefix":         key.KeyPrefix,
+		"scopes":             key.Scopes,
+		"status":             key.Status,
 	}
 }

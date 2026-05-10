@@ -1,0 +1,21 @@
+{
+  "name": "authservice/authservice",
+  "description": "Generated PHP SDK and Laravel middleware for AuthService",
+  "license": "MIT",
+  "type": "library",
+  "autoload": {
+    "psr-4": {
+      "AuthService\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.1",
+    "firebase/php-jwt": "^6.10",
+    "guzzlehttp/guzzle": "^7.9"
+  },
+  "extra": {
+    "laravel": {
+      "providers": ["AuthService\\Laravel\\AuthServiceServiceProvider"]
+    }
+  }
+}

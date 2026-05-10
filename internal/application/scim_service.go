@@ -19,15 +19,22 @@ type SCIMService struct {
 	scim  SCIMRepository
 	users UserRepository
 	audit AuditRepository
+	orgs  OrganizationRepository
 }
 
-func NewSCIMService(scim SCIMRepository, users UserRepository, audit AuditRepository) *SCIMService {
-	return &SCIMService{scim: scim, users: users, audit: audit}
+func NewSCIMService(scim SCIMRepository, users UserRepository, audit AuditRepository, orgs ...OrganizationRepository) *SCIMService {
+	var orgRepo OrganizationRepository
+	if len(orgs) > 0 {
+		orgRepo = orgs[0]
+	}
+	return &SCIMService{scim: scim, users: users, audit: audit, orgs: orgRepo}
 }
 
 type CreateSCIMDirectoryRequest struct {
-	Name    string   `json:"name"`
-	Domains []string `json:"domains"`
+	Name           string   `json:"name"`
+	OrganizationID string   `json:"organization_id,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	Domains        []string `json:"domains"`
 }
 
 type UpdateSCIMDirectoryRequest struct {
@@ -112,15 +119,17 @@ func (s *SCIMService) CreateDirectory(ctx context.Context, clientID string, req 
 	}
 	now := time.Now().UTC()
 	directory := &domain.SCIMDirectory{
-		ID:          uuid.NewString(),
-		ClientID:    clientID,
-		Name:        name,
-		Status:      domain.SCIMDirectoryStatusActive,
-		TokenHash:   HashToken(token),
-		TokenPrefix: tokenPrefix(token),
-		Domains:     domain.NormalizeSSODomains(req.Domains),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             uuid.NewString(),
+		ClientID:       clientID,
+		OrganizationID: strings.TrimSpace(req.OrganizationID),
+		Name:           name,
+		Provider:       domain.NormalizeEnterpriseProvider(req.Provider, domain.SSOProtocolSAML),
+		Status:         domain.SCIMDirectoryStatusActive,
+		TokenHash:      HashToken(token),
+		TokenPrefix:    tokenPrefix(token),
+		Domains:        domain.NormalizeSSODomains(req.Domains),
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := s.scim.CreateDirectory(ctx, directory); err != nil {
 		return nil, err
@@ -312,6 +321,8 @@ func (s *SCIMService) UpsertUser(ctx context.Context, directory *domain.SCIMDire
 		uid := user.ID
 		s.audit.Log(ctx, directory.ClientID, &uid, "scim_user_provisioned", "", "", map[string]interface{}{"directory_id": directory.ID, "active": active})
 	}
+	_ = s.scim.MarkDirectorySync(ctx, directory.ClientID, directory.ID, time.Now().UTC())
+	observeSCIMSyncLag(directory, req.Meta.LastModified)
 	resource := scimUserResource(scimUser, user, baseURL)
 	return &resource, nil
 }
@@ -343,6 +354,8 @@ func (s *SCIMService) DeleteUser(ctx context.Context, directory *domain.SCIMDire
 		uid := scimUser.UserID
 		s.audit.Log(ctx, directory.ClientID, &uid, "scim_user_deprovisioned", "", "", map[string]interface{}{"directory_id": directory.ID})
 	}
+	_ = s.scim.MarkDirectorySync(ctx, directory.ClientID, directory.ID, time.Now().UTC())
+	observeSCIMSyncLag(directory, time.Time{})
 	return nil
 }
 
@@ -403,6 +416,9 @@ func (s *SCIMService) UpsertGroup(ctx context.Context, directory *domain.SCIMDir
 	if s.audit != nil {
 		s.audit.Log(ctx, directory.ClientID, nil, "scim_group_synced", "", "", map[string]interface{}{"directory_id": directory.ID, "group_id": group.ID})
 	}
+	_ = s.scim.MarkDirectorySync(ctx, directory.ClientID, directory.ID, time.Now().UTC())
+	observeSCIMSyncLag(directory, req.Meta.LastModified)
+	_ = s.applyGroupMappings(ctx, directory, group)
 	resource := scimGroupResource(group, baseURL)
 	return &resource, nil
 }
@@ -422,7 +438,29 @@ func (s *SCIMService) PatchGroup(ctx context.Context, directory *domain.SCIMDire
 }
 
 func (s *SCIMService) DeleteGroup(ctx context.Context, directory *domain.SCIMDirectory, groupID string) error {
-	return s.scim.DeleteGroup(ctx, directory.ClientID, directory.ID, groupID)
+	if err := s.scim.DeleteGroup(ctx, directory.ClientID, directory.ID, groupID); err != nil {
+		return err
+	}
+	_ = s.scim.MarkDirectorySync(ctx, directory.ClientID, directory.ID, time.Now().UTC())
+	observeSCIMSyncLag(directory, time.Time{})
+	return nil
+}
+
+func (s *SCIMService) applyGroupMappings(ctx context.Context, directory *domain.SCIMDirectory, group *domain.SCIMGroup) error {
+	if s.orgs == nil || directory == nil || group == nil {
+		return nil
+	}
+	groups := []string{group.DisplayName, group.ExternalID}
+	for _, scimUserID := range group.Members {
+		scimUser, err := s.scim.GetUser(ctx, directory.ClientID, directory.ID, scimUserID)
+		if err != nil {
+			continue
+		}
+		if err := ApplyOrganizationGroupMappings(ctx, s.orgs, directory.ClientID, domain.GroupMappingSourceSCIM, directory.ID, scimUser.UserID, groups); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func scimPrimaryEmail(req SCIMUserResource) string {
@@ -562,4 +600,18 @@ func tokenPrefix(token string) string {
 		return token
 	}
 	return token[:12]
+}
+
+func observeSCIMSyncLag(directory *domain.SCIMDirectory, lastModified time.Time) {
+	if directory == nil {
+		return
+	}
+	if lastModified.IsZero() {
+		lastModified = time.Now().UTC()
+	}
+	lag := time.Since(lastModified)
+	if lag < 0 {
+		lag = 0
+	}
+	Metrics().ObserveSCIMSyncLag(directory.ClientID, directory.ID, lag)
 }

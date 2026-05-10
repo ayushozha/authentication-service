@@ -109,11 +109,13 @@ The strongest remaining gaps versus enterprise CIAM providers are live native mo
 
 ## Implemented Gap
 
-**Implemented:** Queryable audit log API, evidence export, and signed webhook delivery.
+**Implemented:** Queryable audit log API, evidence export, signed webhook delivery, token-safe browser redirects, enforced-domain SSO blocking, and constant-time break-glass admin key checks.
 
 Before this pass, events were written to `login_audit_log` but were not accessible through a supported API. That made the service weaker than enterprise/B2B providers with audit log products. The admin endpoints make audit evidence available by `client_id`, `user_id`, `event_type`, and `limit`, export it as CSV/NDJSON, and deliver the same audit stream to each client's `webhook_url` with HMAC signatures and bounded retries.
 
 This most directly improves the target use case: **self-hosted B2B SaaS that needs auth auditability without buying an enterprise identity tier**. Combined with existing self-hosting, gRPC, passkeys, TOTP, magic links, rate limiting, and per-client signing isolation, the service is now stronger than Firebase Auth and Supabase Auth for standalone B2B auth auditability, and stronger than Clerk/Kinde when the buyer prioritizes self-hosted data ownership and zero MAU-based auth spend over hosted UI.
+
+This pass also closes two security gaps that mature CIAM providers avoid by default: OAuth/SSO/magic-link browser callbacks now redirect with a short-lived single-use `auth_code` instead of an access token, and active SSO connections with `enforce_for_domains` block password signup, password login, social OAuth, magic links, password reset emails, and password changes for matching domains.
 
 ## Next Feature Bets
 

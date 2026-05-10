@@ -35,6 +35,41 @@ func main() {
 		log.Fatalf("migrations: %v", err)
 	}
 
+	metricsRegistry := application.NewMetricsRegistry()
+	application.SetMetricsRegistry(metricsRegistry)
+	auditStream := application.NewAuditLogStream(application.AuditLogStreamConfig{
+		Providers:               cfg.AuditStreamProviders,
+		Timeout:                 cfg.AuditStreamTimeout,
+		Attempts:                cfg.AuditStreamRetryAttempts,
+		Service:                 "authservice",
+		Env:                     cfg.BaseURL,
+		DatadogURL:              cfg.DatadogLogsURL,
+		DatadogAPIKey:           cfg.DatadogAPIKey,
+		SplunkHECURL:            cfg.SplunkHECURL,
+		SplunkHECToken:          cfg.SplunkHECToken,
+		ElasticBulkURL:          cfg.ElasticBulkURL,
+		ElasticAPIKey:           cfg.ElasticAPIKey,
+		ElasticIndex:            cfg.ElasticIndex,
+		AWSRegion:               cfg.AWSRegion,
+		AWSAccessKeyID:          cfg.AWSAccessKeyID,
+		AWSSecretAccessKey:      cfg.AWSSecretAccessKey,
+		AWSSessionToken:         cfg.AWSSessionToken,
+		S3Bucket:                cfg.AuditS3Bucket,
+		S3Prefix:                cfg.AuditS3Prefix,
+		CloudWatchLogGroup:      cfg.AuditCloudWatchLogGroup,
+		CloudWatchLogStream:     cfg.AuditCloudWatchLogStream,
+		GCPProjectID:            cfg.GCPProjectID,
+		GCPLogID:                cfg.GCPLogID,
+		GCPAccessToken:          cfg.GCPAccessToken,
+		GCPLoggingURL:           cfg.GCPLoggingURL,
+		AzureMonitorURL:         cfg.AzureMonitorIngestURL,
+		AzureMonitorBearerToken: cfg.AzureMonitorBearerToken,
+	})
+	auditSink := application.NewCompositeAuditEventSink(
+		application.NewMetricsAuditSink(metricsRegistry),
+		auditStream,
+	)
+
 	// Redis (optional)
 	rdb, err := redisclient.NewClient(cfg.RedisURL, cfg.RedisPrefix)
 	if err != nil {
@@ -49,12 +84,19 @@ func main() {
 	webauthnRepo := postgres.NewWebAuthnRepo(db)
 	tokenRepo := postgres.NewTokenRepo(db)
 	recoveryCodeRepo := postgres.NewRecoveryCodeRepo(db)
-	auditRepo := postgres.NewAuditRepo(db)
+	auditRepo := postgres.NewAuditRepo(
+		db,
+		postgres.WithAuditRetentionDays(cfg.AuditRetentionDays),
+		postgres.WithAuditEventSink(auditSink),
+	)
+	adminRepo := postgres.NewAdminRepo(db)
+	userDeviceRepo := postgres.NewUserDeviceRepo(db)
 	signingKeyRepo := postgres.NewSigningKeyRepo(db)
 	orgRepo := postgres.NewOrganizationRepo(db)
 	serviceAccountRepo := postgres.NewServiceAccountRepo(db)
 	ssoRepo := postgres.NewEnterpriseSSORepo(db)
 	scimRepo := postgres.NewSCIMRepo(db)
+	enterpriseOnboardingRepo := postgres.NewEnterpriseOnboardingRepo(db)
 	application.SetSigningKeyRepository(signingKeyRepo)
 	application.SetPasswordPolicy(application.PasswordPolicy{
 		MinLength:     cfg.PasswordMinLength,
@@ -102,6 +144,7 @@ func main() {
 
 	// Application services
 	clientSvc := application.NewClientService(clientRepo)
+	adminSvc := application.NewAdminService(adminRepo, auditRepo, rl, cfg.AdminTokenSecret, cfg.AdminAccessTTL)
 	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditEvents, rl)
 	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer)
 	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer)
@@ -110,9 +153,20 @@ func main() {
 	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditEvents)
 	auditSvc := application.NewAuditService(auditRepo)
 	orgSvc := application.NewOrganizationService(orgRepo, userRepo, auditEvents)
+	riskProvider := application.NewHTTPRiskSignalProvider(cfg.RiskProviderURL, cfg.RiskProviderAPIKey, cfg.RiskProviderTimeout)
+	adaptiveSvc := application.NewAdaptiveSecurityService(clientRepo, orgRepo, userRepo, sessionRepo, userDeviceRepo, recoveryCodeRepo, rdb, auditEvents, riskProvider)
+	adaptiveSvc.SetAdminUsers(adminRepo)
+	authSvc.SetAdaptiveSecurity(adaptiveSvc)
+	totpSvc.SetAdaptiveSecurity(adaptiveSvc)
 	m2mSvc := application.NewM2MService(serviceAccountRepo, clientRepo, auditEvents)
-	ssoSvc := application.NewEnterpriseSSOService(ssoRepo, userRepo, clientRepo, sessionRepo, rdb, auditEvents)
-	scimSvc := application.NewSCIMService(scimRepo, userRepo, auditEvents)
+	ssoSvc := application.NewEnterpriseSSOService(ssoRepo, userRepo, clientRepo, sessionRepo, rdb, auditEvents, orgRepo)
+	authSvc.SetEnterpriseSSORepository(ssoRepo)
+	resetSvc.SetEnterpriseSSORepository(ssoRepo)
+	magicSvc.SetEnterpriseSSORepository(ssoRepo)
+	oauthSvc.SetEnterpriseSSORepository(ssoRepo)
+	scimSvc := application.NewSCIMService(scimRepo, userRepo, auditEvents, orgRepo)
+	enterpriseOnboardingSvc := application.NewEnterpriseOnboardingService(enterpriseOnboardingRepo, orgRepo, ssoRepo, scimRepo, auditRepo, ssoSvc)
+	oidcSvc := application.NewOIDCService(clientRepo, userRepo, sessionRepo, rdb, auditEvents)
 
 	// Wire signup email hook
 	verifySvc.WireSignupHook(cfg.BaseURL)
@@ -148,6 +202,7 @@ func main() {
 	handlerCfg := &rest.HandlerConfig{
 		AllowOrigin:    cfg.AllowOrigin,
 		BaseURL:        cfg.BaseURL,
+		Cache:          rdb,
 		BcryptCost:     cfg.BcryptCost,
 		AccessTTL:      cfg.JWTAccessTTL,
 		RefreshTTL:     cfg.JWTRefreshTTL,
@@ -159,7 +214,8 @@ func main() {
 	// Router
 	router := rest.NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, clientSvc, auditSvc, orgSvc, m2mSvc, ssoSvc, scimSvc,
+		oauthSvc, passkeySvc, adminSvc, clientSvc, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
+		enterpriseOnboardingSvc, oidcSvc,
 		oauthProviders, handlerCfg,
 		cfg.AdminAPIKey, cfg.ServeFrontend, cfg.PublicDir,
 	)
@@ -181,6 +237,7 @@ func main() {
 		PasswordResetService: resetSvc,
 		MagicLinkService:     magicSvc,
 		ClientService:        clientSvc,
+		AdminService:         adminSvc,
 		AdminAPIKey:          cfg.AdminAPIKey,
 		BcryptCost:           cfg.BcryptCost,
 		AccessTTL:            cfg.JWTAccessTTL,

@@ -15,19 +15,25 @@ const (
 )
 
 type EnterpriseSSOConnection struct {
-	ID                string                  `json:"id"`
-	ClientID          string                  `json:"client_id"`
-	Name              string                  `json:"name"`
-	Slug              string                  `json:"slug"`
-	Protocol          string                  `json:"protocol"`
-	Status            string                  `json:"status"`
-	Domains           []string                `json:"domains"`
-	EnforceForDomains bool                    `json:"enforce_for_domains"`
-	OIDC              EnterpriseSSOOIDCConfig `json:"oidc,omitempty"`
-	SAML              EnterpriseSSOSAMLConfig `json:"saml,omitempty"`
-	AttributeMapping  map[string]string       `json:"attribute_mapping,omitempty"`
-	CreatedAt         time.Time               `json:"created_at"`
-	UpdatedAt         time.Time               `json:"updated_at"`
+	ID                  string                  `json:"id"`
+	ClientID            string                  `json:"client_id"`
+	OrganizationID      string                  `json:"organization_id,omitempty"`
+	Name                string                  `json:"name"`
+	Slug                string                  `json:"slug"`
+	Provider            string                  `json:"provider,omitempty"`
+	Protocol            string                  `json:"protocol"`
+	Status              string                  `json:"status"`
+	Domains             []string                `json:"domains"`
+	EnforceForDomains   bool                    `json:"enforce_for_domains"`
+	OIDC                EnterpriseSSOOIDCConfig `json:"oidc,omitempty"`
+	SAML                EnterpriseSSOSAMLConfig `json:"saml,omitempty"`
+	AttributeMapping    map[string]string       `json:"attribute_mapping,omitempty"`
+	LastLoginAt         *time.Time              `json:"last_login_at,omitempty"`
+	LastErrorAt         *time.Time              `json:"last_error_at,omitempty"`
+	LastError           string                  `json:"last_error,omitempty"`
+	MetadataRefreshedAt *time.Time              `json:"metadata_refreshed_at,omitempty"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
 }
 
 type EnterpriseSSOOIDCConfig struct {
@@ -42,6 +48,7 @@ type EnterpriseSSOSAMLConfig struct {
 	IDPSSOURL        string `json:"idp_sso_url,omitempty"`
 	IDPCertificate   string `json:"idp_certificate,omitempty"`
 	IDPMetadataXML   string `json:"idp_metadata_xml,omitempty"`
+	IDPMetadataURL   string `json:"idp_metadata_url,omitempty"`
 	SPEntityID       string `json:"sp_entity_id,omitempty"`
 	SPMetadataURL    string `json:"sp_metadata_url,omitempty"`
 	ACSURL           string `json:"acs_url,omitempty"`

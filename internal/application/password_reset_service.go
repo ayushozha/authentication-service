@@ -14,10 +14,15 @@ type PasswordResetService struct {
 	tokens   TokenRepository
 	sessions SessionRepository
 	mailer   EmailSender
+	sso      EnterpriseSSORepository
 }
 
 func NewPasswordResetService(users UserRepository, tokens TokenRepository, sessions SessionRepository, mailer EmailSender) *PasswordResetService {
 	return &PasswordResetService{users: users, tokens: tokens, sessions: sessions, mailer: mailer}
+}
+
+func (s *PasswordResetService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
+	s.sso = repo
 }
 
 func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, email, baseURL string) error {
@@ -26,6 +31,12 @@ func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, ema
 		log.Printf("forgot password lookup error: %v", err)
 	}
 	if user != nil && s.mailer != nil {
+		if _, enforced, enforceErr := enforcedSSOConnectionForEmail(ctx, s.sso, clientID, user.Email); enforceErr != nil {
+			log.Printf("forgot password sso enforcement lookup error: %v", enforceErr)
+			return nil
+		} else if enforced {
+			return nil
+		}
 		token, err := s.tokens.Create(ctx, user.ID, "password_reset", 1*time.Hour)
 		if err != nil {
 			log.Printf("create reset token error: %v", err)

@@ -248,6 +248,129 @@ func (r *OrganizationRepo) RevokeInvitation(ctx context.Context, clientID, organ
 	return checkRowsAffected(result)
 }
 
+func (r *OrganizationRepo) GetAuthorizationPolicy(ctx context.Context, clientID, organizationID string) (*domain.OrganizationAuthorizationPolicy, error) {
+	return scanAuthorizationPolicy(r.db.QueryRowContext(ctx, `
+		SELECT client_id, organization_id, version, description, resources, permissions, roles, created_at, updated_at
+		FROM organization_authorization_policies
+		WHERE client_id = $1 AND organization_id = $2`, clientID, organizationID))
+}
+
+func (r *OrganizationRepo) UpsertAuthorizationPolicy(ctx context.Context, policy *domain.OrganizationAuthorizationPolicy) error {
+	resourcesJSON, err := json.Marshal(policy.Resources)
+	if err != nil {
+		return err
+	}
+	permissionsJSON, err := json.Marshal(policy.Permissions)
+	if err != nil {
+		return err
+	}
+	rolesJSON, err := json.Marshal(policy.Roles)
+	if err != nil {
+		return err
+	}
+	return r.db.QueryRowContext(ctx, `
+		INSERT INTO organization_authorization_policies (
+			client_id, organization_id, version, description, resources, permissions, roles, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (organization_id)
+		DO UPDATE SET version = EXCLUDED.version,
+		              description = EXCLUDED.description,
+		              resources = EXCLUDED.resources,
+		              permissions = EXCLUDED.permissions,
+		              roles = EXCLUDED.roles,
+		              updated_at = EXCLUDED.updated_at
+		RETURNING created_at, updated_at`,
+		policy.ClientID, policy.OrganizationID, policy.Version, policy.Description,
+		resourcesJSON, permissionsJSON, rolesJSON, policy.CreatedAt, policy.UpdatedAt,
+	).Scan(&policy.CreatedAt, &policy.UpdatedAt)
+}
+
+func (r *OrganizationRepo) ListGroupMappings(ctx context.Context, clientID, organizationID string) ([]*domain.OrganizationGroupMapping, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, client_id, organization_id, source, source_id, group_name, role, permissions, description, created_at, updated_at
+		FROM organization_group_mappings
+		WHERE client_id = $1 AND organization_id = $2
+		ORDER BY source, group_name`, clientID, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*domain.OrganizationGroupMapping, 0)
+	for rows.Next() {
+		mapping, err := scanGroupMapping(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mapping)
+	}
+	return out, rows.Err()
+}
+
+func (r *OrganizationRepo) GetGroupMapping(ctx context.Context, clientID, organizationID, mappingID string) (*domain.OrganizationGroupMapping, error) {
+	return scanGroupMapping(r.db.QueryRowContext(ctx, `
+		SELECT id, client_id, organization_id, source, source_id, group_name, role, permissions, description, created_at, updated_at
+		FROM organization_group_mappings
+		WHERE client_id = $1 AND organization_id = $2 AND id = $3`, clientID, organizationID, mappingID))
+}
+
+func (r *OrganizationRepo) UpsertGroupMapping(ctx context.Context, mapping *domain.OrganizationGroupMapping) error {
+	return r.db.QueryRowContext(ctx, `
+		INSERT INTO organization_group_mappings (
+			id, client_id, organization_id, source, source_id, group_name, role, permissions, description, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (organization_id, source, source_id, group_name)
+		DO UPDATE SET role = EXCLUDED.role,
+		              permissions = EXCLUDED.permissions,
+		              description = EXCLUDED.description,
+		              updated_at = EXCLUDED.updated_at
+		RETURNING id, created_at, updated_at`,
+		mapping.ID, mapping.ClientID, mapping.OrganizationID, mapping.Source, mapping.SourceID,
+		mapping.Group, mapping.Role, pq.Array(mapping.Permissions), mapping.Description,
+		mapping.CreatedAt, mapping.UpdatedAt,
+	).Scan(&mapping.ID, &mapping.CreatedAt, &mapping.UpdatedAt)
+}
+
+func (r *OrganizationRepo) DeleteGroupMapping(ctx context.Context, clientID, organizationID, mappingID string) error {
+	result, err := r.db.ExecContext(ctx, `
+		DELETE FROM organization_group_mappings
+		WHERE client_id = $1 AND organization_id = $2 AND id = $3`, clientID, organizationID, mappingID)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result)
+}
+
+func (r *OrganizationRepo) ListGroupMappingsForSource(ctx context.Context, clientID, source, sourceID string, groups []string) ([]*domain.OrganizationGroupMapping, error) {
+	if len(groups) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, client_id, organization_id, source, source_id, group_name, role, permissions, description, created_at, updated_at
+		FROM organization_group_mappings
+		WHERE client_id = $1
+		  AND source = $2
+		  AND (source_id = $3 OR source_id = '')
+		  AND group_name = ANY($4)
+		ORDER BY organization_id, group_name`, clientID, source, sourceID, pq.Array(groups))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]*domain.OrganizationGroupMapping, 0)
+	for rows.Next() {
+		mapping, err := scanGroupMapping(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mapping)
+	}
+	return out, rows.Err()
+}
+
 func scanOrganization(row rowScanner) (*domain.Organization, error) {
 	var org domain.Organization
 	var metadataJSON []byte
@@ -349,4 +472,51 @@ func scanOrganizationAndMembership(row rowScanner) (*domain.Organization, *domai
 		org.Metadata = map[string]interface{}{}
 	}
 	return &org, &membership, nil
+}
+
+func scanAuthorizationPolicy(row rowScanner) (*domain.OrganizationAuthorizationPolicy, error) {
+	var policy domain.OrganizationAuthorizationPolicy
+	var resourcesJSON, permissionsJSON, rolesJSON []byte
+	err := row.Scan(
+		&policy.ClientID, &policy.OrganizationID, &policy.Version, &policy.Description,
+		&resourcesJSON, &permissionsJSON, &rolesJSON, &policy.CreatedAt, &policy.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(resourcesJSON) > 0 {
+		if err := json.Unmarshal(resourcesJSON, &policy.Resources); err != nil {
+			return nil, err
+		}
+	}
+	if len(permissionsJSON) > 0 {
+		if err := json.Unmarshal(permissionsJSON, &policy.Permissions); err != nil {
+			return nil, err
+		}
+	}
+	if len(rolesJSON) > 0 {
+		if err := json.Unmarshal(rolesJSON, &policy.Roles); err != nil {
+			return nil, err
+		}
+	}
+	return &policy, nil
+}
+
+func scanGroupMapping(row rowScanner) (*domain.OrganizationGroupMapping, error) {
+	var mapping domain.OrganizationGroupMapping
+	err := row.Scan(
+		&mapping.ID, &mapping.ClientID, &mapping.OrganizationID, &mapping.Source,
+		&mapping.SourceID, &mapping.Group, &mapping.Role, pq.Array(&mapping.Permissions),
+		&mapping.Description, &mapping.CreatedAt, &mapping.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &mapping, nil
 }

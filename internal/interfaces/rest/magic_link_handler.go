@@ -98,5 +98,5 @@ func (h *MagicLinkHandler) verify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	http.Redirect(w, r, h.cfg.BaseURL+"/login.html?access_token="+resp.AccessToken, http.StatusFound)
+	redirectWithAuthCode(w, r, h.cfg, resp, refreshToken, isTokenSessionMode(r, ""))
 }

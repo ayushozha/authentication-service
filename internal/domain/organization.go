@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -14,12 +15,18 @@ const (
 )
 
 const (
-	PermissionOrganizationRead  = "org:read"
-	PermissionOrganizationWrite = "org:write"
-	PermissionMembersRead       = "members:read"
-	PermissionMembersWrite      = "members:write"
-	PermissionInvitationsRead   = "invitations:read"
-	PermissionInvitationsWrite  = "invitations:write"
+	PermissionOrganizationRead    = "org:read"
+	PermissionOrganizationWrite   = "org:write"
+	PermissionMembersRead         = "members:read"
+	PermissionMembersWrite        = "members:write"
+	PermissionMembersInvite       = "members:invite"
+	PermissionInvitationsRead     = "invitations:read"
+	PermissionInvitationsWrite    = "invitations:write"
+	PermissionAuthorizationRead   = "authorization:read"
+	PermissionAuthorizationManage = "authorization:manage"
+	PermissionEnterpriseRead      = "enterprise:read"
+	PermissionEnterpriseWrite     = "enterprise:write"
+	PermissionEnterpriseAudit     = "enterprise:audit:read"
 )
 
 type Organization struct {
@@ -81,6 +88,9 @@ func NormalizeOrganizationRole(role string) (string, error) {
 	case OrganizationRoleOwner, OrganizationRoleAdmin, OrganizationRoleMember, OrganizationRoleViewer:
 		return role, nil
 	default:
+		if isValidOrganizationKey(role, false) {
+			return role, nil
+		}
 		return "", ErrInvalidRole
 	}
 }
@@ -93,8 +103,14 @@ func OrganizationRolePermissions(role string) []string {
 			PermissionOrganizationWrite,
 			PermissionMembersRead,
 			PermissionMembersWrite,
+			PermissionMembersInvite,
 			PermissionInvitationsRead,
 			PermissionInvitationsWrite,
+			PermissionAuthorizationRead,
+			PermissionAuthorizationManage,
+			PermissionEnterpriseRead,
+			PermissionEnterpriseWrite,
+			PermissionEnterpriseAudit,
 		}
 	case OrganizationRoleAdmin:
 		return []string{
@@ -102,13 +118,20 @@ func OrganizationRolePermissions(role string) []string {
 			PermissionOrganizationWrite,
 			PermissionMembersRead,
 			PermissionMembersWrite,
+			PermissionMembersInvite,
 			PermissionInvitationsRead,
 			PermissionInvitationsWrite,
+			PermissionAuthorizationRead,
+			PermissionAuthorizationManage,
+			PermissionEnterpriseRead,
+			PermissionEnterpriseWrite,
+			PermissionEnterpriseAudit,
 		}
 	case OrganizationRoleMember:
 		return []string{
 			PermissionOrganizationRead,
 			PermissionMembersRead,
+			PermissionAuthorizationRead,
 		}
 	case OrganizationRoleViewer:
 		return []string{
@@ -120,14 +143,6 @@ func OrganizationRolePermissions(role string) []string {
 }
 
 func NormalizeOrganizationPermissions(permissions []string) ([]string, error) {
-	allowed := map[string]struct{}{
-		PermissionOrganizationRead:  {},
-		PermissionOrganizationWrite: {},
-		PermissionMembersRead:       {},
-		PermissionMembersWrite:      {},
-		PermissionInvitationsRead:   {},
-		PermissionInvitationsWrite:  {},
-	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(permissions))
 	for _, permission := range permissions {
@@ -135,7 +150,7 @@ func NormalizeOrganizationPermissions(permissions []string) ([]string, error) {
 		if permission == "" {
 			continue
 		}
-		if _, ok := allowed[permission]; !ok {
+		if !IsBuiltInOrganizationPermission(permission) && !isValidOrganizationKey(permission, true) {
 			return nil, ErrInvalidPermission
 		}
 		if _, ok := seen[permission]; ok {
@@ -173,6 +188,26 @@ func EffectiveOrganizationPermissions(role string, permissions []string) []strin
 	return out
 }
 
+func IsBuiltInOrganizationPermission(permission string) bool {
+	switch strings.ToLower(strings.TrimSpace(permission)) {
+	case PermissionOrganizationRead,
+		PermissionOrganizationWrite,
+		PermissionMembersRead,
+		PermissionMembersWrite,
+		PermissionMembersInvite,
+		PermissionInvitationsRead,
+		PermissionInvitationsWrite,
+		PermissionAuthorizationRead,
+		PermissionAuthorizationManage,
+		PermissionEnterpriseRead,
+		PermissionEnterpriseWrite,
+		PermissionEnterpriseAudit:
+		return true
+	default:
+		return false
+	}
+}
+
 func HasOrganizationPermission(membership *OrganizationMembership, permission string) bool {
 	if membership == nil || membership.Status != "active" {
 		return false
@@ -187,4 +222,36 @@ func HasOrganizationPermission(membership *OrganizationMembership, permission st
 		}
 	}
 	return false
+}
+
+func isValidOrganizationKey(value string, requireNamespace bool) bool {
+	if len(value) < 3 || len(value) > 128 {
+		return false
+	}
+	if requireNamespace && !strings.Contains(value, ":") {
+		return false
+	}
+	if value[0] == ':' || value[len(value)-1] == ':' {
+		return false
+	}
+	lastSeparator := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lastSeparator = false
+		case r >= '0' && r <= '9':
+			lastSeparator = false
+		case r == ':' || r == '_' || r == '-' || r == '.':
+			if lastSeparator {
+				return false
+			}
+			lastSeparator = true
+		default:
+			if unicode.IsSpace(r) {
+				return false
+			}
+			return false
+		}
+	}
+	return !lastSeparator
 }

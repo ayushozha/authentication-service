@@ -22,9 +22,29 @@ const (
 func LogRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		elapsed := time.Since(start)
+		application.Metrics().ObserveHTTP(r.Method, r.URL.Path, rec.status, elapsed)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, elapsed)
 	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 func SecureHeaders(next http.Handler) http.Handler {
@@ -146,7 +166,7 @@ func SetRefreshCookie(w http.ResponseWriter, token string, ttl time.Duration, cf
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_refresh",
 		Value:    token,
-		Path:     "/api/auth",
+		Path:     "/",
 		Domain:   cfg.CookieDomain,
 		Secure:   cfg.CookieSecure,
 		HttpOnly: true,
@@ -162,7 +182,7 @@ func ClearRefreshCookie(w http.ResponseWriter, cfg *HandlerConfig) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "auth_refresh",
 		Value:    "",
-		Path:     "/api/auth",
+		Path:     "/",
 		Domain:   cfg.CookieDomain,
 		Secure:   cfg.CookieSecure,
 		HttpOnly: true,

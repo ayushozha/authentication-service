@@ -236,6 +236,7 @@ func (h *SCIMHandler) handleAdminDirectories(w http.ResponseWriter, r *http.Requ
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 				return
 			}
+			SetAdminAuditAfter(r, map[string]interface{}{"count": len(directories)})
 			writeJSON(w, http.StatusOK, directories)
 		case http.MethodPost:
 			var req application.CreateSCIMDirectoryRequest
@@ -248,6 +249,8 @@ func (h *SCIMHandler) handleAdminDirectories(w http.ResponseWriter, r *http.Requ
 				h.writeAdminError(w, err)
 				return
 			}
+			SetAdminAuditTarget(r, "scim_directory", resp.Directory.ID, clientID)
+			SetAdminAuditAfter(r, safeSCIMDirectoryMetadata(resp.Directory))
 			writeJSON(w, http.StatusCreated, resp)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -261,8 +264,11 @@ func (h *SCIMHandler) handleAdminDirectories(w http.ResponseWriter, r *http.Requ
 				h.writeAdminError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeSCIMDirectoryMetadata(directory))
 			writeJSON(w, http.StatusOK, directory)
 		case http.MethodPatch:
+			before, _ := h.svc.GetDirectory(ctx, clientID, directoryID)
+			SetAdminAuditBefore(r, safeSCIMDirectoryMetadata(before))
 			var req application.UpdateSCIMDirectoryRequest
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -273,6 +279,7 @@ func (h *SCIMHandler) handleAdminDirectories(w http.ResponseWriter, r *http.Requ
 				h.writeAdminError(w, err)
 				return
 			}
+			SetAdminAuditAfter(r, safeSCIMDirectoryMetadata(directory))
 			writeJSON(w, http.StatusOK, directory)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -282,11 +289,14 @@ func (h *SCIMHandler) handleAdminDirectories(w http.ResponseWriter, r *http.Requ
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 			return
 		}
+		before, _ := h.svc.GetDirectory(ctx, clientID, parts[6])
+		SetAdminAuditBefore(r, safeSCIMDirectoryMetadata(before))
 		resp, err := h.svc.RotateDirectoryToken(ctx, clientID, parts[6])
 		if err != nil {
 			h.writeAdminError(w, err)
 			return
 		}
+		SetAdminAuditAfter(r, safeSCIMDirectoryMetadata(resp.Directory))
 		writeJSON(w, http.StatusOK, resp)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -359,11 +369,18 @@ func writeSCIMError(w http.ResponseWriter, status int, detail string) {
 	})
 }
 
-func bearerToken(r *http.Request) string {
-	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	parts := strings.SplitN(header, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		return ""
+func safeSCIMDirectoryMetadata(directory *domain.SCIMDirectory) map[string]interface{} {
+	if directory == nil {
+		return map[string]interface{}{}
 	}
-	return strings.TrimSpace(parts[1])
+	return map[string]interface{}{
+		"id":              directory.ID,
+		"client_id":       directory.ClientID,
+		"organization_id": directory.OrganizationID,
+		"name":            directory.Name,
+		"provider":        directory.Provider,
+		"status":          directory.Status,
+		"token_prefix":    directory.TokenPrefix,
+		"domains":         directory.Domains,
+	}
 }

@@ -18,10 +18,52 @@
     return value;
   }
 
+  function useAccessClaims() {
+    var auth = useAuthService();
+    var token = auth.client.getAccessToken ? auth.client.getAccessToken() : '';
+    return React.useMemo(function() {
+      return auth.client.getAccessClaims ? auth.client.getAccessClaims(token) : null;
+    }, [auth.client, token]);
+  }
+
+  function useOrganizationPermission(permission) {
+    var auth = useAuthService();
+    var claims = useAccessClaims();
+    return React.useMemo(function() {
+      if (!auth.client.hasOrganizationPermission) return false;
+      return auth.client.hasOrganizationPermission(permission, claims);
+    }, [auth.client, claims, permission]);
+  }
+
+  function useOIDCCallback(options) {
+    options = options || {};
+    var auth = useAuthService();
+    var state = React.useState({ loading: false, error: null, result: null });
+    var callbackState = state[0];
+    var setCallbackState = state[1];
+    var handleCallback = React.useCallback(function(override) {
+      if (!auth.client.handleOIDCCallback) {
+        var missing = new Error('OIDC callback helpers require an updated authservice.js client');
+        setCallbackState({ loading: false, error: missing, result: null });
+        return Promise.reject(missing);
+      }
+      setCallbackState({ loading: true, error: null, result: null });
+      return auth.client.handleOIDCCallback(Object.assign({}, options, override || {})).then(function(result) {
+        setCallbackState({ loading: false, error: null, result: result });
+        if (auth.refreshUser) auth.refreshUser();
+        return result;
+      }).catch(function(error) {
+        setCallbackState({ loading: false, error: error, result: null });
+        throw error;
+      });
+    }, [auth, options]);
+    return Object.assign({ handleCallback: handleCallback }, callbackState);
+  }
+
   function AuthServiceProvider(props) {
     var client = React.useMemo(function() {
       return props.client || AuthService.createClient(props);
-    }, [props.client, props.baseUrl, props.apiKey, props.sessionMode]);
+    }, [props.client, props.baseUrl, props.apiKey, props.adminKey, props.clientId, props.oidcClientId, props.sessionMode]);
     var state = React.useState(null);
     var user = state[0];
     var setUser = state[1];
@@ -55,6 +97,7 @@
         client: client,
         user: user,
         loading: loading,
+        isSignedIn: !!user,
         refreshUser: refreshUser,
         signOut: function() {
           return client.logout().finally(function() {
@@ -67,91 +110,66 @@
     return React.createElement(AuthServiceContext.Provider, { value: value }, props.children);
   }
 
-  function SignIn(props) {
+  function useMountedWidget(method, props, afterSuccessRefresh) {
     props = props || {};
     var auth = useAuthService();
-    var emailState = React.useState('');
-    var email = emailState[0];
-    var setEmail = emailState[1];
-    var passwordState = React.useState('');
-    var password = passwordState[0];
-    var setPassword = passwordState[1];
-    var twoFactorState = React.useState('');
-    var twoFactorToken = twoFactorState[0];
-    var setTwoFactorToken = twoFactorState[1];
-    var codeState = React.useState('');
-    var code = codeState[0];
-    var setCode = codeState[1];
-    var recoveryState = React.useState(false);
-    var useRecoveryCode = recoveryState[0];
-    var setUseRecoveryCode = recoveryState[1];
-    var errorState = React.useState('');
-    var error = errorState[0];
-    var setError = errorState[1];
-    var busyState = React.useState(false);
-    var busy = busyState[0];
-    var setBusy = busyState[1];
-
-    function complete(data) {
-      return auth.refreshUser().then(function() {
-        if (props.onSuccess) props.onSuccess(data);
+    var ref = React.useRef(null);
+    React.useEffect(function() {
+      if (!ref.current || !auth.client[method]) return undefined;
+      var widgetProps = {};
+      Object.keys(props).forEach(function(key) {
+        if (key !== 'className' && key !== 'style') widgetProps[key] = props[key];
       });
-    }
-
-    function submit(event) {
-      event.preventDefault();
-      setBusy(true);
-      setError('');
-      var work;
-      if (twoFactorToken) {
-        var payload = { two_factor_token: twoFactorToken, code: code };
-        work = useRecoveryCode ? auth.client.verifyRecoveryCode(payload) : auth.client.verifyTOTP(payload);
-      } else {
-        work = auth.client.login({ email: email, password: password });
+      var userSuccess = widgetProps.onSuccess;
+      if (afterSuccessRefresh) {
+        widgetProps.onSuccess = function(data) {
+          return auth.refreshUser().then(function() {
+            if (userSuccess) return userSuccess(data);
+            return data;
+          });
+        };
       }
-      work.then(function(data) {
-        if (data && data.requires_2fa) {
-          setTwoFactorToken(data.two_factor_token);
-          return;
-        }
-        return complete(data);
-      }).catch(function(err) {
-        setError(err.message || 'Sign in failed');
-        if (props.onError) props.onError(err);
-      }).finally(function() {
-        setBusy(false);
-      });
-    }
+      var widget = auth.client[method](ref.current, widgetProps);
+      return function() {
+        if (widget && widget.destroy) widget.destroy();
+      };
+    }, [auth.client, method, props.refreshKey]);
+    return ref;
+  }
 
-    return React.createElement('form', { className: props.className || 'authservice-signin', onSubmit: submit },
-      error ? React.createElement('div', { role: 'alert' }, error) : null,
-      twoFactorToken ? null : React.createElement('input', {
-        type: 'email',
-        autoComplete: 'username webauthn',
-        value: email,
-        placeholder: props.emailPlaceholder || 'Email',
-        onChange: function(event) { setEmail(event.target.value); }
-      }),
-      twoFactorToken ? null : React.createElement('input', {
-        type: 'password',
-        autoComplete: 'current-password',
-        value: password,
-        placeholder: props.passwordPlaceholder || 'Password',
-        onChange: function(event) { setPassword(event.target.value); }
-      }),
-      twoFactorToken ? React.createElement('input', {
-        type: 'text',
-        autoComplete: 'one-time-code',
-        value: code,
-        placeholder: useRecoveryCode ? 'Recovery code' : 'Authenticator code',
-        onChange: function(event) { setCode(event.target.value); }
-      }) : null,
-      twoFactorToken ? React.createElement('button', {
-        type: 'button',
-        onClick: function() { setUseRecoveryCode(!useRecoveryCode); }
-      }, useRecoveryCode ? 'Use authenticator code' : 'Use recovery code') : null,
-      React.createElement('button', { type: 'submit', disabled: busy }, busy ? 'Working...' : twoFactorToken ? 'Verify' : 'Sign in')
-    );
+  function SignIn(props) {
+    var ref = useMountedWidget('mountSignIn', props, true);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
+  }
+
+  function SignUp(props) {
+    var ref = useMountedWidget('mountSignUp', props, true);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
+  }
+
+  function UserProfile(props) {
+    var ref = useMountedWidget('mountUserProfile', props, false);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
+  }
+
+  function OrganizationSwitcher(props) {
+    var ref = useMountedWidget('mountOrganizationSwitcher', props, false);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
+  }
+
+  function OrganizationManagement(props) {
+    var ref = useMountedWidget('mountOrganizationManagement', props, false);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
+  }
+
+  function EnterpriseSetup(props) {
+    var ref = useMountedWidget('mountEnterpriseSetup', props, false);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
+  }
+
+  function AuditLog(props) {
+    var ref = useMountedWidget('mountAuditLog', props, false);
+    return React.createElement('div', { ref: ref, className: props && props.className, style: props && props.style });
   }
 
   function UserButton(props) {
@@ -168,39 +186,44 @@
     }, props.label || auth.user.display_name || auth.user.email || 'Account');
   }
 
-  function OrganizationList(props) {
-    props = props || {};
+  function SignedIn(props) {
     var auth = useAuthService();
-    var state = React.useState([]);
-    var orgs = state[0];
-    var setOrgs = state[1];
-    React.useEffect(function() {
-      auth.client.listOrganizations().then(function(data) {
-        setOrgs(data.organizations || []);
-      }).catch(function() {
-        setOrgs([]);
-      });
-    }, [auth.client]);
-    return React.createElement('div', { className: props.className || 'authservice-org-list' },
-      orgs.map(function(row) {
-        var org = row.organization || row;
-        return React.createElement('button', {
-          key: org.id,
-          type: 'button',
-          onClick: function() {
-            if (props.onSelect) props.onSelect(row);
-          }
-        }, org.name || org.slug || org.id);
-      })
-    );
+    return auth.user ? React.createElement(React.Fragment, null, props.children) : null;
+  }
+
+  function SignedOut(props) {
+    var auth = useAuthService();
+    return auth.user ? null : React.createElement(React.Fragment, null, props.children);
+  }
+
+  function Protect(props) {
+    var auth = useAuthService();
+    var claims = useAccessClaims();
+    var allowed = !!auth.user;
+    if (props.permission) allowed = auth.client.hasOrganizationPermission(props.permission, claims);
+    if (props.scope) allowed = auth.client.hasScope(props.scope, claims);
+    if (!allowed) return props.fallback || null;
+    return React.createElement(React.Fragment, null, props.children);
   }
 
   return {
     AuthServiceContext: AuthServiceContext,
     AuthServiceProvider: AuthServiceProvider,
-    OrganizationList: OrganizationList,
+    AuditLog: AuditLog,
+    EnterpriseSetup: EnterpriseSetup,
+    OrganizationList: OrganizationSwitcher,
+    OrganizationManagement: OrganizationManagement,
+    OrganizationSwitcher: OrganizationSwitcher,
+    Protect: Protect,
     SignIn: SignIn,
+    SignUp: SignUp,
+    SignedIn: SignedIn,
+    SignedOut: SignedOut,
     UserButton: UserButton,
-    useAuthService: useAuthService
+    UserProfile: UserProfile,
+    useAccessClaims: useAccessClaims,
+    useAuthService: useAuthService,
+    useOIDCCallback: useOIDCCallback,
+    useOrganizationPermission: useOrganizationPermission
   };
 });

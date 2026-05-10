@@ -20,6 +20,7 @@ type AuthHandler struct {
 type HandlerConfig struct {
 	AllowOrigin    string
 	BaseURL        string
+	Cache          application.CacheClient
 	BcryptCost     int
 	AccessTTL      time.Duration
 	RefreshTTL     time.Duration
@@ -68,6 +69,8 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 		case domain.ErrBotVerification:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case domain.ErrSSORequired:
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
@@ -118,6 +121,12 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		case domain.ErrInvalidPassword:
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		case domain.ErrAccountSuspended:
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		case domain.ErrSSORequired:
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		case domain.ErrSecurityPolicyBlocked:
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		case domain.ErrStepUpEnrollmentRequired:
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		case domain.ErrAccountLocked:
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "account temporarily locked, try again in 30 minutes"})
@@ -338,6 +347,8 @@ func (h *AuthHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	if err := h.authSvc.ChangePassword(ctx, client, claims.Subject, req, clientIP(r), r.UserAgent(), h.cfg.BcryptCost); err != nil {
 		if err == domain.ErrNotFound {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		} else if err == domain.ErrSSORequired {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		} else {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}

@@ -1,0 +1,15 @@
+[project]
+name = "authservice-sdk"
+version = "0.1.0"
+description = "Generated Python SDK and middleware for AuthService"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+  "requests>=2.31",
+  "PyJWT[crypto]>=2.8"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

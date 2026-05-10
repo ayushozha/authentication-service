@@ -38,7 +38,7 @@ func setCorsHeaders(w http.ResponseWriter, origin string, allowCredentials bool)
 		w.Header().Add("Vary", "Origin")
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Admin-Key")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Admin-Key, X-Request-ID, X-Step-Up-Token")
 	if allowCredentials {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}

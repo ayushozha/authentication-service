@@ -49,6 +49,29 @@ type UpdateOrganizationMemberRequest struct {
 	Permissions []string `json:"permissions"`
 }
 
+type UpdateAuthorizationPolicyRequest struct {
+	ExpectedVersion int                                `json:"expected_version"`
+	Description     string                             `json:"description"`
+	Resources       []domain.AuthorizationResource     `json:"resources"`
+	Permissions     []domain.AuthorizationPermission   `json:"permissions"`
+	Roles           []domain.AuthorizationRoleTemplate `json:"roles"`
+}
+
+type UpsertGroupMappingRequest struct {
+	Source      string   `json:"source"`
+	SourceID    string   `json:"source_id"`
+	Group       string   `json:"group"`
+	Role        string   `json:"role"`
+	Permissions []string `json:"permissions"`
+	Description string   `json:"description"`
+}
+
+type AuthorizationSimulationRequest struct {
+	UserID   string `json:"user_id"`
+	Resource string `json:"resource"`
+	Action   string `json:"action"`
+}
+
 func (s *OrganizationService) CreateOrganization(ctx context.Context, clientID, actorUserID string, req CreateOrganizationRequest, ip, ua string) (*domain.OrganizationMembershipDetails, error) {
 	name, slug, err := normalizeOrganizationNameAndSlug(req.Name, req.Slug)
 	if err != nil {
@@ -83,6 +106,9 @@ func (s *OrganizationService) CreateOrganization(ctx context.Context, clientID, 
 		if isDuplicateError(err) {
 			return nil, domain.ErrDuplicateOrganization
 		}
+		return nil, err
+	}
+	if _, err := s.ensureAuthorizationPolicy(ctx, clientID, org.ID); err != nil {
 		return nil, err
 	}
 	s.log(ctx, clientID, &actorUserID, "organization_created", ip, ua, map[string]interface{}{
@@ -143,6 +169,27 @@ func (s *OrganizationService) UpdateOrganization(ctx context.Context, clientID, 
 	return org, nil
 }
 
+func (s *OrganizationService) UpdateSecurityPolicy(ctx context.Context, clientID, organizationID, actorUserID string, policy domain.AdaptiveSecurityPolicy, ip, ua string) (domain.AdaptiveSecurityPolicy, error) {
+	if _, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionOrganizationWrite); err != nil {
+		return domain.AdaptiveSecurityPolicy{}, err
+	}
+	org, err := s.orgs.GetOrganization(ctx, clientID, organizationID)
+	if err != nil {
+		return domain.AdaptiveSecurityPolicy{}, err
+	}
+	if org.Metadata == nil {
+		org.Metadata = map[string]interface{}{}
+	}
+	normalized := NormalizeAdaptiveSecurityPolicy(policy)
+	org.Metadata[adaptiveSecurityPolicyKey] = normalized
+	org.UpdatedAt = time.Now().UTC()
+	if err := s.orgs.UpdateOrganization(ctx, org); err != nil {
+		return domain.AdaptiveSecurityPolicy{}, err
+	}
+	s.log(ctx, clientID, &actorUserID, "organization_security_policy_updated", ip, ua, map[string]interface{}{"organization_id": organizationID})
+	return normalized, nil
+}
+
 func (s *OrganizationService) ListMembers(ctx context.Context, clientID, organizationID, actorUserID string) ([]*domain.OrganizationMembership, error) {
 	if _, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionMembersRead); err != nil {
 		return nil, err
@@ -151,7 +198,7 @@ func (s *OrganizationService) ListMembers(ctx context.Context, clientID, organiz
 }
 
 func (s *OrganizationService) InviteMember(ctx context.Context, clientID, organizationID, actorUserID string, req InviteOrganizationMemberRequest, ip, ua string) (*domain.OrganizationInvitationWithToken, error) {
-	actorMembership, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionInvitationsWrite)
+	actorMembership, err := s.requireAnyPermission(ctx, clientID, organizationID, actorUserID, domain.PermissionInvitationsWrite, domain.PermissionMembersInvite)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +216,11 @@ func (s *OrganizationService) InviteMember(ctx context.Context, clientID, organi
 	permissions, err := normalizeRequestedPermissions(role, req.Permissions)
 	if err != nil {
 		return nil, err
+	}
+	policy, _ := s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+	assignedPermissions := domain.ResolveOrganizationPermissions(&domain.OrganizationMembership{Role: role, Permissions: permissions, Status: "active"}, policy)
+	if !canAssignOrganizationPermissions(actorMembership, assignedPermissions) {
+		return nil, domain.ErrForbidden
 	}
 	rawToken, err := GenerateToken(32)
 	if err != nil {
@@ -299,6 +351,11 @@ func (s *OrganizationService) UpdateMember(ctx context.Context, clientID, organi
 	if err != nil {
 		return nil, err
 	}
+	policy, _ := s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+	assignedPermissions := domain.ResolveOrganizationPermissions(&domain.OrganizationMembership{Role: role, Permissions: permissions, Status: "active"}, policy)
+	if !canAssignOrganizationPermissions(actorMembership, assignedPermissions) {
+		return nil, domain.ErrForbidden
+	}
 	targetMembership.Role = role
 	targetMembership.Permissions = permissions
 	targetMembership.UpdatedAt = time.Now().UTC()
@@ -349,18 +406,193 @@ func (s *OrganizationService) IssueOrganizationAccessToken(ctx context.Context, 
 	if err != nil {
 		return "", err
 	}
+	policy, _ := s.ensureAuthorizationPolicy(ctx, client.ID, organizationID)
+	membership = cloneMembershipForAuthz(membership, policy)
 	return CreateAccessToken(ctx, client, ttl, user, WithOrganizationScope(org, membership))
 }
 
+func (s *OrganizationService) GetAuthorizationPolicy(ctx context.Context, clientID, organizationID, actorUserID string) (*domain.OrganizationAuthorizationPolicy, error) {
+	if _, err := s.requireAnyPermission(ctx, clientID, organizationID, actorUserID, domain.PermissionAuthorizationRead, domain.PermissionAuthorizationManage); err != nil {
+		return nil, err
+	}
+	return s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+}
+
+func (s *OrganizationService) UpdateAuthorizationPolicy(ctx context.Context, clientID, organizationID, actorUserID string, req UpdateAuthorizationPolicyRequest, ip, ua string) (*domain.OrganizationAuthorizationPolicy, error) {
+	if _, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionAuthorizationManage); err != nil {
+		return nil, err
+	}
+	current, err := s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	if req.ExpectedVersion > 0 && req.ExpectedVersion != current.Version {
+		return nil, domain.ErrAuthorizationPolicyConflict
+	}
+	now := time.Now().UTC()
+	next := &domain.OrganizationAuthorizationPolicy{
+		ClientID:       clientID,
+		OrganizationID: organizationID,
+		Version:        current.Version + 1,
+		Description:    req.Description,
+		Resources:      req.Resources,
+		Permissions:    req.Permissions,
+		Roles:          req.Roles,
+		CreatedAt:      current.CreatedAt,
+		UpdatedAt:      now,
+	}
+	policy, err := domain.NormalizeAuthorizationPolicy(next)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.orgs.UpsertAuthorizationPolicy(ctx, policy); err != nil {
+		return nil, err
+	}
+	s.log(ctx, clientID, &actorUserID, "authorization_policy_updated", ip, ua, map[string]interface{}{
+		"organization_id": organizationID,
+		"version":         policy.Version,
+	})
+	return policy, nil
+}
+
+func (s *OrganizationService) ListGroupMappings(ctx context.Context, clientID, organizationID, actorUserID string) ([]*domain.OrganizationGroupMapping, error) {
+	if _, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionAuthorizationRead); err != nil {
+		return nil, err
+	}
+	return s.orgs.ListGroupMappings(ctx, clientID, organizationID)
+}
+
+func (s *OrganizationService) UpsertGroupMapping(ctx context.Context, clientID, organizationID, actorUserID, mappingID string, req UpsertGroupMappingRequest, ip, ua string) (*domain.OrganizationGroupMapping, error) {
+	if _, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionAuthorizationManage); err != nil {
+		return nil, err
+	}
+	source, err := domain.NormalizeGroupMappingSource(req.Source)
+	if err != nil {
+		return nil, err
+	}
+	group := domain.NormalizeGroupName(req.Group)
+	if group == "" {
+		return nil, domain.ErrInvalidGroupMapping
+	}
+	role, err := domain.NormalizeOrganizationRole(req.Role)
+	if err != nil {
+		return nil, err
+	}
+	permissions, err := domain.NormalizeOrganizationPermissions(req.Permissions)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	mapping := &domain.OrganizationGroupMapping{
+		ID:             mappingID,
+		ClientID:       clientID,
+		OrganizationID: organizationID,
+		Source:         source,
+		SourceID:       strings.TrimSpace(req.SourceID),
+		Group:          group,
+		Role:           role,
+		Permissions:    permissions,
+		Description:    strings.TrimSpace(req.Description),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if mapping.ID == "" {
+		mapping.ID = uuid.NewString()
+	}
+	if err := s.orgs.UpsertGroupMapping(ctx, mapping); err != nil {
+		return nil, err
+	}
+	s.log(ctx, clientID, &actorUserID, "authorization_group_mapping_upserted", ip, ua, map[string]interface{}{
+		"organization_id": organizationID,
+		"mapping_id":      mapping.ID,
+		"source":          mapping.Source,
+		"group":           mapping.Group,
+	})
+	return mapping, nil
+}
+
+func (s *OrganizationService) DeleteGroupMapping(ctx context.Context, clientID, organizationID, actorUserID, mappingID, ip, ua string) error {
+	if _, err := s.requirePermission(ctx, clientID, organizationID, actorUserID, domain.PermissionAuthorizationManage); err != nil {
+		return err
+	}
+	if err := s.orgs.DeleteGroupMapping(ctx, clientID, organizationID, mappingID); err != nil {
+		return err
+	}
+	s.log(ctx, clientID, &actorUserID, "authorization_group_mapping_deleted", ip, ua, map[string]interface{}{
+		"organization_id": organizationID,
+		"mapping_id":      mappingID,
+	})
+	return nil
+}
+
+func (s *OrganizationService) SimulateAuthorization(ctx context.Context, clientID, organizationID, actorUserID string, req AuthorizationSimulationRequest) (*domain.AuthorizationDecision, error) {
+	if _, err := s.requireAnyPermission(ctx, clientID, organizationID, actorUserID, domain.PermissionAuthorizationRead, domain.PermissionAuthorizationManage); err != nil {
+		return nil, err
+	}
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		userID = actorUserID
+	}
+	membership, err := s.orgs.GetMembership(ctx, clientID, organizationID, userID)
+	if err != nil && err != domain.ErrNotFound {
+		return nil, err
+	}
+	policy, _ := s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+	decision := domain.ExplainAuthorizationDecision(clientID, organizationID, userID, membership, policy, req.Resource, req.Action)
+	return &decision, nil
+}
+
+func (s *OrganizationService) IsAuthorized(ctx context.Context, clientID, organizationID, userID, resource, action string) (*domain.AuthorizationDecision, error) {
+	membership, err := s.orgs.GetMembership(ctx, clientID, organizationID, userID)
+	if err != nil {
+		if err == domain.ErrNotFound {
+			decision := domain.ExplainAuthorizationDecision(clientID, organizationID, userID, nil, nil, resource, action)
+			return &decision, nil
+		}
+		return nil, err
+	}
+	policy, _ := s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+	decision := domain.ExplainAuthorizationDecision(clientID, organizationID, userID, membership, policy, resource, action)
+	return &decision, nil
+}
+
 func (s *OrganizationService) requirePermission(ctx context.Context, clientID, organizationID, userID, permission string) (*domain.OrganizationMembership, error) {
+	return s.requireAnyPermission(ctx, clientID, organizationID, userID, permission)
+}
+
+func (s *OrganizationService) requireAnyPermission(ctx context.Context, clientID, organizationID, userID string, permissions ...string) (*domain.OrganizationMembership, error) {
 	membership, err := s.orgs.GetMembership(ctx, clientID, organizationID, userID)
 	if err != nil {
 		return nil, err
 	}
-	if !domain.HasOrganizationPermission(membership, permission) {
-		return nil, domain.ErrForbidden
+	policy, _ := s.ensureAuthorizationPolicy(ctx, clientID, organizationID)
+	effectiveMembership := cloneMembershipForAuthz(membership, policy)
+	for _, permission := range permissions {
+		if domain.OrganizationPermissionAllowed(effectiveMembership, policy, permission) {
+			return effectiveMembership, nil
+		}
 	}
-	return membership, nil
+	return nil, domain.ErrForbidden
+}
+
+func (s *OrganizationService) ensureAuthorizationPolicy(ctx context.Context, clientID, organizationID string) (*domain.OrganizationAuthorizationPolicy, error) {
+	policy, err := s.orgs.GetAuthorizationPolicy(ctx, clientID, organizationID)
+	if err == nil {
+		normalized, normalizeErr := domain.NormalizeAuthorizationPolicy(policy)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		return normalized, nil
+	}
+	if err != domain.ErrNotFound {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	policy = domain.DefaultAuthorizationPolicy(clientID, organizationID, now)
+	if err := s.orgs.UpsertAuthorizationPolicy(ctx, policy); err != nil {
+		return nil, err
+	}
+	return policy, nil
 }
 
 func (s *OrganizationService) ensureNotLastOwner(ctx context.Context, clientID, organizationID string) error {
@@ -376,6 +608,82 @@ func (s *OrganizationService) ensureNotLastOwner(ctx context.Context, clientID, 
 	}
 	if ownerCount <= 1 {
 		return domain.ErrForbidden
+	}
+	return nil
+}
+
+func cloneMembershipForAuthz(membership *domain.OrganizationMembership, policy *domain.OrganizationAuthorizationPolicy) *domain.OrganizationMembership {
+	if membership == nil {
+		return nil
+	}
+	cp := *membership
+	cp.Permissions = domain.ResolveOrganizationPermissions(membership, policy)
+	return &cp
+}
+
+func ApplyOrganizationGroupMappings(ctx context.Context, orgs OrganizationRepository, clientID, source, sourceID, userID string, groups []string) error {
+	if orgs == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	normalizedSource, err := domain.NormalizeGroupMappingSource(source)
+	if err != nil {
+		return err
+	}
+	normalizedGroups := normalizeGroupNames(groups)
+	if len(normalizedGroups) == 0 {
+		return nil
+	}
+	mappings, err := orgs.ListGroupMappingsForSource(ctx, clientID, normalizedSource, strings.TrimSpace(sourceID), normalizedGroups)
+	if err != nil {
+		return err
+	}
+	if len(mappings) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	planned := map[string]*domain.OrganizationMembership{}
+	for _, mapping := range mappings {
+		role, err := domain.NormalizeOrganizationRole(mapping.Role)
+		if err != nil {
+			return err
+		}
+		permissions, err := domain.NormalizeOrganizationPermissions(mapping.Permissions)
+		if err != nil {
+			return err
+		}
+		membership := planned[mapping.OrganizationID]
+		if membership == nil {
+			existing, err := orgs.GetMembership(ctx, clientID, mapping.OrganizationID, userID)
+			if err == nil {
+				membership = existing
+			} else if err == domain.ErrNotFound {
+				membership = &domain.OrganizationMembership{
+					ID:             uuid.NewString(),
+					ClientID:       clientID,
+					OrganizationID: mapping.OrganizationID,
+					UserID:         userID,
+					Role:           role,
+					Status:         "active",
+					CreatedAt:      now,
+					UpdatedAt:      now,
+				}
+			} else {
+				return err
+			}
+			planned[mapping.OrganizationID] = membership
+		}
+		if membership.Role != domain.OrganizationRoleOwner {
+			membership.Role = strongerOrganizationRole(membership.Role, role)
+		}
+		membership.Permissions = mergeOrganizationPermissions(membership.Permissions, permissions)
+		membership.Status = "active"
+		membership.UpdatedAt = now
+	}
+	for _, membership := range planned {
+		if err := orgs.UpsertMembership(ctx, membership); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -450,6 +758,80 @@ func normalizeRequestedPermissions(role string, requested []string) ([]string, e
 	return domain.NormalizeOrganizationPermissions(requested)
 }
 
+func normalizeGroupNames(groups []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(groups))
+	for _, group := range groups {
+		group = domain.NormalizeGroupName(group)
+		if group == "" {
+			continue
+		}
+		if _, ok := seen[group]; ok {
+			continue
+		}
+		seen[group] = struct{}{}
+		out = append(out, group)
+	}
+	return out
+}
+
+func mergeGroupNames(existing, added []string) []string {
+	merged := append([]string(nil), existing...)
+	merged = append(merged, added...)
+	return normalizeGroupNames(merged)
+}
+
+func mergeOrganizationPermissions(existing, added []string) []string {
+	merged := append([]string(nil), existing...)
+	merged = append(merged, added...)
+	permissions, err := domain.NormalizeOrganizationPermissions(merged)
+	if err != nil {
+		return existing
+	}
+	return permissions
+}
+
+func strongerOrganizationRole(current, candidate string) string {
+	currentRank := organizationRoleRank(current)
+	candidateRank := organizationRoleRank(candidate)
+	if candidateRank > currentRank {
+		return candidate
+	}
+	if current == "" {
+		return candidate
+	}
+	if currentRank == candidateRank && isBuiltInRole(current) && !isBuiltInRole(candidate) {
+		return candidate
+	}
+	return current
+}
+
+func organizationRoleRank(role string) int {
+	switch role {
+	case domain.OrganizationRoleOwner:
+		return 4
+	case domain.OrganizationRoleAdmin:
+		return 3
+	case domain.OrganizationRoleMember:
+		return 2
+	case domain.OrganizationRoleViewer:
+		return 1
+	case "":
+		return 0
+	default:
+		return 2
+	}
+}
+
+func isBuiltInRole(role string) bool {
+	switch role {
+	case domain.OrganizationRoleOwner, domain.OrganizationRoleAdmin, domain.OrganizationRoleMember, domain.OrganizationRoleViewer:
+		return true
+	default:
+		return false
+	}
+}
+
 func invitationTTL(hours int) time.Duration {
 	if hours <= 0 {
 		return defaultInvitationTTL
@@ -471,7 +853,24 @@ func canAssignOrganizationRole(actor *domain.OrganizationMembership, role string
 	if role == domain.OrganizationRoleOwner {
 		return false
 	}
-	return domain.HasOrganizationPermission(actor, domain.PermissionMembersWrite) || domain.HasOrganizationPermission(actor, domain.PermissionInvitationsWrite)
+	return domain.HasOrganizationPermission(actor, domain.PermissionMembersWrite) ||
+		domain.HasOrganizationPermission(actor, domain.PermissionMembersInvite) ||
+		domain.HasOrganizationPermission(actor, domain.PermissionInvitationsWrite)
+}
+
+func canAssignOrganizationPermissions(actor *domain.OrganizationMembership, permissions []string) bool {
+	if actor == nil || actor.Status != "active" {
+		return false
+	}
+	if actor.Role == domain.OrganizationRoleOwner {
+		return true
+	}
+	for _, permission := range permissions {
+		if !domain.HasOrganizationPermission(actor, permission) {
+			return false
+		}
+	}
+	return true
 }
 
 func isDuplicateError(err error) bool {

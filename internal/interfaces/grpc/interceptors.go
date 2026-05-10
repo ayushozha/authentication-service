@@ -4,13 +4,20 @@ import (
 	"context"
 	"log"
 	"runtime/debug"
+	"strings"
 	"time"
 
+	"github.com/Ayush10/authentication-service/internal/application"
+	"github.com/Ayush10/authentication-service/internal/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+type grpcContextKey string
+
+const adminActorContextKey grpcContextKey = "admin_actor"
 
 // chainUnaryInterceptors chains multiple unary interceptors into one.
 func chainUnaryInterceptors(interceptors ...grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
@@ -67,15 +74,15 @@ func recoveryInterceptor(
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("grpc panic recovered in %s: %v\n%s", info.FullMethod, r, debug.Stack())
-			err = status.Errorf(codes.Internal, "internal server error")
+			err = status.Error(codes.Internal, "internal server error")
 		}
 	}()
 	return handler(ctx, req)
 }
 
-// adminAPIKeyInterceptor verifies the admin API key from gRPC metadata
-// for methods that require admin access.
-func adminAPIKeyInterceptor(adminAPIKey string) grpc.UnaryServerInterceptor {
+// adminAuthInterceptor authenticates admin gRPC calls with bearer admin tokens
+// or the rate-limited break-glass admin API key.
+func adminAuthInterceptor(adminSvc *application.AdminService, adminAPIKey string) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req interface{},
@@ -89,15 +96,47 @@ func adminAPIKeyInterceptor(adminAPIKey string) grpc.UnaryServerInterceptor {
 
 		md, ok := metadata.FromIncomingContext(ctx)
 		if !ok {
-			return nil, status.Errorf(codes.Unauthenticated, "missing metadata")
+			return nil, status.Error(codes.Unauthenticated, "missing metadata")
 		}
 
-		keys := md.Get("x-admin-api-key")
-		if len(keys) == 0 || keys[0] != adminAPIKey {
-			return nil, status.Errorf(codes.Unauthenticated, "invalid admin API key")
+		ip, _ := metadataFromContext(ctx)
+		if keys := md.Get("x-admin-api-key"); len(keys) > 0 && strings.TrimSpace(keys[0]) != "" {
+			if !application.ConstantTimeSecretEqual(strings.TrimSpace(keys[0]), adminAPIKey) {
+				return nil, status.Error(codes.Unauthenticated, "invalid admin API key")
+			}
+			actor := &domain.AdminActor{
+				Type:      domain.AdminActorTypeBreakGlass,
+				ID:        "master-key",
+				Email:     "break-glass-master-key",
+				Roles:     []string{domain.AdminRoleOwner},
+				ScopeType: domain.AdminScopeAll,
+			}
+			if adminSvc != nil {
+				var err error
+				actor, err = adminSvc.BreakGlassActor(ctx, ip)
+				if err != nil {
+					if err == domain.ErrRateLimit {
+						return nil, status.Error(codes.ResourceExhausted, "admin authentication rate limited")
+					}
+					return nil, status.Error(codes.Internal, "admin authentication failed")
+				}
+			}
+			return handler(context.WithValue(ctx, adminActorContextKey, actor), req)
 		}
 
-		return handler(ctx, req)
+		authHeaders := md.Get("authorization")
+		if len(authHeaders) == 0 {
+			return nil, status.Error(codes.Unauthenticated, "missing admin authorization")
+		}
+		parts := strings.SplitN(authHeaders[0], " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || adminSvc == nil {
+			return nil, status.Error(codes.Unauthenticated, "invalid admin authorization")
+		}
+		actor, err := adminSvc.ValidateAccessToken(ctx, strings.TrimSpace(parts[1]))
+		if err != nil {
+			return nil, status.Error(codes.Unauthenticated, "invalid admin authorization")
+		}
+		return handler(context.WithValue(ctx, adminActorContextKey, actor), req)
 	}
 }
 
@@ -123,4 +162,20 @@ func metadataFromContext(ctx context.Context) (ip, userAgent string) {
 		userAgent = vals[0]
 	}
 	return ip, userAgent
+}
+
+func adminActorFromContext(ctx context.Context) *domain.AdminActor {
+	actor, _ := ctx.Value(adminActorContextKey).(*domain.AdminActor)
+	return actor
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if vals := md.Get("x-request-id"); len(vals) > 0 {
+		return vals[0]
+	}
+	return ""
 }

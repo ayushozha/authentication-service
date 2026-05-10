@@ -33,6 +33,8 @@ func domainToGRPCError(err error) error {
 		return status.Error(codes.Unauthenticated, err.Error())
 	case errors.Is(err, domain.ErrClientSuspended):
 		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, domain.ErrForbidden):
+		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, domain.ErrEmailNotConfigured):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, domain.ErrRedisRequired):

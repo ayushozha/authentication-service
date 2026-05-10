@@ -4,7 +4,7 @@ info:
   description: |
     AuthService is a self-hosted, multi-tenant authentication platform for teams that want provider-grade auth without handing user data, pricing leverage, or service-to-service trust to a third party.
 
-    It provides email/password auth, OAuth2 social login, enterprise SSO with SAML/OIDC, SCIM 2.0 directory sync, machine-to-machine client credentials, magic links, TOTP 2FA, passkeys/WebAuthn, organization RBAC, refresh-token rotation, tenant-scoped JWTs, JWKS, audit logs, REST, gRPC, and an importable Go JWT validator.
+    It provides email/password auth, OAuth2 social login, enterprise SSO with SAML/OIDC, SCIM 2.0 directory sync, machine-to-machine client credentials, magic links, TOTP 2FA, adaptive security and step-up, passkeys/WebAuthn, organization RBAC, refresh-token rotation, tenant-scoped JWTs, JWKS, audit logs, REST, gRPC, and an importable Go JWT validator.
 
     ## What This Replaces
 
@@ -15,6 +15,7 @@ info:
     | Product authentication | Signup, login, refresh, logout, profile, password change |
     | Passwordless login | Magic links and passkeys/WebAuthn |
     | MFA | TOTP setup, enable, login verify, and disable lifecycle |
+    | Adaptive security | Risk-driven MFA, remembered devices, admin/user step-up, and policy-driven challenge/block/notify decisions |
     | Social identity | Google, GitHub, Microsoft, and Apple OAuth2 |
     | Enterprise SSO | Per-client SAML 2.0 and OIDC connections, domain routing, metadata, and JIT provisioning |
     | Directory sync | SCIM 2.0 inbound provisioning for users, groups, deprovisioning, and token rotation |
@@ -54,7 +55,8 @@ info:
     |---------|---------|
     | Client | A product, app, environment, or tenant boundary registered in AuthService |
     | API key | Client credential sent as `X-API-Key`; never expose it in untrusted public code |
-    | Admin key | Operator credential sent as `X-Admin-Key` for client and audit APIs |
+    | Admin identity | Operator identity signed in through `/api/admin/auth/login` or `/api/admin/auth/sso` |
+    | Admin key | Break-glass credential sent as `X-Admin-Key`; rate-limited and audited |
     | Access token | Short-lived JWT used as `Authorization: Bearer <token>` |
     | Organization | B2B workspace/account under a client, with role and permission scoped memberships |
     | Service account | Machine identity under a client, with scoped credentials for backend automation |
@@ -69,7 +71,9 @@ info:
     |--------|--------------|-------------|
     | `X-API-Key` | App-initiated `/api/auth/*` requests | Identifies the client/tenant and enforces tenant ownership |
     | `Authorization: Bearer <token>` | User-protected endpoints | Carries the user's short-lived access token |
-    | `X-Admin-Key` | `/api/admin/*` endpoints | Authenticates service operators and provisioning automation |
+    | `Authorization: Bearer <admin_token>` | `/api/admin/*` endpoints | Carries an admin user's scoped roles and tenant delegation |
+    | `X-Step-Up-Token` | Sensitive user/admin mutations after challenge verification | Carries a short-lived step-up proof for the protected action |
+    | `X-Admin-Key` | `/api/admin/*` endpoints | Break-glass fallback for bootstrap and emergencies |
     | `X-AuthService-Signature` | Outbound audit webhooks | HMAC-SHA256 signature over `timestamp + "." + raw_body` using `WEBHOOK_SIGNING_SECRET` |
 
     ## Recommended Integration Patterns
@@ -145,6 +149,8 @@ tags:
     description: Passwordless email authentication with JSON token mode or browser redirects
   - name: TOTP
     description: Time-based one-time password MFA setup, enablement, login verification, and disablement
+  - name: Adaptive Security
+    description: Risk-driven MFA, remembered devices, user/admin step-up, and tenant/org security policy controls
   - name: OAuth2
     description: Tenant-bound social login via Google, GitHub, Microsoft, and Apple with PKCE-backed state
   - name: Passkeys
@@ -164,7 +170,7 @@ tags:
 
 x-tagGroups:
   - name: Build User Login
-    tags: [Authentication, Email Verification, Magic Links, TOTP, OAuth2, Passkeys]
+    tags: [Authentication, Email Verification, Magic Links, TOTP, Adaptive Security, OAuth2, Passkeys]
   - name: Build B2B SaaS
     tags: [Organizations]
   - name: Connect Services
@@ -399,6 +405,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+
+  /api/auth/ui/config:
+    get:
+      operationId: getAuthUIConfig
+      summary: Get hosted and embedded UI configuration
+      description: Returns sanitized tenant presentation settings for hosted auth pages and embedded UI widgets.
+      tags: [Authentication]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Tenant UI configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  client:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      slug:
+                        type: string
+                      status:
+                        type: string
+                      token_mode:
+                        type: string
+                      allowed_origins:
+                        type: array
+                        items:
+                          type: string
+                  ui:
+                    type: object
+                    additionalProperties: true
+                  hosted_paths:
+                    type: object
+                    additionalProperties:
+                      type: string
+        "401":
+          description: Missing or invalid client API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/auth/me:
     get:
@@ -771,7 +824,7 @@ paths:
         Completes passwordless login via magic link. This is a public endpoint.
 
         - With `Accept: application/json` or `session_mode=token` — returns JSON with tokens
-        - Otherwise — redirects to `{base_url}/login.html?access_token={token}`
+        - Otherwise — redirects to `{base_url}/login.html?auth_code={one_time_code}`. Exchange the code with `/api/auth/redirect/exchange`; access tokens are not placed in browser URLs.
       tags: [Magic Links]
       parameters:
         - name: token
@@ -795,7 +848,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
         "302":
-          description: Redirect to login page with access token
+          description: Redirect to login page with one-time auth code
         "400":
           description: Invalid or expired token
           content:
@@ -931,6 +984,152 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api/auth/redirect/exchange:
+    post:
+      operationId: exchangeRedirectAuthCode
+      summary: Exchange a browser redirect auth code
+      description: |
+        Exchanges the short-lived one-time `auth_code` issued by OAuth, enterprise SSO, and magic-link browser redirects for an auth response. Codes are single-use and expire quickly, preventing access-token leakage through browser history, referrers, and logs.
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Auth code exchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid or expired code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Redis required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/step-up/verify:
+    post:
+      operationId: verifyStepUp
+      summary: Verify a user step-up challenge
+      description: Exchanges a protected-action challenge token plus TOTP or recovery code for a short-lived `step_up_token`.
+      tags: [Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StepUpVerifyRequest"
+      responses:
+        "200":
+          description: Step-up verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepUpVerifyResponse"
+        "400":
+          description: Invalid or expired challenge token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid verification code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/devices:
+    get:
+      operationId: listUserDevices
+      summary: List remembered devices
+      tags: [Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Remembered devices for the current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserDevice"
+
+  /api/auth/devices/{device_id}:
+    patch:
+      operationId: updateUserDeviceTrust
+      summary: Trust, untrust, or rename a remembered device
+      tags: [Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                trusted:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated device
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDevice"
+    delete:
+      operationId: deleteUserDevice
+      summary: Remove a remembered device
+      tags: [Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - name: device_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Device removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
 
   /api/auth/totp/disable:
     post:
@@ -1087,7 +1286,7 @@ paths:
       operationId: oauthCallback
       summary: OAuth2 callback
       description: |
-        Handles the OAuth provider's redirect. On success, redirects to `{base_url}/login.html?access_token={token}` and sets a session cookie.
+        Handles the OAuth provider's redirect. On success, redirects to `{base_url}/login.html?auth_code={one_time_code}` and sets a session cookie unless `session_mode=token` was requested.
         On failure, redirects to `{base_url}/login.html?error={message}`.
 
         This is a public endpoint called by the OAuth provider.
@@ -1113,14 +1312,14 @@ paths:
           description: Signed state parameter
       responses:
         "302":
-          description: Redirect to application with token or error
+          description: Redirect to application with one-time auth code or error
     post:
       operationId: oauthCallbackFormPost
       summary: OAuth2 callback (form post)
       description: |
         Handles providers that return OAuth callback parameters with `response_mode=form_post`.
 
-        On success, redirects to `{base_url}/login.html?access_token={token}` and sets a session cookie. On failure, redirects to `{base_url}/login.html?error={message}`.
+        On success, redirects to `{base_url}/login.html?auth_code={one_time_code}` and sets a session cookie unless token mode was requested. On failure, redirects to `{base_url}/login.html?error={message}`.
       tags: [OAuth2]
       parameters:
         - name: provider
@@ -1735,6 +1934,76 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/auth/organizations/{org_id}/security-policy:
+    get:
+      operationId: getOrganizationSecurityPolicy
+      summary: Get organization adaptive security policy
+      tags: [Organizations, Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      responses:
+        "200":
+          description: Effective organization security policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+    put:
+      operationId: replaceOrganizationSecurityPolicy
+      summary: Replace organization adaptive security policy
+      tags: [Organizations, Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+      responses:
+        "200":
+          description: Updated organization security policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+        "403":
+          description: Step-up required or organization permission denied
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AdaptiveActionDecision"
+                  - $ref: "#/components/schemas/Error"
+    patch:
+      operationId: patchOrganizationSecurityPolicy
+      summary: Replace organization adaptive security policy
+      tags: [Organizations, Adaptive Security]
+      security:
+        - ApiKeyAuth: []
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+      responses:
+        "200":
+          description: Updated organization security policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+
   # ──────────────────────────────────────────────
   # Machine-to-Machine Auth
   # ──────────────────────────────────────────────
@@ -1808,6 +2077,7 @@ paths:
       summary: List service accounts for a client
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -1828,6 +2098,7 @@ paths:
       description: Returns `client_secret` once. Store it securely.
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -1855,6 +2126,7 @@ paths:
       summary: Get a service account
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -1871,6 +2143,7 @@ paths:
       summary: Update service account metadata, scopes, or status
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -1893,6 +2166,7 @@ paths:
       summary: Disable a service account
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -1911,6 +2185,7 @@ paths:
       summary: List service account keys
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -1927,6 +2202,7 @@ paths:
       summary: Create a scoped service account key
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -1951,6 +2227,7 @@ paths:
       summary: Revoke a service account key
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -1971,6 +2248,7 @@ paths:
       description: Creates a replacement key with the same scopes and revokes the old key.
       tags: [Machine Auth, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2064,7 +2342,7 @@ paths:
             type: string
       responses:
         "302":
-          description: Redirect to login page with access token or error
+          description: Redirect to login page with one-time auth code or error
     post:
       operationId: enterpriseSAMLCallback
       summary: Complete an enterprise SAML login
@@ -2080,7 +2358,7 @@ paths:
               $ref: "#/components/schemas/SAMLCallbackRequest"
       responses:
         "302":
-          description: Redirect to login page with access token or error
+          description: Redirect to login page with one-time auth code or error
 
   /api/auth/sso/metadata/{sso_connection_id}:
     get:
@@ -2104,6 +2382,7 @@ paths:
       summary: List enterprise SSO connections
       tags: [Enterprise SSO, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2119,6 +2398,7 @@ paths:
       summary: Create an enterprise SSO connection
       tags: [Enterprise SSO, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2142,6 +2422,7 @@ paths:
       summary: Get an enterprise SSO connection
       tags: [Enterprise SSO, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2158,6 +2439,7 @@ paths:
       summary: Update an enterprise SSO connection
       tags: [Enterprise SSO, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2180,6 +2462,7 @@ paths:
       summary: Deactivate an enterprise SSO connection
       tags: [Enterprise SSO, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2495,6 +2778,7 @@ paths:
       summary: List SCIM directories
       tags: [SCIM, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2510,6 +2794,7 @@ paths:
       summary: Create a SCIM directory and bearer token
       tags: [SCIM, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2533,6 +2818,7 @@ paths:
       summary: Get a SCIM directory
       tags: [SCIM, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2549,6 +2835,7 @@ paths:
       summary: Update a SCIM directory
       tags: [SCIM, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2573,6 +2860,7 @@ paths:
       summary: Rotate a SCIM directory bearer token
       tags: [SCIM, Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/ClientIDPath"
@@ -2588,6 +2876,110 @@ paths:
   # ──────────────────────────────────────────────
   # Admin
   # ──────────────────────────────────────────────
+  /api/admin/auth/login:
+    post:
+      operationId: adminLogin
+      summary: Sign in an admin user
+      description: Password-based admin login. Admins with MFA enabled must include a valid `totp_code`; otherwise the response sets `mfa_required`.
+      tags: [Admin]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+                totp_code:
+                  type: string
+      responses:
+        "200":
+          description: Admin token
+        "401":
+          description: Invalid credentials or MFA required
+
+  /api/admin/auth/sso:
+    post:
+      operationId: adminSSOLogin
+      summary: Sign in an admin user with SSO
+      description: Completes an externally verified admin SSO handoff by matching provider and subject to an admin identity.
+      tags: [Admin]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, subject]
+              properties:
+                provider:
+                  type: string
+                subject:
+                  type: string
+      responses:
+        "200":
+          description: Admin token
+
+  /api/admin/step-up/verify:
+    post:
+      operationId: verifyAdminStepUp
+      summary: Verify an admin step-up challenge
+      description: Exchanges an admin protected-action challenge token plus admin TOTP code for a short-lived `step_up_token`.
+      tags: [Admin, Adaptive Security]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StepUpVerifyRequest"
+      responses:
+        "200":
+          description: Step-up verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepUpVerifyResponse"
+        "403":
+          description: Admin MFA enrollment required or step-up not available for break-glass keys
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/admin/users:
+    get:
+      operationId: listAdminUsers
+      summary: List admin users
+      tags: [Admin]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      responses:
+        "200":
+          description: Admin users
+    post:
+      operationId: createAdminUser
+      summary: Create an admin user
+      description: Creates an admin identity with roles, all/client/organization scope, MFA settings, and optional SSO identity.
+      tags: [Admin]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      responses:
+        "201":
+          description: Admin user
+
   /api/admin/clients:
     post:
       operationId: createClient
@@ -2609,6 +3001,7 @@ paths:
                 "webhook_url": "https://app.acme.com/webhooks/auth"
               }'
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       requestBody:
         required: true
@@ -2658,6 +3051,7 @@ paths:
       description: Returns all registered clients.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       responses:
         "200":
@@ -2682,6 +3076,7 @@ paths:
       description: Returns a single client's details.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -2715,6 +3110,7 @@ paths:
       description: Updates mutable client settings such as allowed origins, webhook URL, status, and tenant WebAuthn policy controls.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -2760,6 +3156,76 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/admin/clients/{id}/security-policy:
+    get:
+      operationId: getClientSecurityPolicy
+      summary: Get client adaptive security policy
+      tags: [Admin, Adaptive Security]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      responses:
+        "200":
+          description: Client security policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+    put:
+      operationId: replaceClientSecurityPolicy
+      summary: Replace client adaptive security policy
+      tags: [Admin, Adaptive Security]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+      responses:
+        "200":
+          description: Updated client security policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+        "403":
+          description: Step-up required or blocked by policy
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AdaptiveActionDecision"
+                  - $ref: "#/components/schemas/Error"
+    patch:
+      operationId: patchClientSecurityPolicy
+      summary: Replace client adaptive security policy
+      tags: [Admin, Adaptive Security]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ClientIDPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+      responses:
+        "200":
+          description: Updated client security policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdaptiveSecurityPolicy"
+
   /api/admin/clients/{id}/rotate-jwt:
     post:
       operationId: rotateJwtSecret
@@ -2768,6 +3234,7 @@ paths:
         Alias for `/api/admin/clients/{id}/rotate-secret`. Generates a new JWT secret for the client. The old secret is immediately invalidated — all existing tokens signed with it will fail validation.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -2800,6 +3267,7 @@ paths:
         Use this during incident response, tenant ownership changes, or planned signing-secret rotation.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -2830,6 +3298,7 @@ paths:
         Alias for `/api/admin/clients/{id}/rotate-api-key`. Generates a new API key for the client. The old key is immediately invalidated.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -2862,6 +3331,7 @@ paths:
         Use this if a client API key was exposed in an untrusted surface, checked into source control, or transferred to a new owner.
       tags: [Admin]
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: id
@@ -2897,6 +3367,7 @@ paths:
             curl "https://authservice.ayushojha.com/api/admin/audit-events?client_id=$CLIENT_ID&event_type=login_failed&limit=100" \
               -H "X-Admin-Key: $AUTH_SERVICE_ADMIN_KEY"
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: client_id
@@ -2925,7 +3396,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 500
+            maximum: 10000
             default: 50
           description: Maximum number of events to return
       responses:
@@ -2962,6 +3433,7 @@ paths:
               -H "X-Admin-Key: $AUTH_SERVICE_ADMIN_KEY" \
               -o authservice-audit-events.csv
       security:
+        - AdminBearerAuth: []
         - AdminKeyAuth: []
       parameters:
         - name: client_id
@@ -2990,7 +3462,7 @@ paths:
           schema:
             type: integer
             minimum: 1
-            maximum: 500
+            maximum: 10000
             default: 50
           description: Maximum number of events to export
         - name: format
@@ -3024,6 +3496,85 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/admin/audit-events/legal-hold:
+    post:
+      operationId: setAuditLegalHold
+      summary: Set audit legal hold
+      description: Enables or disables legal hold for specific audit event IDs. Legal hold prevents retention purge and is recorded as mutable operational metadata.
+      tags: [Admin]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuditLegalHoldRequest"
+      responses:
+        "200":
+          description: Legal hold update result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLegalHoldResult"
+
+  /api/admin/audit-events/retention/purge:
+    post:
+      operationId: purgeExpiredAuditEvents
+      summary: Purge expired audit events
+      description: Dry-runs or deletes audit events whose `retention_until` has passed and `legal_hold` is false.
+      tags: [Admin]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuditRetentionPurgeRequest"
+      responses:
+        "200":
+          description: Purge result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditRetentionPurgeResult"
+
+  /api/admin/audit-events/chain/verify:
+    get:
+      operationId: verifyAuditChain
+      summary: Verify audit event hash chain
+      description: Recomputes audit event hashes for a client-scoped or global chain and reports tamper-evidence failures.
+      tags: [Admin]
+      security:
+        - AdminBearerAuth: []
+        - AdminKeyAuth: []
+      parameters:
+        - name: client_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Client chain to verify. Omit for the global/admin chain.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100000
+            default: 10000
+      responses:
+        "200":
+          description: Chain verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditChainVerification"
+
   # ──────────────────────────────────────────────
   # Utility
   # ──────────────────────────────────────────────
@@ -3044,6 +3595,20 @@ paths:
                   status:
                     type: string
                     example: ok
+
+  /metrics:
+    get:
+      operationId: prometheusMetrics
+      summary: Prometheus metrics
+      description: Exposes operational metrics for login results, MFA challenge rate, SSO errors, SCIM lag, webhook delivery, token refresh reuse, audit streams, and HTTP latency.
+      tags: [Utility]
+      responses:
+        "200":
+          description: Prometheus text exposition
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /.well-known/jwks.json:
     get:
@@ -3113,7 +3678,12 @@ components:
       type: apiKey
       in: header
       name: X-Admin-Key
-      description: Master admin key for client management
+      description: Break-glass master admin key for bootstrap or emergencies; prefer AdminBearerAuth
+    AdminBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin access token returned by `/api/admin/auth/login` or `/api/admin/auth/sso`
 
   parameters:
     ClientIDPath:
@@ -3290,6 +3860,12 @@ components:
         session_mode:
           type: string
           enum: [token]
+        remember_device:
+          type: boolean
+          description: Remember this device after successful MFA verification when policy allows trusted-device bypass
+        device_name:
+          type: string
+          description: Optional friendly name for the remembered device
 
     RecoveryCodeVerifyRequest:
       type: object
@@ -3305,6 +3881,21 @@ components:
         session_mode:
           type: string
           enum: [token]
+
+    StepUpVerifyRequest:
+      type: object
+      required: [challenge_token, code]
+      properties:
+        challenge_token:
+          type: string
+          description: Challenge token returned by a protected action response
+        factor:
+          type: string
+          enum: [totp, recovery_code]
+          default: totp
+        code:
+          type: string
+          description: TOTP code or recovery code
 
     RecoveryCodesResponse:
       type: object
@@ -3744,18 +4335,214 @@ components:
       properties:
         level:
           type: string
-          enum: [low, medium]
+          enum: [low, medium, high, critical]
           example: medium
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
         reasons:
           type: array
           items:
             type: string
-            enum: [new_ip, new_device]
-          example: [new_ip, new_device]
+          example: [new_ip, new_device, failed_velocity]
         new_ip:
           type: boolean
         new_device:
           type: boolean
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskSignal"
+        context:
+          type: object
+          additionalProperties: true
+
+    RiskSignal:
+      type: object
+      properties:
+        type:
+          type: string
+          example: new_device
+        level:
+          type: string
+          enum: [low, medium, high, critical]
+        reason:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+
+    RiskAssessment:
+      type: object
+      properties:
+        level:
+          type: string
+          enum: [low, medium, high, critical]
+        score:
+          type: integer
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskSignal"
+        context:
+          type: object
+          additionalProperties: true
+
+    AdaptiveSecurityPolicy:
+      type: object
+      description: Tenant or organization security policy for MFA, risk, protected actions, and alerts.
+      properties:
+        mfa:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum: [off, allow, required, adaptive]
+            factors:
+              type: array
+              items:
+                type: string
+                enum: [totp, recovery_code]
+            challenge_risk_level:
+              type: string
+              enum: [low, medium, high, critical]
+            block_risk_level:
+              type: string
+              enum: [low, medium, high, critical]
+            remember_device_days:
+              type: integer
+            trusted_device_bypass:
+              type: boolean
+            enrollment_required:
+              type: boolean
+        risk:
+          type: object
+          properties:
+            challenge_level:
+              type: string
+              enum: [low, medium, high, critical]
+            block_level:
+              type: string
+              enum: [low, medium, high, critical]
+            failed_velocity_threshold:
+              type: integer
+            trusted_ip_cidrs:
+              type: array
+              items:
+                type: string
+            blocked_ip_cidrs:
+              type: array
+              items:
+                type: string
+            tor_ip_cidrs:
+              type: array
+              items:
+                type: string
+            vpn_asns:
+              type: array
+              items:
+                type: integer
+            high_risk_asns:
+              type: array
+              items:
+                type: integer
+        actions:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/StepUpActionPolicy"
+        alerts:
+          type: object
+          properties:
+            risk_levels:
+              type: array
+              items:
+                type: string
+                enum: [low, medium, high, critical]
+            event_types:
+              type: array
+              items:
+                type: string
+
+    StepUpActionPolicy:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [off, notify, challenge, block]
+        factors:
+          type: array
+          items:
+            type: string
+            enum: [totp, recovery_code]
+        risk_challenge_level:
+          type: string
+          enum: [low, medium, high, critical]
+        risk_block_level:
+          type: string
+          enum: [low, medium, high, critical]
+        max_age_seconds:
+          type: integer
+
+    StepUpVerifyResponse:
+      type: object
+      properties:
+        step_up_token:
+          type: string
+        action:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    AdaptiveActionDecision:
+      type: object
+      properties:
+        error:
+          type: string
+          enum: [step_up_required, blocked_by_security_policy]
+        action:
+          type: string
+        step_up_required:
+          type: boolean
+        challenge_token:
+          type: string
+        factors:
+          type: array
+          items:
+            type: string
+        expires_in:
+          type: integer
+        risk:
+          $ref: "#/components/schemas/RiskAssessment"
+
+    UserDevice:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        client_id:
+          type: string
+        user_id:
+          type: string
+        name:
+          type: string
+        user_agent:
+          type: string
+        ip_address:
+          type: string
+        trusted:
+          type: boolean
+        remembered:
+          type: boolean
+        trust_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_seen_at:
+          type: string
+          format: date-time
 
     User:
       type: object
@@ -3833,18 +4620,20 @@ components:
 
     OrganizationRole:
       type: string
-      enum: [owner, admin, member, viewer]
+      description: Built-in roles are `owner`, `admin`, `member`, and `viewer`. Custom role keys such as `org:billing-admin` are accepted when paired with explicit permissions.
       default: member
+      pattern: "^[a-z0-9][a-z0-9:_.-]{1,126}[a-z0-9]$"
+      examples:
+        - owner
+        - org:billing-admin
 
     OrganizationPermission:
       type: string
-      enum:
+      description: Built-in permissions plus custom lower-case `namespace:action` permission keys. Omit a permissions list to use the built-in defaults for built-in roles.
+      pattern: "^[a-z0-9][a-z0-9:_.-]{1,126}[a-z0-9]$"
+      examples:
         - org:read
-        - org:write
-        - members:read
-        - members:write
-        - invitations:read
-        - invitations:write
+        - billing:manage
 
     Organization:
       type: object
@@ -4425,9 +5214,104 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        retention_until:
+          type: string
+          format: date-time
+          nullable: true
+        legal_hold:
+          type: boolean
+        legal_hold_reason:
+          type: string
+        chain_scope:
+          type: string
+        previous_hash:
+          type: string
+        event_hash:
+          type: string
+        hash_algorithm:
+          type: string
         created_at:
           type: string
           format: date-time
+
+    AuditLegalHoldRequest:
+      type: object
+      required: [event_ids, legal_hold]
+      properties:
+        event_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+        legal_hold:
+          type: boolean
+        reason:
+          type: string
+
+    AuditLegalHoldResult:
+      type: object
+      properties:
+        updated:
+          type: integer
+          format: int64
+
+    AuditRetentionPurgeRequest:
+      type: object
+      properties:
+        before:
+          type: string
+          format: date-time
+        dry_run:
+          type: boolean
+          default: true
+
+    AuditRetentionPurgeResult:
+      type: object
+      properties:
+        matched:
+          type: integer
+          format: int64
+        deleted:
+          type: integer
+          format: int64
+        dry_run:
+          type: boolean
+
+    AuditChainVerification:
+      type: object
+      properties:
+        scope:
+          type: string
+        checked:
+          type: integer
+        valid:
+          type: boolean
+        legacy_unhashed:
+          type: integer
+        starts_with_anchor_hash:
+          type: boolean
+        first_event_id:
+          type: integer
+          format: int64
+        last_event_id:
+          type: integer
+          format: int64
+        last_hash:
+          type: string
+        failures:
+          type: array
+          items:
+            type: object
+            properties:
+              event_id:
+                type: integer
+                format: int64
+              problem:
+                type: string
+              expected:
+                type: string
+              actual:
+                type: string
 
     TOTPSetupResponse:
       type: object

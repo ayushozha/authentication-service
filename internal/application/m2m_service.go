@@ -202,6 +202,13 @@ func (s *M2MService) ListServiceAccountKeys(ctx context.Context, clientID, servi
 	return s.accounts.ListServiceAccountKeys(ctx, clientID, serviceAccountID)
 }
 
+func (s *M2MService) GetServiceAccountKey(ctx context.Context, clientID, serviceAccountID, keyID string) (*domain.ServiceAccountKey, error) {
+	if _, err := s.accounts.GetServiceAccount(ctx, clientID, serviceAccountID); err != nil {
+		return nil, err
+	}
+	return s.accounts.GetServiceAccountKey(ctx, clientID, serviceAccountID, keyID)
+}
+
 func (s *M2MService) RotateServiceAccountKey(ctx context.Context, clientID, serviceAccountID, keyID string, ip, ua string) (*domain.ServiceAccountKeyWithSecret, error) {
 	oldKey, err := s.accounts.GetServiceAccountKey(ctx, clientID, serviceAccountID, keyID)
 	if err != nil {

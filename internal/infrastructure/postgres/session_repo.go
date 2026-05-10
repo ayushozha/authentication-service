@@ -71,6 +71,27 @@ func (r *SessionRepo) Validate(ctx context.Context, clientID, rawToken string) (
 	return userID, sessionID, nil
 }
 
+func (r *SessionRepo) IsRefreshTokenRevoked(ctx context.Context, clientID, rawToken string) (bool, string, error) {
+	tokenHash := hashToken(rawToken)
+	var userID string
+	var revoked bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT user_id, revoked
+		FROM sessions
+		WHERE client_id = $1 AND refresh_token = $2
+		ORDER BY created_at DESC
+		LIMIT 1`,
+		clientID, tokenHash,
+	).Scan(&userID, &revoked)
+	if err == sql.ErrNoRows {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	return revoked, userID, nil
+}
+
 func (r *SessionRepo) ListForUser(ctx context.Context, clientID, userID string) ([]*domain.Session, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, user_id, client_id, refresh_token, user_agent, ip_address, expires_at, revoked, created_at

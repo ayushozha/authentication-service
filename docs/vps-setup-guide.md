@@ -559,13 +559,13 @@ function login() {
   window.location.href = 'https://<auth-domain>/login.html?api_key=YOUR_API_KEY';
 }
 
-// Auth service redirects back with access_token after successful login
-// Handle the callback on TapDue:
+// Auth service redirects back with a short-lived auth_code after callback flows.
+// Exchange it server-side or with the browser SDK:
 const params = new URLSearchParams(window.location.search);
-const token = params.get('access_token');
-if (token) {
-  localStorage.setItem('access_token', token);
-  // User is now logged in
+const code = params.get('auth_code');
+if (code) {
+  const auth = AuthService.createClient({ baseUrl: 'https://<auth-domain>', apiKey: 'YOUR_API_KEY' });
+  await auth.exchangeRedirectCode(code);
 }
 ```
 

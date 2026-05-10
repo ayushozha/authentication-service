@@ -110,6 +110,12 @@ func (r *WebhookAuditRepository) deliver(ctx context.Context, event domain.Audit
 }
 
 func (r *WebhookAuditRepository) post(ctx context.Context, webhookURL, deliveryID string, body []byte) bool {
+	start := time.Now()
+	result := "failure"
+	defer func() {
+		Metrics().ObserveWebhookDelivery(result, time.Since(start))
+	}()
+
 	reqCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
@@ -131,7 +137,11 @@ func (r *WebhookAuditRepository) post(ctx context.Context, webhookURL, deliveryI
 	}
 	defer res.Body.Close()
 	_, _ = io.Copy(io.Discard, res.Body)
-	return res.StatusCode >= 200 && res.StatusCode < 300
+	ok := res.StatusCode >= 200 && res.StatusCode < 300
+	if ok {
+		result = "success"
+	}
+	return ok
 }
 
 func SignWebhookPayload(secret, timestamp string, payload []byte) string {

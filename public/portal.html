@@ -378,6 +378,34 @@ td.wrap {
   word-break: break-all;
 }
 .secret-box.show { display: block; }
+.code-box {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 9px;
+  display: grid;
+  gap: 5px;
+  word-break: break-all;
+}
+.steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  display: grid;
+  gap: 5px;
+}
+.warning-list {
+  display: grid;
+  gap: 5px;
+}
+.warning {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #713f12;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12px;
+}
 .hide { display: none !important; }
 @media (max-width: 980px) {
   .app { grid-template-columns: 1fr; }
@@ -401,6 +429,7 @@ td.wrap {
       <div class="nav-label">Workspaces</div>
       <button class="nav-btn active" data-workspace="admin"><i data-lucide="building-2"></i><span>Admin Console</span></button>
       <button class="nav-btn" data-workspace="account"><i data-lucide="user-round-cog"></i><span>Account Portal</span></button>
+      <button class="nav-btn" data-workspace="enterprise"><i data-lucide="shield-check"></i><span>Enterprise Onboarding</span></button>
     </div>
     <div class="nav-group">
       <div class="nav-label">References</div>
@@ -633,6 +662,90 @@ td.wrap {
           </div>
         </div>
       </div>
+
+      <div class="workspace" id="enterpriseWorkspace">
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title"><i data-lucide="shield-check"></i><span>Setup Context</span></div>
+            <button class="btn blue" id="refreshEnterprise"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+          </div>
+          <div class="panel-body toolbar">
+            <div class="field"><label>API base URL</label><input id="enterpriseBaseUrl" placeholder="http://localhost:8080"></div>
+            <div class="field"><label>Client API key</label><input id="enterpriseApiKey" type="password"></div>
+            <div class="field"><label>Access token</label><input id="enterpriseAccessToken" type="password"></div>
+            <div class="field"><label>Organization ID</label><input id="enterpriseOrgId" placeholder="org_..."></div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="badge-check"></i><span>Domain Verification</span></div></div>
+            <div class="panel-body">
+              <div class="field"><label>Domain</label><input id="enterpriseDomain" placeholder="acme.com"></div>
+              <button class="btn primary" id="createEnterpriseDomain"><i data-lucide="plus"></i><span>Add Domain</span></button>
+              <div class="item-list" id="enterpriseDomainList"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="landmark"></i><span>SSO Setup</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Provider</label><select id="enterpriseProvider"></select></div>
+                <div class="field"><label>Protocol</label><select id="enterpriseSSOProtocol"><option value="saml">SAML</option><option value="oidc">OIDC</option></select></div>
+              </div>
+              <div class="grid-2">
+                <div class="field"><label>Name</label><input id="enterpriseSSOName" placeholder="Acme Okta"></div>
+                <div class="field"><label>Status</label><select id="enterpriseSSOStatus"><option value="inactive">Inactive</option><option value="active">Active</option></select></div>
+              </div>
+              <div class="field"><label>Connection ID</label><input id="enterpriseSSOId" class="mono" readonly></div>
+              <div class="field"><label>Domains</label><input id="enterpriseSSODomains" placeholder="acme.com"></div>
+              <div class="field"><label>OIDC issuer</label><input id="enterpriseOIDCIssuer" placeholder="https://idp.example.com/oauth2/default"></div>
+              <div class="grid-2">
+                <div class="field"><label>OIDC client ID</label><input id="enterpriseOIDCClientId"></div>
+                <div class="field"><label>OIDC client secret</label><input id="enterpriseOIDCClientSecret" type="password"></div>
+              </div>
+              <div class="grid-2">
+                <div class="field"><label>SAML IdP entity ID</label><input id="enterpriseSAMLEntity"></div>
+                <div class="field"><label>SAML IdP SSO URL</label><input id="enterpriseSAMLUrl"></div>
+              </div>
+              <div class="field"><label>SAML IdP certificate or metadata XML</label><textarea id="enterpriseSAMLCert"></textarea></div>
+              <div class="btn-row">
+                <button class="btn primary" id="createEnterpriseSSO"><i data-lucide="plus"></i><span>Create Draft</span></button>
+                <button class="btn ghost" id="saveEnterpriseSSO"><i data-lucide="save"></i><span>Save Connection</span></button>
+              </div>
+              <div class="code-box" id="enterpriseSSOHelper"></div>
+              <ol class="steps" id="enterpriseProviderSteps"></ol>
+              <div class="item-list" id="enterpriseSSOList"></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><i data-lucide="users-round"></i><span>SCIM Setup</span></div></div>
+            <div class="panel-body">
+              <div class="grid-2">
+                <div class="field"><label>Name</label><input id="enterpriseSCIMName" placeholder="Acme Directory"></div>
+                <div class="field"><label>Provider</label><select id="enterpriseSCIMProvider"></select></div>
+              </div>
+              <div class="field"><label>Domains</label><input id="enterpriseSCIMDomains" placeholder="acme.com"></div>
+              <button class="btn primary" id="createEnterpriseSCIM"><i data-lucide="plus"></i><span>Create Directory</span></button>
+              <div class="secret-box" id="enterpriseSCIMTokenBox"></div>
+              <ol class="steps" id="enterpriseSCIMSteps"></ol>
+              <div class="item-list" id="enterpriseSCIMList"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title"><i data-lucide="activity"></i><span>Enterprise Audit</span></div>
+            <button class="icon-btn" id="reloadEnterpriseAudit" title="Refresh enterprise audit"><i data-lucide="refresh-cw"></i></button>
+          </div>
+          <div class="panel-body">
+            <div class="table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>User</th><th class="wrap">Metadata</th></tr></thead><tbody id="enterpriseAuditTable"></tbody></table></div>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 </div>
@@ -647,7 +760,10 @@ td.wrap {
     accountApiKey: localStorage.getItem('auth_api_key') || localStorage.getItem('portal_account_api_key') || '',
     accountAccessToken: localStorage.getItem('auth_access_token') || localStorage.getItem('portal_account_access_token') || '',
     clients: [],
-    selectedClientId: localStorage.getItem('portal_selected_client_id') || ''
+    selectedClientId: localStorage.getItem('portal_selected_client_id') || '',
+    enterpriseOrgId: localStorage.getItem('portal_enterprise_org_id') || '',
+    providerGuides: [],
+    enterpriseSummary: null
   };
 
   const $ = (id) => document.getElementById(id);
@@ -663,6 +779,11 @@ td.wrap {
       'X-API-Key': state.accountApiKey,
       'Authorization': 'Bearer ' + state.accountAccessToken
     }, extra || {});
+  }
+
+  function enterprisePath(path) {
+    if (!state.enterpriseOrgId) throw new Error('Set an organization ID first.');
+    return '/api/auth/enterprise-onboarding/organizations/' + encodeURIComponent(state.enterpriseOrgId) + path;
   }
 
   async function request(baseUrl, path, options) {
@@ -704,6 +825,10 @@ td.wrap {
     $('accountBaseUrl').value = state.accountBaseUrl;
     $('accountApiKey').value = state.accountApiKey;
     $('accountAccessToken').value = state.accountAccessToken;
+    $('enterpriseBaseUrl').value = state.accountBaseUrl;
+    $('enterpriseApiKey').value = state.accountApiKey;
+    $('enterpriseAccessToken').value = state.accountAccessToken;
+    $('enterpriseOrgId').value = state.enterpriseOrgId;
     updateStatus();
   }
 
@@ -854,6 +979,184 @@ td.wrap {
     refreshIcons();
   }
 
+  async function loadProviderGuides() {
+    const data = await request(state.accountBaseUrl, '/api/auth/enterprise-onboarding/providers', { headers: accountHeaders() });
+    state.providerGuides = data.providers || [];
+    const options = state.providerGuides.map(p => '<option value="' + escapeHTML(p.provider) + '">' + escapeHTML(p.display_name) + '</option>').join('');
+    $('enterpriseProvider').innerHTML = options;
+    $('enterpriseSCIMProvider').innerHTML = options;
+    renderEnterpriseProviderSteps();
+  }
+
+  async function loadEnterpriseSummary() {
+    const summary = await request(state.accountBaseUrl, enterprisePath(''), { headers: accountHeaders() });
+    state.enterpriseSummary = summary;
+    renderEnterpriseDomains(summary.domains || []);
+    renderEnterpriseSSO(summary.sso_connections || []);
+    renderEnterpriseSCIM(summary.scim_directories || []);
+  }
+
+  async function loadEnterpriseAudit() {
+    const data = await request(state.accountBaseUrl, enterprisePath('/audit-events?limit=50'), { headers: accountHeaders() });
+    const events = data.events || [];
+    $('enterpriseAuditTable').innerHTML = events.map(e => (
+      '<tr><td class="mono">' + escapeHTML(e.created_at || '') + '</td><td>' + escapeHTML(e.event_type || '') + '</td>' +
+      '<td class="mono">' + escapeHTML(e.user_id || '') + '</td><td class="wrap mono">' + escapeHTML(JSON.stringify(e.metadata || {})) + '</td></tr>'
+    )).join('') || '<tr><td colspan="4"><div class="empty">No enterprise audit events</div></td></tr>';
+  }
+
+  async function refreshEnterprise() {
+    state.accountBaseUrl = $('enterpriseBaseUrl').value || window.location.origin;
+    state.accountApiKey = $('enterpriseApiKey').value;
+    state.accountAccessToken = $('enterpriseAccessToken').value;
+    state.enterpriseOrgId = $('enterpriseOrgId').value.trim();
+    localStorage.setItem('portal_account_base_url', state.accountBaseUrl);
+    localStorage.setItem('portal_account_api_key', state.accountApiKey);
+    localStorage.setItem('portal_account_access_token', state.accountAccessToken);
+    localStorage.setItem('portal_enterprise_org_id', state.enterpriseOrgId);
+    localStorage.setItem('auth_api_key', state.accountApiKey);
+    localStorage.setItem('auth_access_token', state.accountAccessToken);
+    $('accountBaseUrl').value = state.accountBaseUrl;
+    $('accountApiKey').value = state.accountApiKey;
+    $('accountAccessToken').value = state.accountAccessToken;
+    updateStatus();
+    if (!state.accountApiKey || !state.accountAccessToken || !state.enterpriseOrgId) {
+      toast('Set client API key, access token, and organization ID first.', 'error');
+      return;
+    }
+    if (!state.providerGuides.length) await loadProviderGuides();
+    await loadEnterpriseSummary();
+    await loadEnterpriseAudit();
+    toast('Enterprise onboarding refreshed.', 'ok');
+  }
+
+  function selectedProviderGuide(provider) {
+    return state.providerGuides.find(p => p.provider === provider) || {};
+  }
+
+  function renderEnterpriseProviderSteps() {
+    const provider = $('enterpriseProvider').value || (state.providerGuides[0] && state.providerGuides[0].provider) || '';
+    const protocol = $('enterpriseSSOProtocol').value;
+    const guide = selectedProviderGuide(provider);
+    const steps = protocol === 'oidc' ? guide.oidc_instructions : guide.saml_instructions;
+    $('enterpriseProviderSteps').innerHTML = (steps || []).map(step => '<li>' + escapeHTML(step) + '</li>').join('');
+    const scimGuide = selectedProviderGuide($('enterpriseSCIMProvider').value || provider);
+    $('enterpriseSCIMSteps').innerHTML = (scimGuide.scim_instructions || []).map(step => '<li>' + escapeHTML(step) + '</li>').join('');
+  }
+
+  function renderEnterpriseDomains(domains) {
+    $('enterpriseDomainList').innerHTML = domains.map(d => (
+      '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(d.domain) + '</div>' +
+      '<div class="muted mono">' + escapeHTML(d.id) + '</div></div><span class="pill ' + (d.status === 'verified' ? '' : 'gray') + '">' + escapeHTML(d.status) + '</span></div>' +
+      '<div class="code-box"><span class="muted">TXT name</span><span class="mono">' + escapeHTML(d.txt_name) + '</span>' +
+      '<span class="muted">TXT value</span><span class="mono">' + escapeHTML(d.txt_value) + '</span></div>' +
+      (d.last_error ? '<div class="warning">' + escapeHTML(d.last_error) + '</div>' : '') +
+      '<div class="btn-row"><button class="btn ghost" data-verify-domain="' + d.id + '"><i data-lucide="refresh-cw"></i><span>Verify DNS</span></button>' +
+      '<button class="btn ghost" data-copy="' + escapeHTML(d.txt_value) + '"><i data-lucide="copy"></i><span>Copy TXT</span></button></div></div>'
+    )).join('') || '<div class="empty">No domains added</div>';
+    refreshIcons();
+  }
+
+  function renderEnterpriseSSO(connections) {
+    $('enterpriseSSOList').innerHTML = connections.map(row => {
+      const conn = row.connection || {};
+      const health = row.health || {};
+      const setup = row.setup || {};
+      const warnings = (health.warnings || []).map(w => '<div class="warning">' + escapeHTML(w.message) + (w.deadline ? '<div class="mono">' + escapeHTML(w.deadline) + '</div>' : '') + '</div>').join('');
+      const helper = conn.protocol === 'saml'
+        ? '<div class="code-box"><span class="muted">ACS URL</span><span class="mono">' + escapeHTML(setup.acs_url || '') + '</span><span class="muted">Entity ID</span><span class="mono">' + escapeHTML(setup.sp_entity_id || '') + '</span><span class="muted">Metadata URL</span><span class="mono">' + escapeHTML(setup.sp_metadata_url || '') + '</span></div>'
+        : '<div class="code-box"><span class="muted">Redirect URI</span><span class="mono">' + escapeHTML(setup.oidc_redirect_uri || '') + '</span></div>';
+      return '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(conn.name) + '</div><div class="muted mono">' + escapeHTML(conn.id) + '</div></div>' +
+        '<span class="pill">' + escapeHTML(conn.protocol || '') + '</span></div><div class="muted">' + escapeHTML((conn.domains || []).join(', ')) + '</div>' +
+        '<div><span class="pill gray">' + escapeHTML(conn.status || '') + '</span> <span class="pill ' + (health.status === 'healthy' ? '' : 'gray') + '">' + escapeHTML(health.status || '') + '</span></div>' +
+        '<div class="muted">Last login: ' + escapeHTML(health.last_login_at || 'never') + '</div><div class="muted">Last error: ' + escapeHTML(health.last_error || 'none') + '</div>' +
+        helper + '<div class="warning-list">' + warnings + '</div>' +
+        '<div class="btn-row"><button class="btn ghost" data-ent-sso-use="' + conn.id + '"><i data-lucide="mouse-pointer-click"></i><span>Use</span></button>' +
+        '<button class="btn ghost" data-ent-sso-test="' + conn.id + '"><i data-lucide="log-in"></i><span>Test Sign-In</span></button></div></div>';
+    }).join('') || '<div class="empty">No SSO connections</div>';
+    refreshIcons();
+  }
+
+  function renderEnterpriseSCIM(directories) {
+    $('enterpriseSCIMList').innerHTML = directories.map(row => {
+      const dir = row.directory || {};
+      const health = row.health || {};
+      const setup = row.setup || {};
+      return '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHTML(dir.name) + '</div><div class="muted mono">' + escapeHTML(dir.id) + '</div></div>' +
+        '<span class="pill gray">' + escapeHTML(dir.status || '') + '</span></div><div class="muted">' + escapeHTML((dir.domains || []).join(', ')) + '</div>' +
+        '<div><span class="pill ' + (health.status === 'healthy' ? '' : 'gray') + '">' + escapeHTML(health.status || '') + '</span></div>' +
+        '<div class="muted">Last sync: ' + escapeHTML(health.last_sync_at || 'never') + '</div><div class="muted">Last error: ' + escapeHTML(health.last_error || 'none') + '</div>' +
+        '<div class="code-box"><span class="muted">SCIM base URL</span><span class="mono">' + escapeHTML(setup.scim_base_url || '') + '</span></div>' +
+        '<div class="btn-row"><button class="btn ghost" data-copy="' + escapeHTML(setup.scim_base_url || '') + '"><i data-lucide="copy"></i><span>Copy URL</span></button>' +
+        '<button class="btn ghost" data-ent-scim-rotate="' + dir.id + '"><i data-lucide="key-round"></i><span>Rotate Token</span></button></div></div>';
+    }).join('') || '<div class="empty">No SCIM directories</div>';
+    refreshIcons();
+  }
+
+  function enterpriseSSOPayload() {
+    const protocol = $('enterpriseSSOProtocol').value;
+    const body = {
+      name: $('enterpriseSSOName').value,
+      provider: $('enterpriseProvider').value,
+      protocol,
+      status: $('enterpriseSSOStatus').value,
+      domains: splitWords($('enterpriseSSODomains').value)
+    };
+    if (protocol === 'oidc') {
+      body.oidc = {
+        issuer: $('enterpriseOIDCIssuer').value,
+        client_id: $('enterpriseOIDCClientId').value,
+        client_secret: $('enterpriseOIDCClientSecret').value
+      };
+    } else {
+      const samlValue = $('enterpriseSAMLCert').value;
+      body.saml = {
+        idp_entity_id: $('enterpriseSAMLEntity').value,
+        idp_sso_url: $('enterpriseSAMLUrl').value
+      };
+      if (samlValue.trim().indexOf('<') === 0) body.saml.idp_metadata_xml = samlValue;
+      else body.saml.idp_certificate = samlValue;
+    }
+    return body;
+  }
+
+  function fillEnterpriseSSO(connectionId) {
+    const rows = (state.enterpriseSummary && state.enterpriseSummary.sso_connections) || [];
+    const row = rows.find(item => item.connection && item.connection.id === connectionId);
+    if (!row) return;
+    const conn = row.connection;
+    const setup = row.setup || {};
+    $('enterpriseSSOId').value = conn.id || '';
+    $('enterpriseSSOName').value = conn.name || '';
+    $('enterpriseProvider').value = conn.provider || setup.provider || 'generic-saml';
+    $('enterpriseSSOProtocol').value = conn.protocol || 'saml';
+    $('enterpriseSSOStatus').value = conn.status || 'inactive';
+    $('enterpriseSSODomains').value = (conn.domains || []).join(', ');
+    $('enterpriseOIDCIssuer').value = conn.oidc && conn.oidc.issuer || '';
+    $('enterpriseOIDCClientId').value = conn.oidc && conn.oidc.client_id || '';
+    $('enterpriseOIDCClientSecret').value = '';
+    $('enterpriseSAMLEntity').value = conn.saml && conn.saml.idp_entity_id || '';
+    $('enterpriseSAMLUrl').value = conn.saml && conn.saml.idp_sso_url || '';
+    $('enterpriseSAMLCert').value = conn.saml && (conn.saml.idp_metadata_xml || conn.saml.idp_certificate) || '';
+    renderEnterpriseHelper(row);
+    renderEnterpriseProviderSteps();
+  }
+
+  function renderEnterpriseHelper(row) {
+    const setup = row && row.setup || {};
+    if (!setup.protocol) {
+      $('enterpriseSSOHelper').innerHTML = '<span class="muted">Create or select a connection to view metadata helpers.</span>';
+      return;
+    }
+    if (setup.protocol === 'saml') {
+      $('enterpriseSSOHelper').innerHTML = '<span class="muted">ACS URL</span><span class="mono">' + escapeHTML(setup.acs_url || '') + '</span>' +
+        '<span class="muted">Entity ID</span><span class="mono">' + escapeHTML(setup.sp_entity_id || '') + '</span>' +
+        '<span class="muted">Metadata URL</span><span class="mono">' + escapeHTML(setup.sp_metadata_url || '') + '</span>';
+    } else {
+      $('enterpriseSSOHelper').innerHTML = '<span class="muted">OIDC redirect URI</span><span class="mono">' + escapeHTML(setup.oidc_redirect_uri || '') + '</span>';
+    }
+  }
+
   async function refreshAccount() {
     if (!state.accountApiKey || !state.accountAccessToken) {
       toast('Set client API key and access token first.', 'error');
@@ -947,8 +1250,8 @@ td.wrap {
         document.querySelectorAll('.nav-btn[data-workspace]').forEach(el => el.classList.toggle('active', el === btn));
         document.querySelectorAll('.workspace').forEach(el => el.classList.remove('active'));
         $(btn.dataset.workspace + 'Workspace').classList.add('active');
-        $('workspaceTitle').textContent = btn.dataset.workspace === 'admin' ? 'Admin Console' : 'Account Portal';
-        $('workspaceSubtitle').textContent = btn.dataset.workspace === 'admin' ? 'Provision clients and operate tenant features.' : 'Manage profile, security, and organizations.';
+        $('workspaceTitle').textContent = btn.dataset.workspace === 'admin' ? 'Admin Console' : btn.dataset.workspace === 'enterprise' ? 'Enterprise Onboarding' : 'Account Portal';
+        $('workspaceSubtitle').textContent = btn.dataset.workspace === 'admin' ? 'Provision clients and operate tenant features.' : btn.dataset.workspace === 'enterprise' ? 'Configure SSO, SCIM, domains, and audit access for one organization.' : 'Manage profile, security, and organizations.';
       }
       if (btn.id === 'saveAdminContext') {
         state.adminBaseUrl = $('adminBaseUrl').value || window.location.origin;
@@ -970,11 +1273,75 @@ td.wrap {
         updateStatus();
         toast('Account context saved.', 'ok');
       }
+      if (btn.dataset.copy) {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        toast('Copied.', 'ok');
+      }
       if (btn.id === 'refreshAdmin' || btn.id === 'reloadClients') await refreshAdmin();
       if (btn.id === 'reloadAudit') await loadAudit();
       if (btn.id === 'exportAuditCSV') await downloadAudit('csv');
       if (btn.id === 'exportAuditJSONL') await downloadAudit('jsonl');
       if (btn.id === 'refreshAccount' || btn.id === 'loadProfile') await refreshAccount();
+      if (btn.id === 'refreshEnterprise') await refreshEnterprise();
+      if (btn.id === 'reloadEnterpriseAudit') await loadEnterpriseAudit();
+      if (btn.id === 'createEnterpriseDomain') {
+        await request(state.accountBaseUrl, enterprisePath('/domains'), {
+          method: 'POST',
+          headers: accountHeaders(),
+          body: JSON.stringify({ domain: $('enterpriseDomain').value })
+        });
+        await loadEnterpriseSummary();
+        toast('Domain verification record created.', 'ok');
+      }
+      if (btn.dataset.verifyDomain) {
+        await request(state.accountBaseUrl, enterprisePath('/domains/' + btn.dataset.verifyDomain + '/verify'), { method: 'POST', headers: accountHeaders(), body: '{}' });
+        await loadEnterpriseSummary();
+        toast('Domain verification checked.', 'ok');
+      }
+      if (btn.id === 'createEnterpriseSSO') {
+        $('enterpriseSSOId').value = '';
+        const created = await request(state.accountBaseUrl, enterprisePath('/sso-connections'), {
+          method: 'POST',
+          headers: accountHeaders(),
+          body: JSON.stringify(enterpriseSSOPayload())
+        });
+        $('enterpriseSSOId').value = created.connection && created.connection.id || '';
+        renderEnterpriseHelper(created);
+        await loadEnterpriseSummary();
+        toast('SSO connection created.', 'ok');
+      }
+      if (btn.id === 'saveEnterpriseSSO') {
+        const id = $('enterpriseSSOId').value.trim();
+        if (!id) throw new Error('Select or create an SSO connection first.');
+        const updated = await request(state.accountBaseUrl, enterprisePath('/sso-connections/' + id), {
+          method: 'PATCH',
+          headers: accountHeaders(),
+          body: JSON.stringify(enterpriseSSOPayload())
+        });
+        renderEnterpriseHelper(updated);
+        await loadEnterpriseSummary();
+        toast('SSO connection saved.', 'ok');
+      }
+      if (btn.dataset.entSsoUse) fillEnterpriseSSO(btn.dataset.entSsoUse);
+      if (btn.dataset.entSsoTest) {
+        const data = await request(state.accountBaseUrl, enterprisePath('/sso-connections/' + btn.dataset.entSsoTest + '/test-sign-in'), { method: 'POST', headers: accountHeaders(), body: '{}' });
+        window.open(data.redirect_url, '_blank', 'noopener');
+      }
+      if (btn.id === 'createEnterpriseSCIM') {
+        const data = await request(state.accountBaseUrl, enterprisePath('/scim-directories'), {
+          method: 'POST',
+          headers: accountHeaders(),
+          body: JSON.stringify({ name: $('enterpriseSCIMName').value, provider: $('enterpriseSCIMProvider').value, domains: splitWords($('enterpriseSCIMDomains').value) })
+        });
+        showSecret('enterpriseSCIMTokenBox', 'SCIM bearer token', data.token || '');
+        await loadEnterpriseSummary();
+        toast('SCIM directory created.', 'ok');
+      }
+      if (btn.dataset.entScimRotate) {
+        const data = await request(state.accountBaseUrl, enterprisePath('/scim-directories/' + btn.dataset.entScimRotate + '/rotate-token'), { method: 'POST', headers: accountHeaders(), body: '{}' });
+        showSecret('enterpriseSCIMTokenBox', 'Replacement SCIM bearer token', data.token || '');
+        await loadEnterpriseSummary();
+      }
       if (btn.id === 'reloadSessions') await loadSessions();
       if (btn.id === 'revokeAllSessions') {
         await request(state.accountBaseUrl, '/api/auth/sessions', { method: 'DELETE', headers: accountHeaders() });
@@ -1079,7 +1446,12 @@ td.wrap {
         await request(state.accountBaseUrl, '/api/auth/organizations', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ name: $('orgName').value, slug: $('orgSlug').value }) });
         await loadOrganizations();
       }
-      if (btn.dataset.orgAction) $('orgActionId').value = btn.dataset.orgAction;
+      if (btn.dataset.orgAction) {
+        $('orgActionId').value = btn.dataset.orgAction;
+        $('enterpriseOrgId').value = btn.dataset.orgAction;
+        state.enterpriseOrgId = btn.dataset.orgAction;
+        localStorage.setItem('portal_enterprise_org_id', state.enterpriseOrgId);
+      }
       if (btn.id === 'sendInvite') {
         const data = await request(state.accountBaseUrl, '/api/auth/organizations/' + $('orgActionId').value + '/invitations', { method: 'POST', headers: accountHeaders(), body: JSON.stringify({ email: $('inviteEmail').value, role: $('inviteRole').value }) });
         showSecret('orgSecretBox', 'Invitation token', data.token || JSON.stringify(data));
@@ -1103,7 +1475,12 @@ td.wrap {
     await Promise.allSettled([loadAudit(), loadServiceAccounts(), loadSSO(), loadSCIM()]);
   });
 
+  $('enterpriseProvider').addEventListener('change', renderEnterpriseProviderSteps);
+  $('enterpriseSSOProtocol').addEventListener('change', renderEnterpriseProviderSteps);
+  $('enterpriseSCIMProvider').addEventListener('change', renderEnterpriseProviderSteps);
+
   setContextInputs();
+  renderEnterpriseHelper(null);
   refreshIcons();
   window.addEventListener('load', loadIconLibrary, { once: true });
 })();

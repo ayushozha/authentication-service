@@ -42,7 +42,7 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()
 
-			redirectURL, err := h.svc.BeginOAuth(ctx, client, provCfg, provName)
+			redirectURL, err := h.svc.BeginOAuth(ctx, client, provCfg, provName, r.URL.Query().Get("session_mode"))
 			if err != nil {
 				if err == domain.ErrRedisRequired {
 					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "oauth requires Redis"})
@@ -84,14 +84,22 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 
-			_, accessToken, refreshToken, err := h.svc.HandleCallback(ctx, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+			_, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
 				http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+err.Error(), http.StatusFound)
 				return
 			}
 
-			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-			http.Redirect(w, r, h.cfg.BaseURL+"/login.html?access_token="+accessToken, http.StatusFound)
+			tokenMode := isTokenSessionMode(r, sessionMode)
+			if !tokenMode {
+				SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+			}
+			resp := &application.AuthResponse{
+				AccessToken: accessToken,
+				TokenType:   "Bearer",
+				ExpiresIn:   int(h.cfg.AccessTTL.Seconds()),
+			}
+			redirectWithAuthCode(w, r, h.cfg, resp, refreshToken, tokenMode)
 		}))
 	}
 }

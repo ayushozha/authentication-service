@@ -5,18 +5,22 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 ## Features
 
 - **Multi-tenancy** -- Register multiple client applications with tenant-scoped users, sessions, refresh tokens, and JWT claims enforcement
-- **Organization RBAC** -- B2B SaaS organizations, owner/admin/member/viewer roles, custom permissions, invitations, member management, and org-scoped access tokens
+- **Organization authorization** -- B2B SaaS organizations with versioned resource/action policies, custom role templates, group-to-role mappings, policy simulator explanations, invitations, member management, and org-scoped access tokens
 - **Machine-to-machine auth** -- OAuth2 client credentials for service accounts with scoped secrets, token introspection, key rotation, and revocation
 - **Enterprise SSO** -- Per-client SAML 2.0 and generic OIDC connections with domain routing, SP metadata, signed SAML response validation, JIT user provisioning, and SSO identity linking
 - **SCIM 2.0 directory sync** -- Inbound enterprise provisioning for users and groups with bearer tokens, deprovisioning, token rotation, and audit events
+- **Hosted auth and account UI** -- Branded, localizable, accessible login/signup/MFA/passkey/magic-link/OAuth/SSO pages plus account, profile, security, org, SSO, SCIM, and audit views
 - **Admin and customer portal** -- Static API-backed console for client operations, audit queries, M2M, SSO, SCIM, profile, MFA, passkeys, and organization workflows
-- **SDKs and embeddable UI** -- Dependency-free browser, React/Next.js, Node.js, Swift, and Android Java starters with token/session helpers and auth/MFA/org workflows
+- **SDKs and embeddable UI** -- Dependency-free browser, React/Next.js, Vue/Svelte, Node.js, Swift, and Android Java starters plus generated TypeScript, Python, Go, Java/Kotlin, C#, PHP, Ruby, and Rust SDK packages
+- **Framework connectors** -- Official middleware adapters for Express, Fastify, NestJS, Next.js, Django, FastAPI, Flask, Spring Boot, ASP.NET Core, Laravel, Rails/Rack, Axum, Actix, Gin, Chi, Echo, and Fiber
+- **CLI and Terraform** -- `cmd/authservice` automates login, token inspection, client/service-account/SSO/SCIM/audit/key workflows; `terraform-provider-authservice` provisions clients, organizations, SSO, SCIM, and service accounts
 - **Native SDK starters** -- Swift Package and Android Gradle/JUnit starters for mobile signup/login/session/profile/organization workflows, secure token-store adapters, and deep-link integration patterns
 - **Email/password authentication** -- Signup and login with bcrypt-hashed passwords (cost 12)
 - **OAuth2 social login** -- Google, GitHub, Microsoft, and Apple identity providers
 - **Magic links** -- Passwordless email-based authentication
 - **Passkeys (WebAuthn/FIDO2)** -- Browser-native passwordless login with hardware/platform authenticators, resident credentials, and conditional UI/autofill support
 - **TOTP two-factor authentication** -- Time-based one-time password support with setup/enable/verify/disable lifecycle and one-time recovery codes
+- **Adaptive security and step-up** -- Per-client and per-org MFA/risk policies can allow, require, adaptively challenge, block, or notify for high-risk logins and sensitive actions
 - **JWT access tokens** -- Per-client token modes (`v1_hs256` legacy and `v2_jwks` RS256), short-lived (15 min default), with optional org and service-account claims
 - **JWKS support** -- Issuer-level JWKS endpoint for RS256 verification with optional client-scoped lookup (`/.well-known/jwks.json`)
 - **Refresh token rotation** -- Single-use refresh tokens stored as SHA-256 hashes with hybrid delivery (HttpOnly cookie or explicit token mode)
@@ -29,7 +33,7 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 - **Queryable audit logging and webhooks** -- Every authentication event is logged with IP, user agent, metadata, filtered admin review/export, and optional signed webhook delivery with retries
 - **REST + gRPC** -- Dual protocol support for flexibility
 - **JWT Validator package** -- Importable Go package (`pkg/jwtvalidator`) for downstream services
-- **Security hardening** -- Client ownership checks across auth flows, password-change/reset session revocation, stricter CORS/origin behavior, and secret scanning hooks
+- **Security hardening** -- Client ownership checks across auth flows, one-time redirect auth codes for browser callbacks, enforced-domain SSO blocking for password flows, password-change/reset session revocation, constant-time admin key checks, stricter CORS/origin behavior, and secret scanning hooks
 
 ## Major Updates (Latest Hardening Pass)
 
@@ -50,7 +54,11 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
 - Hardened OAuth:
   - PKCE + signed/encoded state payload includes `client_id`, `provider`, nonce, verifier.
   - Callback validates cached state and fails safely if state is missing/invalid.
+  - Browser callbacks now redirect with a short-lived `auth_code` exchanged by `/api/auth/redirect/exchange`, so access tokens are not placed in URLs.
   - Apple flow validates `id_token`; GitHub fallback fetches verified primary email.
+- Enforced enterprise SSO domains:
+  - `enforce_for_domains` blocks email/password signup, password login, social OAuth, magic links, password reset emails, and password changes for matching active SSO domains.
+  - SSO enforcement decisions emit audit events for blocked interactive flows.
 - Added JWKS migration foundation:
   - New signing-key persistence (`client_signing_keys`) and per-client `token_mode`.
   - RS256 issuance/validation and JWKS publishing are implemented while preserving HS256 compatibility.
@@ -130,7 +138,9 @@ go run ./cmd/server
 | `DATABASE_URL` | -- | **Yes** | PostgreSQL connection string |
 | `REDIS_URL` | -- | No | Redis connection string (required for OAuth, magic links, passkeys, 2FA, rate limiting) |
 | `REDIS_KEY_PREFIX` | `auth:` | No | Prefix for all Redis keys |
-| `ADMIN_API_KEY` | -- | **Yes** | Master admin API key for client management endpoints |
+| `ADMIN_API_KEY` | -- | **Yes** | Break-glass master admin key; rate-limited and audited, use admin user tokens for daily operations |
+| `ADMIN_TOKEN_SECRET` | `ADMIN_API_KEY` | No | HS256 signing secret for admin user access tokens |
+| `ADMIN_ACCESS_TTL` | `8h` | No | Admin user access-token time-to-live |
 | `BASE_URL` | `http://localhost:8080` | No | Public base URL (used in email links) |
 | `JWT_ACCESS_TTL` | `15m` | No | Access token time-to-live |
 | `JWT_REFRESH_TTL` | `168h` | No | Refresh token time-to-live (default 7 days) |
@@ -147,12 +157,19 @@ go run ./cmd/server
 | `WEBHOOK_SIGNING_SECRET` | -- | No | Enables per-client `webhook_url` audit-event delivery and signs payloads with HMAC-SHA256 |
 | `WEBHOOK_RETRY_ATTEMPTS` | `3` | No | Number of audit webhook delivery attempts (1-10) |
 | `WEBHOOK_TIMEOUT` | `5s` | No | Per-attempt audit webhook HTTP timeout |
+| `AUDIT_RETENTION_DAYS` | `2555` | No | Default audit `retention_until` window for new events |
+| `AUDIT_STREAMS` | -- | No | Comma-separated audit log streams: `datadog`, `splunk`, `elastic`, `s3`, `cloudwatch`, `gcp`, `azure`, `stdout` |
+| `AUDIT_STREAM_TIMEOUT` | `5s` | No | Per-attempt SIEM/log stream timeout |
+| `AUDIT_STREAM_RETRY_ATTEMPTS` | `3` | No | SIEM/log stream retries (1-10) |
 | `CAPTCHA_PROVIDER` | -- | No | Optional bot verifier provider: `turnstile`, `hcaptcha`, or `recaptcha` |
 | `CAPTCHA_SECRET` | -- | No | Secret key for the configured CAPTCHA/bot provider |
 | `CAPTCHA_VERIFY_URL` | provider default | No | Override verification endpoint for custom providers or tests |
 | `CAPTCHA_TIMEOUT` | `5s` | No | Per-attempt CAPTCHA verification timeout |
 | `CAPTCHA_SIGNUP_REQUIRED` | `false` | No | Require `captcha_token` on signup |
 | `CAPTCHA_LOGIN_REQUIRED` | `false` | No | Require `captcha_token` on password login |
+| `RISK_PROVIDER_URL` | -- | No | Optional HTTP risk-signal provider called during login and protected actions |
+| `RISK_PROVIDER_API_KEY` | -- | No | Bearer token sent to the risk provider |
+| `RISK_PROVIDER_TIMEOUT` | `5s` | No | Per-request risk-provider timeout |
 | `RESEND_API_KEY` | -- | No | Resend API key for transactional emails |
 | `EMAIL_FROM` | `Auth Service <noreply@example.com>` | No | Sender address for emails |
 | `GOOGLE_CLIENT_ID` | -- | No | Google OAuth client ID |
@@ -184,6 +201,8 @@ Live docs:
 - SDK starters: `sdks/`
 - Operations runbook: `docs/operations-runbook.md`
 - Passkey QA checklist: `docs/passkey-qa.md`
+- Enterprise provider roadmap: `docs/enterprise-auth-provider-roadmap.md`
+- Enterprise strengthening goals: `docs/enterprise-strengthening-goals.md`
 
 Integration flow for companies/products:
 
@@ -202,9 +221,10 @@ Route access requirements:
 - `X-API-Key` required for app-initiated auth routes under `/api/auth/*` (signup/login/refresh/logout/profile/totp setup+verify, magic-link send, OAuth begin, passkey begin/finish routes, etc.).
 - Public auth routes (no API key): `POST /api/auth/verify-email`, `POST /api/auth/reset-password`, `GET /api/auth/magic-link/verify`, `GET|POST /api/auth/oauth/{provider}/callback`.
 - User-protected routes additionally require `Authorization: Bearer <access_token>`.
-- Admin routes require `X-Admin-Key`.
+- Step-up protected mutations accept `X-Step-Up-Token` or `step_up_token` after `POST /api/auth/step-up/verify`.
+- Admin routes require `Authorization: Bearer <admin_access_token>` from `/api/admin/auth/login` or `/api/admin/auth/sso`; `X-Admin-Key` remains a rate-limited, audited break-glass fallback.
 - Machine-to-machine token routes use service-account `client_id` and `client_secret` via JSON/form body or HTTP Basic auth.
-- Static browser assets such as `/authservice.js`, `/login.html`, `/signup.html`, and `/portal.html` are public shells; protected operations still call the APIs with the admin key, client API key, or access token you provide.
+- Static browser assets such as `/authservice.js`, `/auth-ui.js`, `/login.html`, `/signup.html`, `/account.html`, and `/portal.html` are public shells; protected operations still call the APIs with the admin key, client API key, or access token you provide.
 
 ### Authentication
 
@@ -236,9 +256,27 @@ POST   /api/auth/organizations/{org_id}/invitations         Invite a user by ema
 POST   /api/auth/organizations/{org_id}/invitations/{id}/revoke
 POST   /api/auth/organization-invitations/accept            Accept an invitation token as the invited user
 POST   /api/auth/organizations/{org_id}/token               Mint an org-scoped access token
+GET    /api/auth/organizations/{org_id}/security-policy     Get organization adaptive security policy
+PUT    /api/auth/organizations/{org_id}/security-policy     Replace organization adaptive security policy
+PATCH  /api/auth/organizations/{org_id}/security-policy     Replace organization adaptive security policy
 ```
 
-Built-in roles are `owner`, `admin`, `member`, and `viewer`. Permissions are `org:read`, `org:write`, `members:read`, `members:write`, `invitations:read`, and `invitations:write`.
+Built-in roles are `owner`, `admin`, `member`, and `viewer`. Built-in permissions are `org:read`, `org:write`, `members:read`, `members:write`, `invitations:read`, and `invitations:write`. Custom lower-case role keys and namespaced permission keys such as `billing:manage` are supported for application-specific authorization.
+
+### OIDC Provider
+
+```
+GET  /.well-known/openid-configuration      OIDC discovery
+GET  /.well-known/jwks.json                 RS256 signing keys
+GET  /authorize                             Authorization code + PKCE endpoint
+POST /token                                 authorization_code, refresh_token, and client_credentials grants
+GET  /userinfo                              OIDC userinfo endpoint
+POST /revoke                                Refresh/access token revocation
+POST /introspect                            Token introspection
+GET  /logout                                RP-initiated logout
+```
+
+Configure OIDC apps through `client.settings`: `oidc_redirect_uris`, `oidc_post_logout_redirect_uris`, `oidc_allowed_scopes`, `oidc_audiences`, `oidc_trusted`, `oidc_require_consent`, `oidc_require_pkce`, and `oidc_public_client`. Public browser/mobile clients use PKCE with `client_id=<client UUID>`; confidential clients may authenticate to `/token`, `/revoke`, and `/introspect` with the raw client API key or JWT secret as `client_secret`.
 
 ### Machine-to-Machine Auth
 
@@ -305,13 +343,21 @@ SCIM endpoints use `Authorization: Bearer <directory_token>`. User `active=false
 ### Admin and Customer Portal
 
 ```
+GET /login.html                     Hosted sign-in with password, passkeys, magic links, OAuth, SSO discovery, and MFA challenges
+GET /signup.html                    Hosted signup with password/social entry and post-signup passkey enrollment
+GET /account.html                   Hosted account, MFA, passkeys, recovery codes, sessions, orgs, SSO/SCIM setup, and audit views
 GET /portal.html                    API-backed operations console and account portal
 GET /authservice.js                 Browser SDK and embeddable UI helpers
+GET /auth-ui.js                     Shared hosted auth/account UI runtime
+GET /auth-ui.css                    Shared hosted auth/account UI styles
+GET /api/auth/ui/config             Tenant UI config for brand, theme, locale, providers, and hosted paths
 ```
 
-The portal is a static browser shell for day-to-day administration and customer self-service. Admin operators can create clients, rotate API/JWT secrets, inspect audit events, provision service accounts, manage enterprise SSO connections, and manage SCIM directories. Authenticated users can load and update their profile, change passwords, configure TOTP/recovery codes, register/delete passkeys, create organizations, send invitations, accept invitations, and mint org-scoped tokens.
+The hosted auth pages are static shells backed by the same APIs as the SDK. They support custom domains through normal static hosting/reverse proxying, tenant brand settings from `client.settings.auth_ui`, locale selection with `locale=`, accessible labels/focus states, and redirect allow-listing against the client allowed origins.
 
-The SDKs expose helpers for signup, login, refresh, logout, `/me`, profile updates, session listing/revocation, TOTP, recovery codes, passkeys, organizations, magic links, OAuth/SSO redirects, M2M token exchange, and embeddable sign-in/user widgets. Browser usage starts with `AuthService.createClient({ baseUrl, apiKey, sessionMode: "token" })`; React/Next.js, Node.js, iOS, and Android starters live under `sdks/`.
+The portal remains a static browser shell for day-to-day administration and customer self-service. Admin operators can create clients, rotate API/JWT secrets, inspect audit events, provision service accounts, manage enterprise SSO connections, and manage SCIM directories. Authenticated users can load and update their profile, change passwords, configure TOTP/recovery codes, register/delete passkeys, create organizations, send invitations, accept invitations, and mint org-scoped tokens.
+
+The SDKs expose helpers for signup, login, refresh, logout, `/me`, profile updates, session listing/revocation, TOTP, recovery codes, passkeys, organizations, magic links, OAuth/SSO redirects, M2M token exchange, admin SSO/SCIM/audit workflows, and embeddable sign-in/signup/profile/org/enterprise widgets. Browser usage starts with `AuthService.createClient({ baseUrl, apiKey, sessionMode: "token" })`; React, Vue, Svelte, Next.js, Node.js, iOS, and Android starters live under `sdks/`.
 
 ```html
 <div id="signin"></div>
@@ -329,7 +375,36 @@ The SDKs expose helpers for signup, login, refresh, logout, `/me`, profile updat
       auth.mountUserButton("#user").refresh();
     }
   });
+
+  auth.mountUserProfile("#profile");
+  auth.mountOrganizationSwitcher("#orgs");
+  auth.mountOrganizationManagement("#members");
+  auth.mountEnterpriseSetup("#enterprise", {
+    clientID: "client_uuid",
+    adminKey: "admin-key"
+  });
+  auth.mountAuditLog("#audit", {
+    clientID: "client_uuid",
+    adminKey: "admin-key"
+  });
 </script>
+```
+
+Tenant branding can be stored on a client with `PATCH /api/admin/clients/{id}`:
+
+```json
+{
+  "settings": {
+    "auth_ui": {
+      "brand_name": "Acme",
+      "logo_url": "https://app.example.com/logo.png",
+      "primary_color": "#0f766e",
+      "locale": "en",
+      "oauth_providers": ["google", "github", "microsoft"],
+      "redirect_url": "https://app.example.com/dashboard"
+    }
+  }
+}
 ```
 
 ### Email Verification and Password Reset
@@ -350,7 +425,7 @@ POST /api/auth/magic-link/send     Send a magic link to an email address
 GET  /api/auth/magic-link/verify   Verify magic link token and authenticate
 ```
 
-`magic-link/verify` accepts `token` as a query parameter and supports browser redirect or JSON response.
+`magic-link/verify` accepts `token` as a query parameter and supports browser redirect or JSON response. Browser redirects use a short-lived `auth_code`; exchange it with `POST /api/auth/redirect/exchange` instead of reading tokens from the URL.
 
 ### TOTP Two-Factor Authentication
 
@@ -365,6 +440,53 @@ POST /api/auth/recovery-codes/verify Complete 2FA login with a recovery code
 ```
 
 Recovery codes are shown once, stored only as hashes, and consumed after a successful recovery-code login.
+
+### Adaptive Security and Step-Up
+
+```
+POST   /api/auth/step-up/verify       Verify a step-up challenge and receive a short-lived step_up_token
+POST   /api/admin/step-up/verify      Verify an admin step-up challenge for protected admin mutations
+GET    /api/auth/devices              List remembered devices for the current user
+PATCH  /api/auth/devices/{id}         Trust, untrust, or rename a remembered device
+DELETE /api/auth/devices/{id}         Remove a remembered device
+GET    /api/admin/clients/{id}/security-policy  Get client adaptive security policy
+PUT    /api/admin/clients/{id}/security-policy  Replace client adaptive security policy
+PATCH  /api/admin/clients/{id}/security-policy  Replace client adaptive security policy
+```
+
+Client policy lives in `client.settings.adaptive_security`; organization policy lives in organization metadata as `adaptive_security_policy` and overrides the client baseline for org actions. Policies can set MFA mode (`off`, `allow`, `required`, `adaptive`), risk challenge/block levels, trusted-device lifetime, IP/ASN lists, and per-action behavior (`off`, `notify`, `challenge`, `block`).
+
+Sensitive actions are protected centrally: organization updates, member role/removal changes, org token issuance, client key rotation, service-account key rotation, SCIM token rotation, audit export, billing changes, and data export. When a protected endpoint returns `step_up_required`, call `/api/auth/step-up/verify` with the `challenge_token`, `factor` (`totp` or `recovery_code`), and code, then retry the original request with `X-Step-Up-Token`.
+
+Risk signals are built from local history and optional provider data: new IP, new device, impossible travel, configured blocked/trusted/Tor CIDRs, ASN/VPN/Tor/proxy/bot flags, failed-login velocity, suspicious refresh-token reuse, and provider-supplied signals. High and critical security events are written to audit logs and therefore feed dashboards, exports, webhooks, and stream sinks.
+
+Example client policy:
+
+```json
+{
+  "mfa": {
+    "mode": "adaptive",
+    "challenge_risk_level": "medium",
+    "block_risk_level": "critical",
+    "remember_device_days": 30,
+    "trusted_device_bypass": true,
+    "enrollment_required": true
+  },
+  "risk": {
+    "challenge_level": "medium",
+    "block_level": "critical",
+    "failed_velocity_threshold": 3,
+    "blocked_ip_cidrs": ["203.0.113.10/32"],
+    "tor_ip_cidrs": ["198.51.100.0/24"],
+    "high_risk_asns": [64512]
+  },
+  "actions": {
+    "client.key.rotate": { "mode": "block", "risk_block_level": "high" },
+    "organization.member.role_change": { "mode": "challenge", "max_age_seconds": 600 },
+    "audit.export": { "mode": "challenge", "risk_challenge_level": "medium" }
+  }
+}
+```
 
 ### OAuth2 Social Login
 
@@ -397,6 +519,10 @@ Client settings can request direct or enterprise attestation during registration
 ### Admin (Client Management)
 
 ```
+POST /api/admin/auth/login                   Admin password login; returns MFA challenge or admin token
+POST /api/admin/auth/sso                     Admin SSO assertion handoff; returns admin token
+GET  /api/admin/users                        List admin users
+POST /api/admin/users                        Create admin user with roles, scope, MFA, and optional SSO identity
 POST /api/admin/clients                       Create a new client (tenant)
 GET  /api/admin/clients                       List all clients
 GET  /api/admin/clients/{id}                  Get client by ID
@@ -405,20 +531,32 @@ POST /api/admin/clients/{id}/rotate-secret    Rotate client JWT secret
 POST /api/admin/clients/{id}/rotate-api-key   Rotate client API key
 POST /api/admin/clients/{id}/rotate-jwt       Alias for rotate-secret
 POST /api/admin/clients/{id}/rotate-key       Alias for rotate-api-key
+GET  /api/admin/clients/{id}/security-policy  Get client adaptive security policy
+PUT  /api/admin/clients/{id}/security-policy  Replace client adaptive security policy
+PATCH /api/admin/clients/{id}/security-policy Replace client adaptive security policy
 GET  /api/admin/audit-events                  Query audit events
 GET  /api/admin/audit-events/export           Export audit events as CSV or NDJSON
+POST /api/admin/audit-events/legal-hold       Enable or disable legal hold for event IDs
+POST /api/admin/audit-events/retention/purge  Dry-run or execute expired audit purge
+GET  /api/admin/audit-events/chain/verify     Verify tamper-evident audit chain
 ```
 
-`GET /api/admin/audit-events` and `/export` support `client_id`, `user_id`, `event_type`, and `limit` query parameters. The limit defaults to 50 and is capped at 500. Export supports `format=csv` (default), `format=jsonl`, or `format=ndjson`.
+Admin roles are `owner`, `security_admin`, `support_admin`, `billing_admin`, and `read_only_auditor`. Scopes can be `all`, one `client`, or one `organization`; scoped admins cannot access other clients. Every admin route records actor, target, before/after metadata, request ID, IP, and user agent.
+
+`GET /api/admin/audit-events` and `/export` support `client_id`, `user_id`, `event_type`, `actor_type`, `actor_id`, `target_type`, `target_id`, `request_id`, `from`, `to`, `legal_hold`, and `limit` query parameters. The limit defaults to 50 and is capped at 10000. Export supports `format=csv` (default), `format=jsonl`, or `format=ndjson`. Exports include retention, legal hold, and hash-chain fields.
 
 When `WEBHOOK_SIGNING_SECRET` is set, audit events are also delivered to the client's `webhook_url` as JSON with retries. Each delivery includes `X-AuthService-Event: audit.event`, `X-AuthService-Delivery`, `X-AuthService-Timestamp`, and `X-AuthService-Signature`. Verify the signature by computing `HMAC-SHA256(secret, timestamp + "." + raw_body)` and comparing it to the `v1=<hex>` header value.
 
 ### Health
 
 ```
-GET /healthz    Health check (returns {"status": "ok"})
+GET /healthz                  Health check (returns {"status": "ok"})
+GET /metrics                  Prometheus metrics
+GET /api/admin/metrics        Prometheus metrics with admin auth
 GET /.well-known/jwks.json    Public issuer JWKS (`X-API-Key` or `client_id` optionally narrows to one client)
 ```
+
+Operational runbooks: `docs/operations-runbook.md`, `docs/multi-region-deployment.md`, and `docs/compliance-readiness.md`.
 
 Hybrid session mode:
 

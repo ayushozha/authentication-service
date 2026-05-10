@@ -20,12 +20,16 @@ func NewRouter(
 	totpSvc *application.TOTPService,
 	oauthSvc *application.OAuthService,
 	passkeySvc *application.PasskeyService,
+	adminSvc *application.AdminService,
 	clientSvc *application.ClientService,
 	auditSvc *application.AuditService,
 	orgSvc *application.OrganizationService,
+	adaptiveSvc *application.AdaptiveSecurityService,
 	m2mSvc *application.M2MService,
 	ssoSvc *application.EnterpriseSSOService,
 	scimSvc *application.SCIMService,
+	enterpriseOnboardingSvc *application.EnterpriseOnboardingService,
+	oidcSvc *application.OIDCService,
 	oauthProviders map[string]*application.OAuthProviderConfig,
 	cfg *HandlerConfig,
 	adminAPIKey string,
@@ -37,7 +41,7 @@ func NewRouter(
 	// API key middleware for auth endpoints
 	apiKeyMw := RequireAPIKey(clientSvc)
 	authMw := RequireUserAuth(clientSvc)
-	adminMw := RequireAdminKey(adminAPIKey)
+	adminMw := RequireAdminAuth(adminSvc, adminAPIKey)
 
 	// API key protected auth routes.
 	authMux := http.NewServeMux()
@@ -45,6 +49,8 @@ func NewRouter(
 	// Register routes that require API key (and optional bearer user auth).
 	authHandler := NewAuthHandler(authSvc, cfg)
 	authHandler.RegisterRoutes(authMux, authMw)
+	uiConfigHandler := NewUIConfigHandler(cfg)
+	uiConfigHandler.RegisterRoutes(authMux)
 
 	verifyHandler := NewVerifyHandler(verifySvc, resetSvc, cfg)
 	verifyHandler.RegisterAPIKeyRoutes(authMux)
@@ -55,6 +61,9 @@ func NewRouter(
 
 	totpHandler := NewTOTPHandler(totpSvc, cfg)
 	totpHandler.RegisterRoutes(authMux, authMw)
+
+	adaptiveHandler := NewAdaptiveSecurityHandler(adaptiveSvc, cfg)
+	adaptiveHandler.RegisterRoutes(authMux, authMw)
 
 	if oauthSvc != nil && oauthProviders != nil {
 		oauthHandler := NewOAuthHandler(oauthSvc, oauthProviders, cfg)
@@ -67,11 +76,17 @@ func NewRouter(
 		passkeyHandler.RegisterRoutes(authMux, authMw)
 	}
 	if orgSvc != nil {
-		orgHandler := NewOrganizationHandler(orgSvc, cfg)
+		orgHandler := NewOrganizationHandler(orgSvc, adaptiveSvc, cfg)
 		orgHandler.RegisterRoutes(authMux, authMw)
 	}
-	m2mHandler := NewM2MHandler(m2mSvc, cfg)
+	if enterpriseOnboardingSvc != nil {
+		enterpriseOnboardingHandler := NewEnterpriseOnboardingHandler(enterpriseOnboardingSvc, cfg)
+		enterpriseOnboardingHandler.RegisterRoutes(authMux, authMw)
+	}
+	m2mHandler := NewM2MHandler(m2mSvc, adaptiveSvc, cfg)
 	m2mHandler.RegisterOAuthRoutes(mux)
+	oidcHandler := NewOIDCHandler(oidcSvc, authSvc, m2mSvc, cfg)
+	oidcHandler.RegisterRoutes(mux)
 	ssoHandler := NewEnterpriseSSOHandler(ssoSvc, cfg)
 	if ssoSvc != nil {
 		ssoHandler.RegisterAuthRoutes(authMux, mux)
@@ -84,15 +99,20 @@ func NewRouter(
 	// Public auth routes (no API key required).
 	verifyHandler.RegisterPublicRoutes(mux)
 	magicHandler.RegisterVerifyPublicRoute(mux)
+	RegisterRedirectCodeRoute(mux, cfg)
+	adminHandler := NewAdminHandler(adminSvc, cfg)
+	adminHandler.RegisterAuthRoutes(mux)
 
 	// Mount auth routes under API key middleware
 	mux.Handle("/api/auth/", apiKeyMw(authMux))
 
 	// Admin routes (protected by admin key)
-	clientHandler := NewClientHandler(clientSvc, m2mHandler, ssoHandler, scimHandler)
+	adaptiveHandler.RegisterAdminRoutes(mux, adminMw)
+	clientHandler := NewClientHandler(clientSvc, adaptiveSvc, m2mHandler, ssoHandler, scimHandler)
 	clientHandler.RegisterRoutes(mux, adminMw)
+	adminHandler.RegisterUserRoutes(mux, adminMw)
 	if auditSvc != nil {
-		auditHandler := NewAuditHandler(auditSvc)
+		auditHandler := NewAuditHandler(auditSvc, adaptiveSvc)
 		auditHandler.RegisterRoutes(mux, adminMw)
 	}
 
@@ -105,9 +125,24 @@ func NewRouter(
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		application.Metrics().WritePrometheus(w)
+	})
+	mux.Handle("/api/admin/metrics", adminMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		application.Metrics().WritePrometheus(w)
+	})))
 
 	// JWKS endpoint for RS256 token validation.
 	mux.HandleFunc("/.well-known/jwks.json", CORSHandler(cfg.AllowOrigin, MethodCheck(http.MethodGet, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=300, stale-while-revalidate=60")
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 

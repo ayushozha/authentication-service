@@ -18,10 +18,15 @@ type MagicLinkService struct {
 	mailer   EmailSender
 	audit    AuditRepository
 	rl       RateLimiter
+	sso      EnterpriseSSORepository
 }
 
 func NewMagicLinkService(clients ClientRepository, users UserRepository, sessions SessionRepository, cache CacheClient, mailer EmailSender, audit AuditRepository, rl RateLimiter) *MagicLinkService {
 	return &MagicLinkService{clients: clients, users: users, sessions: sessions, cache: cache, mailer: mailer, audit: audit, rl: rl}
+}
+
+func (s *MagicLinkService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
+	s.sso = repo
 }
 
 type magicLinkState struct {
@@ -48,6 +53,14 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 	}
 
 	if user != nil {
+		if connection, enforced, err := enforcedSSOConnectionForEmail(ctx, s.sso, client.ID, emailKey); err != nil {
+			log.Printf("magic link sso enforcement lookup error: %v", err)
+			return nil
+		} else if enforced {
+			uid := user.ID
+			s.audit.Log(ctx, client.ID, &uid, "magic_link_blocked", ip, ua, map[string]interface{}{"reason": "sso_required", "connection_id": connection.ID})
+			return nil
+		}
 		token, err := GenerateToken(32)
 		if err != nil {
 			log.Printf("generate magic token error: %v", err)

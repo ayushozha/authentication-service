@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
 	"github.com/lib/pq"
@@ -18,17 +19,21 @@ func NewSCIMRepo(db *sql.DB) *SCIMRepo {
 
 func (r *SCIMRepo) CreateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO scim_directories (id, client_id, name, status, token_hash, token_prefix, domains, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		directory.ID, directory.ClientID, directory.Name, directory.Status, directory.TokenHash,
-		directory.TokenPrefix, pq.Array(directory.Domains), directory.CreatedAt, directory.UpdatedAt,
+		INSERT INTO scim_directories
+			(id, client_id, organization_id, name, provider, status, token_hash, token_prefix, domains,
+			 last_sync_at, last_error_at, last_error, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		directory.ID, directory.ClientID, nullString(directory.OrganizationID), directory.Name, directory.Provider, directory.Status,
+		directory.TokenHash, directory.TokenPrefix, pq.Array(directory.Domains), directory.LastSyncAt, directory.LastErrorAt,
+		directory.LastError, directory.CreatedAt, directory.UpdatedAt,
 	)
 	return err
 }
 
 func (r *SCIMRepo) ListDirectories(ctx context.Context, clientID string) ([]*domain.SCIMDirectory, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, client_id, name, status, token_hash, token_prefix, domains, created_at, updated_at
+		SELECT id, client_id, organization_id, name, provider, status, token_hash, token_prefix, domains,
+		       last_sync_at, last_error_at, last_error, created_at, updated_at
 		FROM scim_directories
 		WHERE client_id = $1
 		ORDER BY created_at DESC`, clientID)
@@ -47,23 +52,48 @@ func (r *SCIMRepo) ListDirectories(ctx context.Context, clientID string) ([]*dom
 	return out, rows.Err()
 }
 
+func (r *SCIMRepo) ListDirectoriesForOrganization(ctx context.Context, clientID, organizationID string) ([]*domain.SCIMDirectory, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, client_id, organization_id, name, provider, status, token_hash, token_prefix, domains,
+		       last_sync_at, last_error_at, last_error, created_at, updated_at
+		FROM scim_directories
+		WHERE client_id = $1 AND organization_id = $2
+		ORDER BY created_at DESC`, clientID, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.SCIMDirectory
+	for rows.Next() {
+		directory, err := scanSCIMDirectory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, directory)
+	}
+	return out, rows.Err()
+}
+
 func (r *SCIMRepo) GetDirectory(ctx context.Context, clientID, directoryID string) (*domain.SCIMDirectory, error) {
 	return scanSCIMDirectory(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, status, token_hash, token_prefix, domains, created_at, updated_at
+		SELECT id, client_id, organization_id, name, provider, status, token_hash, token_prefix, domains,
+		       last_sync_at, last_error_at, last_error, created_at, updated_at
 		FROM scim_directories
 		WHERE client_id = $1 AND id = $2`, clientID, directoryID))
 }
 
 func (r *SCIMRepo) GetDirectoryByID(ctx context.Context, directoryID string) (*domain.SCIMDirectory, error) {
 	return scanSCIMDirectory(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, status, token_hash, token_prefix, domains, created_at, updated_at
+		SELECT id, client_id, organization_id, name, provider, status, token_hash, token_prefix, domains,
+		       last_sync_at, last_error_at, last_error, created_at, updated_at
 		FROM scim_directories
 		WHERE id = $1`, directoryID))
 }
 
 func (r *SCIMRepo) GetDirectoryByTokenHash(ctx context.Context, tokenHash string) (*domain.SCIMDirectory, error) {
 	return scanSCIMDirectory(r.db.QueryRowContext(ctx, `
-		SELECT id, client_id, name, status, token_hash, token_prefix, domains, created_at, updated_at
+		SELECT id, client_id, organization_id, name, provider, status, token_hash, token_prefix, domains,
+		       last_sync_at, last_error_at, last_error, created_at, updated_at
 		FROM scim_directories
 		WHERE token_hash = $1`, tokenHash))
 }
@@ -71,11 +101,29 @@ func (r *SCIMRepo) GetDirectoryByTokenHash(ctx context.Context, tokenHash string
 func (r *SCIMRepo) UpdateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE scim_directories
-		SET name = $3, status = $4, token_hash = $5, token_prefix = $6, domains = $7, updated_at = $8
+		SET organization_id = $3, name = $4, provider = $5, status = $6, token_hash = $7, token_prefix = $8,
+		    domains = $9, last_sync_at = $10, last_error_at = $11, last_error = $12, updated_at = $13
 		WHERE client_id = $1 AND id = $2`,
-		directory.ClientID, directory.ID, directory.Name, directory.Status, directory.TokenHash,
-		directory.TokenPrefix, pq.Array(directory.Domains), directory.UpdatedAt,
+		directory.ClientID, directory.ID, nullString(directory.OrganizationID), directory.Name, directory.Provider,
+		directory.Status, directory.TokenHash, directory.TokenPrefix, pq.Array(directory.Domains), directory.LastSyncAt,
+		directory.LastErrorAt, directory.LastError, directory.UpdatedAt,
 	)
+	return err
+}
+
+func (r *SCIMRepo) MarkDirectorySync(ctx context.Context, clientID, directoryID string, at time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scim_directories
+		SET last_sync_at = $3, last_error_at = NULL, last_error = '', updated_at = NOW()
+		WHERE client_id = $1 AND id = $2`, clientID, directoryID, at)
+	return err
+}
+
+func (r *SCIMRepo) MarkDirectoryError(ctx context.Context, clientID, directoryID, message string, at time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE scim_directories
+		SET last_error_at = $3, last_error = $4, updated_at = NOW()
+		WHERE client_id = $1 AND id = $2`, clientID, directoryID, at, message)
 	return err
 }
 
@@ -205,8 +253,10 @@ func (r *SCIMRepo) DeleteGroup(ctx context.Context, clientID, directoryID, scimG
 func scanSCIMDirectory(row enterpriseSSOScanner) (*domain.SCIMDirectory, error) {
 	var directory domain.SCIMDirectory
 	var domains []string
-	err := row.Scan(&directory.ID, &directory.ClientID, &directory.Name, &directory.Status, &directory.TokenHash,
-		&directory.TokenPrefix, pq.Array(&domains), &directory.CreatedAt, &directory.UpdatedAt)
+	var organizationID, provider sql.NullString
+	var lastSyncAt, lastErrorAt sql.NullTime
+	err := row.Scan(&directory.ID, &directory.ClientID, &organizationID, &directory.Name, &provider, &directory.Status, &directory.TokenHash,
+		&directory.TokenPrefix, pq.Array(&domains), &lastSyncAt, &lastErrorAt, &directory.LastError, &directory.CreatedAt, &directory.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, domain.ErrNotFound
 	}
@@ -214,6 +264,18 @@ func scanSCIMDirectory(row enterpriseSSOScanner) (*domain.SCIMDirectory, error) 
 		return nil, err
 	}
 	directory.Domains = domains
+	if organizationID.Valid {
+		directory.OrganizationID = organizationID.String
+	}
+	if provider.Valid {
+		directory.Provider = provider.String
+	}
+	if lastSyncAt.Valid {
+		directory.LastSyncAt = &lastSyncAt.Time
+	}
+	if lastErrorAt.Valid {
+		directory.LastErrorAt = &lastErrorAt.Time
+	}
 	return &directory, nil
 }
 

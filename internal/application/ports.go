@@ -97,6 +97,13 @@ type OrganizationRepository interface {
 	GetInvitationByTokenHash(ctx context.Context, tokenHash string) (*domain.OrganizationInvitation, error)
 	MarkInvitationAccepted(ctx context.Context, invitationID, userID string) error
 	RevokeInvitation(ctx context.Context, clientID, organizationID, invitationID string) error
+	GetAuthorizationPolicy(ctx context.Context, clientID, organizationID string) (*domain.OrganizationAuthorizationPolicy, error)
+	UpsertAuthorizationPolicy(ctx context.Context, policy *domain.OrganizationAuthorizationPolicy) error
+	ListGroupMappings(ctx context.Context, clientID, organizationID string) ([]*domain.OrganizationGroupMapping, error)
+	GetGroupMapping(ctx context.Context, clientID, organizationID, mappingID string) (*domain.OrganizationGroupMapping, error)
+	UpsertGroupMapping(ctx context.Context, mapping *domain.OrganizationGroupMapping) error
+	DeleteGroupMapping(ctx context.Context, clientID, organizationID, mappingID string) error
+	ListGroupMappingsForSource(ctx context.Context, clientID, source, sourceID string, groups []string) ([]*domain.OrganizationGroupMapping, error)
 }
 
 type ServiceAccountRepository interface {
@@ -116,12 +123,15 @@ type ServiceAccountRepository interface {
 type EnterpriseSSORepository interface {
 	CreateConnection(ctx context.Context, connection *domain.EnterpriseSSOConnection) error
 	ListConnections(ctx context.Context, clientID string) ([]*domain.EnterpriseSSOConnection, error)
+	ListConnectionsForOrganization(ctx context.Context, clientID, organizationID string) ([]*domain.EnterpriseSSOConnection, error)
 	GetConnection(ctx context.Context, clientID, connectionID string) (*domain.EnterpriseSSOConnection, error)
 	GetConnectionByID(ctx context.Context, connectionID string) (*domain.EnterpriseSSOConnection, error)
 	GetConnectionBySlug(ctx context.Context, clientID, slug string) (*domain.EnterpriseSSOConnection, error)
 	GetActiveConnectionByDomain(ctx context.Context, clientID, domain string) (*domain.EnterpriseSSOConnection, error)
 	UpdateConnection(ctx context.Context, connection *domain.EnterpriseSSOConnection) error
 	DeactivateConnection(ctx context.Context, clientID, connectionID string) error
+	MarkConnectionLogin(ctx context.Context, clientID, connectionID string, at time.Time) error
+	MarkConnectionError(ctx context.Context, clientID, connectionID, message string, at time.Time) error
 	FindIdentity(ctx context.Context, clientID, connectionID, externalID string) (*domain.EnterpriseSSOIdentity, error)
 	UpsertIdentity(ctx context.Context, identity *domain.EnterpriseSSOIdentity) error
 }
@@ -129,10 +139,13 @@ type EnterpriseSSORepository interface {
 type SCIMRepository interface {
 	CreateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error
 	ListDirectories(ctx context.Context, clientID string) ([]*domain.SCIMDirectory, error)
+	ListDirectoriesForOrganization(ctx context.Context, clientID, organizationID string) ([]*domain.SCIMDirectory, error)
 	GetDirectory(ctx context.Context, clientID, directoryID string) (*domain.SCIMDirectory, error)
 	GetDirectoryByID(ctx context.Context, directoryID string) (*domain.SCIMDirectory, error)
 	GetDirectoryByTokenHash(ctx context.Context, tokenHash string) (*domain.SCIMDirectory, error)
 	UpdateDirectory(ctx context.Context, directory *domain.SCIMDirectory) error
+	MarkDirectorySync(ctx context.Context, clientID, directoryID string, at time.Time) error
+	MarkDirectoryError(ctx context.Context, clientID, directoryID, message string, at time.Time) error
 	UpsertUser(ctx context.Context, user *domain.SCIMUser) error
 	ListUsers(ctx context.Context, clientID, directoryID string) ([]*domain.SCIMUser, error)
 	GetUser(ctx context.Context, clientID, directoryID, scimUserID string) (*domain.SCIMUser, error)
@@ -143,6 +156,14 @@ type SCIMRepository interface {
 	GetGroup(ctx context.Context, clientID, directoryID, scimGroupID string) (*domain.SCIMGroup, error)
 	GetGroupByExternalID(ctx context.Context, clientID, directoryID, externalID string) (*domain.SCIMGroup, error)
 	DeleteGroup(ctx context.Context, clientID, directoryID, scimGroupID string) error
+}
+
+type EnterpriseDomainVerificationRepository interface {
+	CreateDomainVerification(ctx context.Context, verification *domain.EnterpriseDomainVerification) error
+	ListDomainVerifications(ctx context.Context, clientID, organizationID string) ([]*domain.EnterpriseDomainVerification, error)
+	GetDomainVerification(ctx context.Context, clientID, organizationID, verificationID string) (*domain.EnterpriseDomainVerification, error)
+	GetDomainVerificationByDomain(ctx context.Context, clientID, organizationID, domain string) (*domain.EnterpriseDomainVerification, error)
+	UpdateDomainVerification(ctx context.Context, verification *domain.EnterpriseDomainVerification) error
 }
 
 type CacheClient interface {

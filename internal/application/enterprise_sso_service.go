@@ -33,15 +33,22 @@ type EnterpriseSSOService struct {
 	sessions SessionRepository
 	cache    CacheClient
 	audit    AuditRepository
+	orgs     OrganizationRepository
 }
 
-func NewEnterpriseSSOService(sso EnterpriseSSORepository, users UserRepository, clients ClientRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository) *EnterpriseSSOService {
-	return &EnterpriseSSOService{sso: sso, users: users, clients: clients, sessions: sessions, cache: cache, audit: audit}
+func NewEnterpriseSSOService(sso EnterpriseSSORepository, users UserRepository, clients ClientRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, orgs ...OrganizationRepository) *EnterpriseSSOService {
+	var orgRepo OrganizationRepository
+	if len(orgs) > 0 {
+		orgRepo = orgs[0]
+	}
+	return &EnterpriseSSOService{sso: sso, users: users, clients: clients, sessions: sessions, cache: cache, audit: audit, orgs: orgRepo}
 }
 
 type CreateEnterpriseSSOConnectionRequest struct {
 	Name              string                         `json:"name"`
 	Slug              string                         `json:"slug"`
+	OrganizationID    string                         `json:"organization_id,omitempty"`
+	Provider          string                         `json:"provider,omitempty"`
 	Protocol          string                         `json:"protocol"`
 	Status            string                         `json:"status"`
 	Domains           []string                       `json:"domains"`
@@ -54,6 +61,7 @@ type CreateEnterpriseSSOConnectionRequest struct {
 type UpdateEnterpriseSSOConnectionRequest struct {
 	Name              *string                         `json:"name,omitempty"`
 	Slug              *string                         `json:"slug,omitempty"`
+	Provider          *string                         `json:"provider,omitempty"`
 	Status            *string                         `json:"status,omitempty"`
 	Domains           []string                        `json:"domains,omitempty"`
 	EnforceForDomains *bool                           `json:"enforce_for_domains,omitempty"`
@@ -86,6 +94,7 @@ type enterpriseSSOProfile struct {
 	EmailVerified bool
 	DisplayName   string
 	AvatarURL     string
+	Groups        []string
 	RawProfile    []byte
 }
 
@@ -114,8 +123,10 @@ func (s *EnterpriseSSOService) CreateConnection(ctx context.Context, clientID st
 	connection := &domain.EnterpriseSSOConnection{
 		ID:                uuid.NewString(),
 		ClientID:          clientID,
+		OrganizationID:    strings.TrimSpace(req.OrganizationID),
 		Name:              name,
 		Slug:              slug,
+		Provider:          domain.NormalizeEnterpriseProvider(req.Provider, protocol),
 		Protocol:          protocol,
 		Status:            status,
 		Domains:           domain.NormalizeSSODomains(req.Domains),
@@ -127,17 +138,21 @@ func (s *EnterpriseSSOService) CreateConnection(ctx context.Context, clientID st
 
 	switch protocol {
 	case domain.SSOProtocolOIDC:
-		oidcConfig, err := normalizeOIDCConfig(req.OIDC)
+		oidcConfig, err := normalizeOIDCConfig(req.OIDC, status == domain.SSOConnectionStatusActive)
 		if err != nil {
 			return nil, err
 		}
 		connection.OIDC = oidcConfig
 	case domain.SSOProtocolSAML:
-		samlConfig, err := normalizeSAMLConfig(req.SAML, baseURL, connection.ID)
+		samlConfig, err := normalizeSAMLConfig(req.SAML, baseURL, connection.ID, status == domain.SSOConnectionStatusActive)
 		if err != nil {
 			return nil, err
 		}
 		connection.SAML = samlConfig
+		if strings.TrimSpace(req.SAML.IDPMetadataXML) != "" {
+			refreshedAt := now
+			connection.MetadataRefreshedAt = &refreshedAt
+		}
 	}
 
 	if err := s.sso.CreateConnection(ctx, connection); err != nil {
@@ -176,6 +191,9 @@ func (s *EnterpriseSSOService) UpdateConnection(ctx context.Context, clientID, c
 		}
 		connection.Slug = slug
 	}
+	if req.Provider != nil {
+		connection.Provider = domain.NormalizeEnterpriseProvider(*req.Provider, connection.Protocol)
+	}
 	if req.Status != nil {
 		status := strings.ToLower(strings.TrimSpace(*req.Status))
 		if status != domain.SSOConnectionStatusActive && status != domain.SSOConnectionStatusInactive {
@@ -200,7 +218,7 @@ func (s *EnterpriseSSOService) UpdateConnection(ctx context.Context, clientID, c
 		if strings.TrimSpace(oidcConfig.ClientSecret) == "" {
 			oidcConfig.ClientSecret = connection.OIDC.ClientSecret
 		}
-		connection.OIDC, err = normalizeOIDCConfig(oidcConfig)
+		connection.OIDC, err = normalizeOIDCConfig(oidcConfig, connection.Status == domain.SSOConnectionStatusActive)
 		if err != nil {
 			return nil, err
 		}
@@ -216,9 +234,27 @@ func (s *EnterpriseSSOService) UpdateConnection(ctx context.Context, clientID, c
 		if strings.TrimSpace(samlConfig.SPCertificatePEM) == "" {
 			samlConfig.SPCertificatePEM = connection.SAML.SPCertificatePEM
 		}
-		connection.SAML, err = normalizeSAMLConfig(samlConfig, baseURL, connection.ID)
+		connection.SAML, err = normalizeSAMLConfig(samlConfig, baseURL, connection.ID, connection.Status == domain.SSOConnectionStatusActive)
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(req.SAML.IDPMetadataXML) != "" {
+			refreshedAt := time.Now().UTC()
+			connection.MetadataRefreshedAt = &refreshedAt
+		}
+	}
+	switch connection.Protocol {
+	case domain.SSOProtocolOIDC:
+		if connection.Status == domain.SSOConnectionStatusActive {
+			if _, err := normalizeOIDCConfig(connection.OIDC, true); err != nil {
+				return nil, err
+			}
+		}
+	case domain.SSOProtocolSAML:
+		if connection.Status == domain.SSOConnectionStatusActive {
+			if _, err := normalizeSAMLConfig(connection.SAML, baseURL, connection.ID, true); err != nil {
+				return nil, err
+			}
 		}
 	}
 	connection.UpdatedAt = time.Now().UTC()
@@ -321,9 +357,16 @@ func (s *EnterpriseSSOService) HandleOIDCCallback(ctx context.Context, connectio
 
 	profile, err := exchangeOIDCProfile(ctx, connection, code, payload.CodeVerifier, payload.Nonce, payload.RedirectURI)
 	if err != nil {
+		s.recordSSOError(ctx, client.ID, connection.ID, err)
 		return nil, "", err
 	}
-	return s.completeLogin(ctx, client, connection, profile, ip, ua, accessTTL, refreshTTL)
+	resp, refreshToken, err := s.completeLogin(ctx, client, connection, profile, ip, ua, accessTTL, refreshTTL)
+	if err != nil {
+		s.recordSSOError(ctx, client.ID, connection.ID, err)
+		return nil, "", err
+	}
+	resp.SessionMode = payload.SessionMode
+	return resp, refreshToken, nil
 }
 
 func (s *EnterpriseSSOService) HandleSAMLCallback(ctx context.Context, r *http.Request, connectionID, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
@@ -351,13 +394,21 @@ func (s *EnterpriseSSOService) HandleSAMLCallback(ctx context.Context, r *http.R
 	}
 	assertion, err := sp.ParseResponse(r, []string{payload.RequestID})
 	if err != nil {
+		s.recordSSOError(ctx, client.ID, connection.ID, err)
 		return nil, "", fmt.Errorf("saml_response_invalid")
 	}
 	profile, err := samlProfile(connection, assertion)
 	if err != nil {
+		s.recordSSOError(ctx, client.ID, connection.ID, err)
 		return nil, "", err
 	}
-	return s.completeLogin(ctx, client, connection, profile, ip, ua, accessTTL, refreshTTL)
+	resp, refreshToken, err := s.completeLogin(ctx, client, connection, profile, ip, ua, accessTTL, refreshTTL)
+	if err != nil {
+		s.recordSSOError(ctx, client.ID, connection.ID, err)
+		return nil, "", err
+	}
+	resp.SessionMode = payload.SessionMode
+	return resp, refreshToken, nil
 }
 
 func (s *EnterpriseSSOService) SAMLMetadata(ctx context.Context, connectionID string) ([]byte, error) {
@@ -368,7 +419,7 @@ func (s *EnterpriseSSOService) SAMLMetadata(ctx context.Context, connectionID st
 	if connection.Protocol != domain.SSOProtocolSAML {
 		return nil, domain.ErrInvalidSSOConnection
 	}
-	sp, err := s.samlServiceProvider(connection)
+	sp, err := s.samlMetadataServiceProvider(connection)
 	if err != nil {
 		return nil, err
 	}
@@ -491,12 +542,16 @@ func (s *EnterpriseSSOService) completeLogin(ctx context.Context, client *domain
 	}); err != nil {
 		return nil, "", err
 	}
+	if len(profile.Groups) > 0 {
+		_ = ApplyOrganizationGroupMappings(ctx, s.orgs, client.ID, domain.GroupMappingSourceSSO, connection.ID, user.ID, profile.Groups)
+	}
 
 	_ = s.users.UpdateLastLogin(ctx, user.ID)
 	uid := user.ID
 	if s.audit != nil {
 		s.audit.Log(ctx, client.ID, &uid, "login_success", ip, ua, map[string]interface{}{"method": "enterprise_sso", "connection_id": connection.ID, "protocol": connection.Protocol})
 	}
+	_ = s.sso.MarkConnectionLogin(ctx, client.ID, connection.ID, time.Now().UTC())
 
 	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
 	if err != nil {
@@ -512,6 +567,17 @@ func (s *EnterpriseSSOService) completeLogin(ctx context.Context, client *domain
 		ExpiresIn:   int(accessTTL.Seconds()),
 		User:        user,
 	}, refreshToken, nil
+}
+
+func (s *EnterpriseSSOService) recordSSOError(ctx context.Context, clientID, connectionID string, err error) {
+	if s == nil || s.sso == nil || err == nil {
+		return
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		message = "sso_error"
+	}
+	_ = s.sso.MarkConnectionError(ctx, clientID, connectionID, message, time.Now().UTC())
 }
 
 func (s *EnterpriseSSOService) samlServiceProvider(connection *domain.EnterpriseSSOConnection) (*saml.ServiceProvider, error) {
@@ -551,6 +617,38 @@ func (s *EnterpriseSSOService) samlServiceProvider(connection *domain.Enterprise
 		AcsURL:                *acsURL,
 		IDPMetadata:           idpMetadata,
 		IDPCertificate:        idpCert,
+		AuthnNameIDFormat:     saml.PersistentNameIDFormat,
+		AllowIDPInitiated:     false,
+		MetadataValidDuration: 24 * time.Hour,
+	}, nil
+}
+
+func (s *EnterpriseSSOService) samlMetadataServiceProvider(connection *domain.EnterpriseSSOConnection) (*saml.ServiceProvider, error) {
+	if connection.Protocol != domain.SSOProtocolSAML {
+		return nil, domain.ErrInvalidSSOConnection
+	}
+	spKey, err := parseRSAPrivateKey(connection.SAML.SPPrivateKeyPEM)
+	if err != nil {
+		return nil, err
+	}
+	spCert, err := parseCertificatePEM(connection.SAML.SPCertificatePEM)
+	if err != nil {
+		return nil, err
+	}
+	metadataURL, err := url.Parse(connection.SAML.SPMetadataURL)
+	if err != nil {
+		return nil, err
+	}
+	acsURL, err := url.Parse(connection.SAML.ACSURL)
+	if err != nil {
+		return nil, err
+	}
+	return &saml.ServiceProvider{
+		EntityID:              connection.SAML.SPEntityID,
+		Key:                   spKey,
+		Certificate:           spCert,
+		MetadataURL:           *metadataURL,
+		AcsURL:                *acsURL,
 		AuthnNameIDFormat:     saml.PersistentNameIDFormat,
 		AllowIDPInitiated:     false,
 		MetadataValidDuration: 24 * time.Hour,
@@ -607,12 +705,13 @@ func exchangeOIDCProfile(ctx context.Context, connection *domain.EnterpriseSSOCo
 	}
 
 	var claims struct {
-		Subject           string `json:"sub"`
-		Email             string `json:"email"`
-		EmailVerified     bool   `json:"email_verified"`
-		Name              string `json:"name"`
-		PreferredUsername string `json:"preferred_username"`
-		Picture           string `json:"picture"`
+		Subject           string   `json:"sub"`
+		Email             string   `json:"email"`
+		EmailVerified     bool     `json:"email_verified"`
+		Name              string   `json:"name"`
+		PreferredUsername string   `json:"preferred_username"`
+		Picture           string   `json:"picture"`
+		Groups            []string `json:"groups"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		return enterpriseSSOProfile{}, err
@@ -624,21 +723,24 @@ func exchangeOIDCProfile(ctx context.Context, connection *domain.EnterpriseSSOCo
 		EmailVerified: claims.EmailVerified,
 		DisplayName:   firstNonEmpty(claims.Name, claims.PreferredUsername),
 		AvatarURL:     claims.Picture,
+		Groups:        normalizeGroupNames(claims.Groups),
 		RawProfile:    rawClaims,
 	}
 	if profile.Email == "" {
 		userInfo, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
 		if err == nil && userInfo != nil {
 			var infoClaims struct {
-				Name              string `json:"name"`
-				PreferredUsername string `json:"preferred_username"`
-				Picture           string `json:"picture"`
+				Name              string   `json:"name"`
+				PreferredUsername string   `json:"preferred_username"`
+				Picture           string   `json:"picture"`
+				Groups            []string `json:"groups"`
 			}
 			_ = userInfo.Claims(&infoClaims)
 			profile.Email = userInfo.Email
 			profile.EmailVerified = userInfo.EmailVerified
 			profile.DisplayName = firstNonEmpty(profile.DisplayName, infoClaims.Name, infoClaims.PreferredUsername)
 			profile.AvatarURL = firstNonEmpty(profile.AvatarURL, infoClaims.Picture)
+			profile.Groups = mergeGroupNames(profile.Groups, infoClaims.Groups)
 			profile.RawProfile, _ = json.Marshal(map[string]interface{}{
 				"id_token": claims,
 				"userinfo": infoClaims,
@@ -653,20 +755,26 @@ func exchangeOIDCProfile(ctx context.Context, connection *domain.EnterpriseSSOCo
 
 func samlProfile(connection *domain.EnterpriseSSOConnection, assertion *saml.Assertion) (enterpriseSSOProfile, error) {
 	attrs := map[string]string{}
+	attrValues := map[string][]string{}
 	for _, statement := range assertion.AttributeStatements {
 		for _, attr := range statement.Attributes {
-			value := ""
-			if len(attr.Values) > 0 {
-				value = strings.TrimSpace(attr.Values[0].Value)
+			values := make([]string, 0, len(attr.Values))
+			for _, rawValue := range attr.Values {
+				value := strings.TrimSpace(rawValue.Value)
+				if value != "" {
+					values = append(values, value)
+				}
 			}
-			if value == "" {
+			if len(values) == 0 {
 				continue
 			}
 			if attr.Name != "" {
-				attrs[attr.Name] = value
+				attrs[attr.Name] = values[0]
+				attrValues[attr.Name] = values
 			}
 			if attr.FriendlyName != "" {
-				attrs[attr.FriendlyName] = value
+				attrs[attr.FriendlyName] = values[0]
+				attrValues[attr.FriendlyName] = values
 			}
 		}
 	}
@@ -698,21 +806,34 @@ func samlProfile(connection *domain.EnterpriseSSOConnection, assertion *saml.Ass
 		nameID,
 		email,
 	)
+	groups := firstSAMLGroupValues(attrValues,
+		mapping["groups"],
+		"groups",
+		"Groups",
+		"group",
+		"memberOf",
+		"http://schemas.xmlsoap.org/claims/Group",
+		"http://schemas.microsoft.com/ws/2008/06/identity/claims/groups",
+	)
 	rawProfile, _ := json.Marshal(attrs)
 	return enterpriseSSOProfile{
 		ExternalID:    externalID,
 		Email:         email,
 		EmailVerified: true,
 		DisplayName:   displayName,
+		Groups:        groups,
 		RawProfile:    rawProfile,
 	}, nil
 }
 
-func normalizeOIDCConfig(cfg domain.EnterpriseSSOOIDCConfig) (domain.EnterpriseSSOOIDCConfig, error) {
+func normalizeOIDCConfig(cfg domain.EnterpriseSSOOIDCConfig, requireProvider bool) (domain.EnterpriseSSOOIDCConfig, error) {
 	cfg.Issuer = strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/")
 	cfg.ClientID = strings.TrimSpace(cfg.ClientID)
 	cfg.ClientSecret = strings.TrimSpace(cfg.ClientSecret)
 	if cfg.Issuer == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
+		if !requireProvider {
+			return cfg, nil
+		}
 		return cfg, domain.ErrInvalidSSOConnection
 	}
 	if len(cfg.Scopes) == 0 {
@@ -729,10 +850,11 @@ func normalizeOIDCConfig(cfg domain.EnterpriseSSOOIDCConfig) (domain.EnterpriseS
 	return cfg, nil
 }
 
-func normalizeSAMLConfig(cfg domain.EnterpriseSSOSAMLConfig, baseURL, connectionID string) (domain.EnterpriseSSOSAMLConfig, error) {
+func normalizeSAMLConfig(cfg domain.EnterpriseSSOSAMLConfig, baseURL, connectionID string, requireIDP bool) (domain.EnterpriseSSOSAMLConfig, error) {
 	cfg.IDPEntityID = strings.TrimSpace(cfg.IDPEntityID)
 	cfg.IDPSSOURL = strings.TrimSpace(cfg.IDPSSOURL)
 	cfg.IDPMetadataXML = strings.TrimSpace(cfg.IDPMetadataXML)
+	cfg.IDPMetadataURL = strings.TrimSpace(cfg.IDPMetadataURL)
 	cfg.SPEntityID = strings.TrimSpace(cfg.SPEntityID)
 	cfg.SPMetadataURL = strings.TrimSpace(cfg.SPMetadataURL)
 	cfg.ACSURL = strings.TrimSpace(cfg.ACSURL)
@@ -762,7 +884,7 @@ func normalizeSAMLConfig(cfg domain.EnterpriseSSOSAMLConfig, baseURL, connection
 		}
 		cfg.IDPCertificate = cert
 	}
-	if cfg.IDPEntityID == "" || cfg.IDPSSOURL == "" || (cfg.IDPMetadataXML == "" && cfg.IDPCertificate == "") {
+	if requireIDP && (cfg.IDPEntityID == "" || cfg.IDPSSOURL == "" || (cfg.IDPMetadataXML == "" && cfg.IDPCertificate == "")) {
 		return cfg, domain.ErrInvalidSSOConnection
 	}
 
@@ -791,6 +913,7 @@ func normalizeSSOAttributeMapping(mapping map[string]string) map[string]string {
 		"email":       "email",
 		"name":        "name",
 		"external_id": "external_id",
+		"groups":      "groups",
 	}
 	for key, value := range mapping {
 		k := strings.ToLower(strings.TrimSpace(key))
@@ -915,4 +1038,17 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstSAMLGroupValues(values map[string][]string, names ...string) []string {
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		groups := normalizeGroupNames(values[name])
+		if len(groups) > 0 {
+			return groups
+		}
+	}
+	return nil
 }

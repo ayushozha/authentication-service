@@ -34,13 +34,17 @@ type LogoutRequest struct {
 }
 
 type GetUserRequest struct {
-	UserID string `json:"user_id"`
+	UserID      string `json:"user_id"`
+	APIKey      string `json:"api_key"`
+	AccessToken string `json:"access_token"`
 }
 
 type UpdateUserRequest struct {
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name"`
 	Timezone    string `json:"timezone"`
+	APIKey      string `json:"api_key"`
+	AccessToken string `json:"access_token"`
 }
 
 type ChangePasswordRequest struct {
