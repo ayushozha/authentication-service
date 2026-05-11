@@ -5,8 +5,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
 public final class AuthServiceClient {
@@ -64,6 +66,107 @@ public final class AuthServiceClient {
         tokenStore.setAccessToken(null);
         tokenStore.setRefreshToken(null);
         return response;
+    }
+
+    public AuthServiceResponse forgotPassword(String email) throws IOException {
+        return request("POST", "/api/auth/forgot-password", jsonObject("email", email), false);
+    }
+
+    public AuthServiceResponse resetPassword(String token, String newPassword) throws IOException {
+        return request("POST", "/api/auth/reset-password", jsonObject("token", token, "new_password", newPassword), false);
+    }
+
+    public AuthServiceResponse setupTOTP() throws IOException {
+        return request("POST", "/api/auth/totp/setup", "{}", true);
+    }
+
+    public AuthServiceResponse enableTOTP(String code) throws IOException {
+        return request("POST", "/api/auth/totp/enable", jsonObject("code", code), true);
+    }
+
+    public AuthServiceResponse disableTOTP(String code) throws IOException {
+        return request("POST", "/api/auth/totp/disable", jsonObject("code", code), true);
+    }
+
+    public AuthServiceResponse verifyTOTP(String twoFactorToken, String code) throws IOException {
+        return verifyTOTP(twoFactorToken, code, false, null);
+    }
+
+    public AuthServiceResponse verifyTOTP(String twoFactorToken, String code, boolean rememberDevice, String deviceName) throws IOException {
+        String body = jsonObject(
+                "two_factor_token", twoFactorToken,
+                "code", code,
+                "session_mode", sessionMode,
+                "remember_device", rememberDevice,
+                "device_name", deviceName
+        );
+        AuthServiceResponse response = request("POST", "/api/auth/totp/verify", body, false);
+        persist(response);
+        return response;
+    }
+
+    public AuthServiceResponse verifyRecoveryCode(String twoFactorToken, String code) throws IOException {
+        return verifyRecoveryCode(twoFactorToken, code, false, null);
+    }
+
+    public AuthServiceResponse verifyRecoveryCode(String twoFactorToken, String code, boolean rememberDevice, String deviceName) throws IOException {
+        String body = jsonObject(
+                "two_factor_token", twoFactorToken,
+                "code", code,
+                "session_mode", sessionMode,
+                "remember_device", rememberDevice,
+                "device_name", deviceName
+        );
+        AuthServiceResponse response = request("POST", "/api/auth/recovery-codes/verify", body, false);
+        persist(response);
+        return response;
+    }
+
+    public AuthServiceResponse recoveryCodeCount() throws IOException {
+        return request("GET", "/api/auth/recovery-codes", null, true);
+    }
+
+    public AuthServiceResponse generateRecoveryCodes() throws IOException {
+        return request("POST", "/api/auth/recovery-codes", "{}", true);
+    }
+
+    public AuthServiceResponse beginPasskeyRegistration() throws IOException {
+        return request("POST", "/api/auth/passkey/register/begin", "{}", true);
+    }
+
+    public AuthServiceResponse finishPasskeyRegistration(String credentialJson, String friendlyName) throws IOException {
+        return request(
+                "POST",
+                "/api/auth/passkey/register/finish" + queryString("name", friendlyName),
+                credentialJson,
+                true
+        );
+    }
+
+    public AuthServiceResponse beginPasskeyLogin() throws IOException {
+        return request("POST", "/api/auth/passkey/login/begin", "{}", false);
+    }
+
+    public AuthServiceResponse finishPasskeyLogin(String sessionId, String credentialJson) throws IOException {
+        AuthServiceResponse response = request(
+                "POST",
+                "/api/auth/passkey/login/finish" + queryString(
+                        "session_id", sessionId,
+                        "session_mode", "token".equals(sessionMode) ? "token" : null
+                ),
+                credentialJson,
+                false
+        );
+        persist(response);
+        return response;
+    }
+
+    public AuthServiceResponse listPasskeys() throws IOException {
+        return request("GET", "/api/auth/passkeys", null, true);
+    }
+
+    public AuthServiceResponse deletePasskey(String id) throws IOException {
+        return request("DELETE", "/api/auth/passkeys/" + urlPath(id), null, true);
     }
 
     public AuthServiceResponse me() throws IOException {
@@ -143,7 +246,31 @@ public final class AuthServiceClient {
     }
 
     private static String urlPath(String value) {
-        return value == null ? "" : value.replace("/", "%2F");
+        if (value == null) return "";
+        return urlEncode(value).replace("+", "%20");
+    }
+
+    private static String queryString(Object... pairs) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            Object value = pairs[i + 1];
+            if (value == null) continue;
+            String stringValue = String.valueOf(value);
+            if (stringValue.isEmpty()) continue;
+            builder.append(builder.length() == 0 ? '?' : '&');
+            builder.append(urlEncode(String.valueOf(pairs[i])));
+            builder.append('=');
+            builder.append(urlEncode(stringValue));
+        }
+        return builder.toString();
+    }
+
+    private static String urlEncode(String value) {
+        try {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
+        } catch (UnsupportedEncodingException impossible) {
+            throw new IllegalStateException("UTF-8 is not available", impossible);
+        }
     }
 
     private static String readAll(InputStream stream) throws IOException {
@@ -156,18 +283,26 @@ public final class AuthServiceClient {
         return builder.toString();
     }
 
-    private static String jsonObject(String... pairs) {
+    private static String jsonObject(Object... pairs) {
         StringBuilder builder = new StringBuilder("{");
         boolean wrote = false;
         for (int i = 0; i + 1 < pairs.length; i += 2) {
-            String value = pairs[i + 1];
+            Object value = pairs[i + 1];
             if (value == null) continue;
             if (wrote) builder.append(',');
-            builder.append('"').append(escape(pairs[i])).append('"').append(':');
-            builder.append('"').append(escape(value)).append('"');
+            builder.append('"').append(escape(String.valueOf(pairs[i]))).append('"').append(':');
+            appendJsonValue(builder, value);
             wrote = true;
         }
         return builder.append('}').toString();
+    }
+
+    private static void appendJsonValue(StringBuilder builder, Object value) {
+        if (value instanceof Boolean || value instanceof Number) {
+            builder.append(value);
+            return;
+        }
+        builder.append('"').append(escape(String.valueOf(value))).append('"');
     }
 
     private static String escape(String value) {
@@ -223,6 +358,23 @@ public final class AuthServiceClient {
             value.append(c);
         }
         return null;
+    }
+
+    private static Boolean extractJsonBoolean(String json, String key) {
+        if (json == null || json.isEmpty()) return null;
+        String marker = "\"" + key + "\":";
+        int start = json.indexOf(marker);
+        if (start < 0) return null;
+        start += marker.length();
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+        if (json.startsWith("true", start)) return true;
+        if (json.startsWith("false", start)) return false;
+        return null;
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (value.length() <= maxLength) return value;
+        return value.substring(0, maxLength);
     }
 
     public interface TokenStore {
@@ -282,9 +434,22 @@ public final class AuthServiceClient {
             return extractJsonString(body, "refresh_token");
         }
 
+        public boolean requires2FA() {
+            Boolean value = extractJsonBoolean(body, "requires_2fa");
+            return value != null && value;
+        }
+
+        public String getTwoFactorToken() {
+            return extractJsonString(body, "two_factor_token");
+        }
+
         public String getError() {
             String error = extractJsonString(body, "error");
-            return error == null || error.isEmpty() ? "AuthService request failed" : error;
+            if (error != null && !error.isEmpty()) return error;
+            String message = extractJsonString(body, "message");
+            if (message != null && !message.isEmpty()) return message;
+            String fallback = body.trim();
+            return fallback.isEmpty() ? "AuthService request failed" : truncate(fallback, 200);
         }
     }
 

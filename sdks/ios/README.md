@@ -21,6 +21,20 @@ try await auth.forgotPassword(email: email)
 try await auth.resetPassword(token: resetToken, newPassword: newPassword)
 ```
 
+## MFA and Passkeys
+
+The SDK exposes native app endpoints for TOTP setup, challenge completion, recovery codes, and passkey ceremonies:
+
+```swift
+let setup = try await auth.setupTOTP()
+try await auth.enableTOTP(code: code)
+let session = try await auth.verifyTOTP(twoFactorToken: challengeToken, code: code)
+
+let passkeyOptions = try await auth.beginPasskeyLogin()
+// Use AuthenticationServices to satisfy passkeyOptions.publicKey, then send the WebAuthn JSON response:
+let session = try await auth.finishPasskeyLogin(sessionID: passkeyOptions.sessionID!, credentialJSON: credentialJSON)
+```
+
 ## Secure Storage
 
 Use `KeychainAuthServiceTokenStore` for production apps:

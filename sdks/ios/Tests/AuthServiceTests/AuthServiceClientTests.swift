@@ -94,6 +94,59 @@ final class AuthServiceClientTests: XCTestCase {
         try await client.forgotPassword(email: "user@example.com")
     }
 
+    func testVerifyTOTPPersistsTokenSession() async throws {
+        let tokenStore = InMemoryAuthServiceTokenStore()
+        let client = try makeClient(tokenStore: tokenStore)
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/totp/verify")
+            let body = try XCTUnwrap(Self.requestBodyData(from: request))
+            let payload = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            XCTAssertEqual(payload?["two_factor_token"] as? String, "challenge")
+            XCTAssertEqual(payload?["code"] as? String, "123456")
+            XCTAssertEqual(payload?["session_mode"] as? String, "token")
+            let responseBody = """
+            {
+              "access_token": "mfa-access",
+              "refresh_token": "mfa-refresh",
+              "token_type": "Bearer",
+              "expires_in": 900
+            }
+            """
+            return Self.jsonResponse(status: 200, body: responseBody, request: request)
+        }
+
+        let response = try await client.verifyTOTP(twoFactorToken: "challenge", code: "123456")
+
+        XCTAssertEqual(response.accessToken, "mfa-access")
+        XCTAssertEqual(tokenStore.accessToken, "mfa-access")
+        XCTAssertEqual(tokenStore.refreshToken, "mfa-refresh")
+    }
+
+    func testPasskeyLoginBeginDecodesChallenge() async throws {
+        let client = try makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/passkey/login/begin")
+            let body = """
+            {
+              "session_id": "session-1",
+              "publicKey": {
+                "challenge": "abc",
+                "timeout": 60000,
+                "userVerification": "required"
+              }
+            }
+            """
+            return Self.jsonResponse(status: 200, body: body, request: request)
+        }
+
+        let challenge = try await client.beginPasskeyLogin()
+
+        XCTAssertEqual(challenge.sessionID, "session-1")
+        XCTAssertEqual(challenge.publicKey["challenge"], .string("abc"))
+        XCTAssertEqual(challenge.publicKey["timeout"], .number(60000))
+    }
+
     private func makeClient(tokenStore: AuthServiceTokenStore = InMemoryAuthServiceTokenStore()) throws -> AuthServiceClient {
         let config = AuthServiceConfig(
             baseURL: try XCTUnwrap(URL(string: "https://auth.example.com")),
