@@ -388,12 +388,12 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 		return nil, "", err
 	}
 
-	email := strings.ToLower(strings.TrimSpace(req.Email))
-	if email == "" {
+	if strings.TrimSpace(req.Email) == "" {
 		return nil, "", fmt.Errorf("email is required")
 	}
-	if _, err := mail.ParseAddress(email); err != nil {
-		return nil, "", fmt.Errorf("invalid email")
+	email, err := NormalizeEmailAddress(req.Email)
+	if err != nil {
+		return nil, "", err
 	}
 	if isBlockedSignupEmailDomain(email) {
 		s.audit.Log(ctx, client.ID, nil, "signup_blocked", ip, ua, map[string]interface{}{"reason": "blocked_email_domain", "email": email})
@@ -462,15 +462,18 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 }
 
 func (s *AuthService) Login(ctx context.Context, client *domain.Client, req LoginRequest, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
-	emailKey := strings.ToLower(strings.TrimSpace(req.Email))
+	emailKey, emailErr := NormalizeEmailAddress(req.Email)
 
-	if s.rl.IsLocked(ctx, client.ID+":"+emailKey) {
+	if emailErr == nil && s.rl.IsLocked(ctx, client.ID+":"+emailKey) {
 		s.audit.Log(ctx, client.ID, nil, "login_locked", ip, ua, map[string]interface{}{"email": emailKey})
 		return nil, "", domain.ErrAccountLocked
 	}
 
 	if allowed, _, _ := s.rl.Allow(ctx, "rate:login:"+ip, 10, 15*time.Minute); !allowed {
 		return nil, "", domain.ErrRateLimit
+	}
+	if emailErr != nil {
+		return nil, "", emailErr
 	}
 	if err := verifyBotToken(ctx, botProtection.LoginRequired, req.CaptchaToken, ip); err != nil {
 		s.audit.Log(ctx, client.ID, nil, "login_blocked", ip, ua, map[string]interface{}{"reason": "bot_verification", "email": emailKey})
@@ -483,7 +486,7 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 		return nil, "", domain.ErrSSORequired
 	}
 
-	user, err := s.users.GetByEmail(ctx, client.ID, req.Email)
+	user, err := s.users.GetByEmail(ctx, client.ID, emailKey)
 	if err != nil && err != domain.ErrNotFound {
 		return nil, "", fmt.Errorf("internal error")
 	}
@@ -585,6 +588,73 @@ func (s *AuthService) Login(ctx context.Context, client *domain.Client, req Logi
 		User:        user,
 		Risk:        riskResponse(risk),
 	}, refreshToken, nil
+}
+
+func NormalizeEmailAddress(email string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	if normalized == "" || len(normalized) > 254 {
+		return "", domain.ErrInvalidEmail
+	}
+	addr, err := mail.ParseAddress(normalized)
+	if err != nil || addr.Address != normalized || addr.Name != "" {
+		return "", domain.ErrInvalidEmail
+	}
+	local, domainPart, ok := strings.Cut(normalized, "@")
+	if !ok || strings.Contains(domainPart, "@") || !validEmailLocalPart(local) || !validEmailDomain(domainPart) {
+		return "", domain.ErrInvalidEmail
+	}
+	return normalized, nil
+}
+
+func validEmailLocalPart(local string) bool {
+	if local == "" || len(local) > 64 || strings.HasPrefix(local, ".") || strings.HasSuffix(local, ".") || strings.Contains(local, "..") {
+		return false
+	}
+	for _, r := range local {
+		if r > 127 {
+			return false
+		}
+		if isEmailAlphaNumeric(r) || strings.ContainsRune(".!#$%&'*+/=?^_`{|}~-", r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validEmailDomain(domainPart string) bool {
+	if domainPart == "" || len(domainPart) > 253 || strings.Contains(domainPart, "..") {
+		return false
+	}
+	labels := strings.Split(domainPart, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if r > 127 || !(isEmailAlphaNumeric(r) || r == '-') {
+				return false
+			}
+		}
+	}
+	tld := labels[len(labels)-1]
+	return len(tld) >= 2 && containsEmailLetter(tld)
+}
+
+func isEmailAlphaNumeric(r rune) bool {
+	return ('a' <= r && r <= 'z') || ('0' <= r && r <= '9')
+}
+
+func containsEmailLetter(value string) bool {
+	for _, r := range value {
+		if 'a' <= r && r <= 'z' {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AuthService) Refresh(ctx context.Context, client *domain.Client, rawRefreshToken, ip, ua string, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {

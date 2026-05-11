@@ -46,6 +46,10 @@ func (h *MagicLinkHandler) send(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := h.svc.SendMagicLink(ctx, client, req.Email, h.cfg.BaseURL, clientIP(r), r.UserAgent()); err != nil {
+		if err == domain.ErrInvalidEmail {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		if err == domain.ErrEmailNotConfigured {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 			return

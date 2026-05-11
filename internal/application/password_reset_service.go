@@ -26,7 +26,11 @@ func (s *PasswordResetService) SetEnterpriseSSORepository(repo EnterpriseSSORepo
 }
 
 func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, email, baseURL string) error {
-	user, err := s.users.GetByEmail(ctx, clientID, email)
+	emailKey, err := NormalizeEmailAddress(email)
+	if err != nil {
+		return err
+	}
+	user, err := s.users.GetByEmail(ctx, clientID, emailKey)
 	if err != nil {
 		log.Printf("forgot password lookup error: %v", err)
 	}

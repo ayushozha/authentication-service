@@ -6,6 +6,7 @@ var (
 	ErrNotFound                    = errors.New("not found")
 	ErrDuplicateEmail              = errors.New("email already registered")
 	ErrInvalidToken                = errors.New("invalid or expired token")
+	ErrInvalidEmail                = errors.New("invalid email")
 	ErrInvalidPassword             = errors.New("invalid email or password")
 	ErrAccountSuspended            = errors.New("account is suspended")
 	ErrAccountLocked               = errors.New("account temporarily locked")

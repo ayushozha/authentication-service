@@ -118,6 +118,8 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		switch err {
 		case domain.ErrBotVerification:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		case domain.ErrInvalidEmail:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		case domain.ErrInvalidPassword:
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		case domain.ErrAccountSuspended:

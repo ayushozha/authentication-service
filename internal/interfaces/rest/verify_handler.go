@@ -89,10 +89,15 @@ func (h *VerifyHandler) forgotPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email is required"})
 		return
 	}
+	email, err := application.NormalizeEmailAddress(req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	_ = h.resetSvc.ForgotPassword(ctx, client.ID, req.Email, h.cfg.BaseURL)
+	_ = h.resetSvc.ForgotPassword(ctx, client.ID, email, h.cfg.BaseURL)
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 

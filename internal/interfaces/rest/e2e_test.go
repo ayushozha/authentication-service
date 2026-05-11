@@ -225,6 +225,35 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 	}, env.apiHeaders())
 	assertStatus(t, blockedEmailDomainRec, http.StatusBadRequest)
 
+	invalidSignupHeaders := env.apiHeaders()
+	invalidSignupHeaders["X-Forwarded-For"] = "198.51.100.64"
+	invalidSignupEmailRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
+		"email":    "Alice <alice@example.com>",
+		"password": e2ePassword,
+	}, invalidSignupHeaders)
+	assertStatus(t, invalidSignupEmailRec, http.StatusBadRequest)
+
+	invalidLoginEmailRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":    "alice",
+		"password": e2ePassword,
+	}, env.apiHeaders())
+	assertStatus(t, invalidLoginEmailRec, http.StatusBadRequest)
+	var invalidLoginEmail map[string]string
+	decodeBody(t, invalidLoginEmailRec, &invalidLoginEmail)
+	if invalidLoginEmail["error"] != domain.ErrInvalidEmail.Error() {
+		t.Fatalf("expected invalid email error, got %q", invalidLoginEmail["error"])
+	}
+
+	invalidMagicEmailRec := env.request(t, http.MethodPost, "/api/auth/magic-link/send", map[string]string{
+		"email": "not-an-email",
+	}, env.apiHeaders())
+	assertStatus(t, invalidMagicEmailRec, http.StatusBadRequest)
+
+	invalidForgotEmailRec := env.request(t, http.MethodPost, "/api/auth/forgot-password", map[string]string{
+		"email": "not-an-email",
+	}, env.apiHeaders())
+	assertStatus(t, invalidForgotEmailRec, http.StatusBadRequest)
+
 	meRec := env.request(t, http.MethodGet, "/api/auth/me", nil, env.bearerHeaders(signup.AccessToken))
 	assertStatus(t, meRec, http.StatusOK)
 

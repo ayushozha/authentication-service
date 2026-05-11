@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
@@ -35,13 +34,16 @@ type magicLinkState struct {
 }
 
 func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Client, email, baseURL, ip, ua string) error {
+	emailKey, err := NormalizeEmailAddress(email)
+	if err != nil {
+		return err
+	}
 	if s.mailer == nil {
 		return domain.ErrEmailNotConfigured
 	}
 	if s.cache == nil {
 		return domain.ErrRedisRequired
 	}
-	emailKey := strings.ToLower(strings.TrimSpace(email))
 
 	if allowed, _, _ := s.rl.Allow(ctx, "rate:email:magic:"+emailKey, 3, 1*time.Hour); !allowed {
 		return domain.ErrRateLimit
