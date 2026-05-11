@@ -94,6 +94,32 @@ final class AuthServiceClientTests: XCTestCase {
         try await client.forgotPassword(email: "user@example.com")
     }
 
+    func testVerifyEmailPostsToken() async throws {
+        let client = try makeClient()
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/verify-email")
+            let body = try XCTUnwrap(Self.requestBodyData(from: request))
+            let payload = try JSONSerialization.jsonObject(with: body) as? [String: String]
+            XCTAssertEqual(payload?["token"], "verify-token")
+            return Self.jsonResponse(status: 200, body: #"{"ok":"true"}"#, request: request)
+        }
+
+        try await client.verifyEmail(token: "verify-token")
+    }
+
+    func testResendVerificationUsesBearerSession() async throws {
+        let tokenStore = InMemoryAuthServiceTokenStore()
+        tokenStore.accessToken = "access"
+        let client = try makeClient(tokenStore: tokenStore)
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/resend-verification")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access")
+            return Self.jsonResponse(status: 200, body: #"{"ok":"true"}"#, request: request)
+        }
+
+        try await client.resendVerification()
+    }
+
     func testVerifyTOTPPersistsTokenSession() async throws {
         let tokenStore = InMemoryAuthServiceTokenStore()
         let client = try makeClient(tokenStore: tokenStore)

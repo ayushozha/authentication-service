@@ -21,6 +21,15 @@ try await auth.forgotPassword(email: email)
 try await auth.resetPassword(token: resetToken, newPassword: newPassword)
 ```
 
+## Email Verification
+
+Signup emails point users to the hosted verification page. Native apps that capture the verification token from a universal link can complete the same flow directly:
+
+```swift
+try await auth.verifyEmail(token: verifyToken)
+try await auth.resendVerification()
+```
+
 ## MFA and Passkeys
 
 The SDK exposes native app endpoints for TOTP setup, challenge completion, recovery codes, and passkey ceremonies:

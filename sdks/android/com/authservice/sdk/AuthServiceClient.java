@@ -76,6 +76,14 @@ public final class AuthServiceClient {
         return request("POST", "/api/auth/reset-password", jsonObject("token", token, "new_password", newPassword), false);
     }
 
+    public AuthServiceResponse verifyEmail(String token) throws IOException {
+        return request("POST", "/api/auth/verify-email", jsonObject("token", token), false);
+    }
+
+    public AuthServiceResponse resendVerification() throws IOException {
+        return request("POST", "/api/auth/resend-verification", "{}", true);
+    }
+
     public AuthServiceResponse setupTOTP() throws IOException {
         return request("POST", "/api/auth/totp/setup", "{}", true);
     }

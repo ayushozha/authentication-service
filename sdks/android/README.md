@@ -23,6 +23,8 @@ Native apps can use the SDK for account recovery and MFA flows:
 ```java
 client.forgotPassword(email);
 client.resetPassword(resetToken, newPassword);
+client.verifyEmail(verifyToken);
+client.resendVerification();
 
 AuthServiceClient.AuthServiceResponse setup = client.setupTOTP();
 client.enableTOTP(code);

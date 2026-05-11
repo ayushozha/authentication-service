@@ -269,6 +269,15 @@ public final class AuthServiceClient {
         let _: EmptyResponse = try await send("/api/auth/reset-password", method: "POST", body: body, authorized: false)
     }
 
+    public func verifyEmail(token: String) async throws {
+        let body = VerifyEmailRequest(token: token)
+        let _: EmptyResponse = try await send("/api/auth/verify-email", method: "POST", body: body, authorized: false)
+    }
+
+    public func resendVerification() async throws {
+        let _: EmptyResponse = try await send("/api/auth/resend-verification", method: "POST", body: EmptyRequest(), authorized: true)
+    }
+
     public func setupTOTP() async throws -> AuthServiceTOTPSetupResponse {
         try await send("/api/auth/totp/setup", method: "POST", body: EmptyRequest(), authorized: true)
     }
@@ -518,6 +527,10 @@ private struct ResetPasswordRequest: Encodable {
         case token
         case newPassword = "new_password"
     }
+}
+
+private struct VerifyEmailRequest: Encodable {
+    let token: String
 }
 
 private struct TOTPCodeRequest: Encodable {

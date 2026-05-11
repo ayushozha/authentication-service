@@ -82,6 +82,58 @@ final class AuthServiceClientTest {
     }
 
     @Test
+    void verifyEmailSendsToken() throws Exception {
+        AtomicReference<String> requestPath = new AtomicReference<>();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = startJsonServer(
+                200,
+                "{\"ok\":\"true\"}",
+                exchange -> {
+                    requestPath.set(exchange.getRequestURI().toString());
+                    requestBody.set(readAll(exchange.getRequestBody()));
+                }
+        );
+
+        try {
+            AuthServiceClient client = new AuthServiceClient(baseUrl(server), "api-key");
+
+            client.verifyEmail("verify-token");
+
+            assertEquals("/api/auth/verify-email", requestPath.get());
+            assertEquals("{\"token\":\"verify-token\"}", requestBody.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void resendVerificationUsesBearerSession() throws Exception {
+        AuthServiceClient.MemoryTokenStore store = new AuthServiceClient.MemoryTokenStore();
+        store.setAccessToken("access");
+        AtomicReference<String> requestPath = new AtomicReference<>();
+        AtomicReference<String> authorization = new AtomicReference<>();
+        HttpServer server = startJsonServer(
+                200,
+                "{\"ok\":\"true\"}",
+                exchange -> {
+                    requestPath.set(exchange.getRequestURI().toString());
+                    authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+                }
+        );
+
+        try {
+            AuthServiceClient client = new AuthServiceClient(baseUrl(server), "api-key", "token", store);
+
+            client.resendVerification();
+
+            assertEquals("/api/auth/resend-verification", requestPath.get());
+            assertEquals("Bearer access", authorization.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void verifyTOTPSendsChallengeAndPersistsTokens() throws Exception {
         AuthServiceClient.MemoryTokenStore store = new AuthServiceClient.MemoryTokenStore();
         AtomicReference<String> requestPath = new AtomicReference<>();
