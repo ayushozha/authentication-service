@@ -1986,6 +1986,16 @@ func TestAdminPlaneIdentityMFADelegationSSOAndActorAudit(t *testing.T) {
 		t.Fatalf("expected owner login actor/request audit event: %+v", ownerLoginEvents[0])
 	}
 
+	badOwnerLoginRec := env.request(t, http.MethodPost, "/api/admin/auth/login", map[string]interface{}{
+		"email":    "owner@example.com",
+		"password": "WrongPass123!",
+	}, map[string]string{"X-Request-ID": "req-admin-bad-login", "User-Agent": "admin-test"})
+	assertStatus(t, badOwnerLoginRec, http.StatusUnauthorized)
+	badOwnerLoginErr := assertAuthError(t, badOwnerLoginRec, "invalid_credentials", "AUTH_INVALID_CREDENTIALS", false)
+	if badOwnerLoginErr.UserMessage != "Invalid email or password." {
+		t.Fatalf("expected canonical invalid credential copy, got %+v", badOwnerLoginErr)
+	}
+
 	const totpSecret = "JBSWY3DPEHPK3PXP"
 	securityRec := env.request(t, http.MethodPost, "/api/admin/users", map[string]interface{}{
 		"email":        "security@example.com",
@@ -2115,6 +2125,28 @@ func TestAdminPlaneIdentityMFADelegationSSOAndActorAudit(t *testing.T) {
 	decodeBody(t, ssoLoginRec, &ssoLogin)
 	if ssoLogin.AccessToken == "" || ssoLogin.Admin == nil || ssoLogin.Admin.Email != "auditor@example.com" {
 		t.Fatalf("admin SSO login returned incomplete response: %+v", ssoLogin)
+	}
+	badSSOLoginRec := env.request(t, http.MethodPost, "/api/admin/auth/sso", map[string]string{
+		"provider": "okta",
+		"subject":  "missing-subject",
+	}, map[string]string{"X-Request-ID": "req-admin-bad-sso", "User-Agent": "admin-test"})
+	assertStatus(t, badSSOLoginRec, http.StatusUnauthorized)
+	badSSOLoginErr := assertAuthError(t, badSSOLoginRec, "invalid_credentials", "AUTH_INVALID_CREDENTIALS", false)
+	if badSSOLoginErr.UserMessage != "Invalid email or password." {
+		t.Fatalf("expected canonical invalid credential copy, got %+v", badSSOLoginErr)
+	}
+	missingSSOLoginRec := env.request(t, http.MethodPost, "/api/admin/auth/sso", map[string]string{
+		"provider": "okta",
+	}, map[string]string{"X-Request-ID": "req-admin-missing-sso-subject", "User-Agent": "admin-test"})
+	assertStatus(t, missingSSOLoginRec, http.StatusBadRequest)
+	assertAuthError(t, missingSSOLoginRec, "invalid_request", "AUTH_INVALID_REQUEST", false)
+
+	invalidAdminTokenRec := httptest.NewRecorder()
+	writeAdminAuthError(invalidAdminTokenRec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/sso", nil), nil, domain.ErrInvalidAdminToken)
+	assertStatus(t, invalidAdminTokenRec, http.StatusUnauthorized)
+	invalidAdminTokenErr := assertAuthError(t, invalidAdminTokenRec, "invalid_admin_token", "AUTH_SESSION_EXPIRED", false)
+	if invalidAdminTokenErr.UserMessage != "Your session expired. Sign in again." {
+		t.Fatalf("expected canonical session-expired copy, got %+v", invalidAdminTokenErr)
 	}
 
 	events, err := env.audit.List(context.Background(), domain.AuditEventFilter{RequestID: "req-support-denied-client", Limit: 1})

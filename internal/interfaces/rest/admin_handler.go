@@ -40,14 +40,14 @@ func (h *AdminHandler) RegisterUserRoutes(mux *http.ServeMux, adminMw func(http.
 func (h *AdminHandler) login(w http.ResponseWriter, r *http.Request) {
 	var req application.AdminLoginRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	resp, err := h.svc.Login(ctx, req, clientIP(r), r.UserAgent(), adminAuthRequestID(w, r))
 	if err != nil {
-		writeAdminAuthError(w, resp, err)
+		writeAdminAuthError(w, r, resp, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -56,14 +56,14 @@ func (h *AdminHandler) login(w http.ResponseWriter, r *http.Request) {
 func (h *AdminHandler) ssoLogin(w http.ResponseWriter, r *http.Request) {
 	var req application.AdminSSOLoginRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	resp, err := h.svc.LoginWithSSO(ctx, req, clientIP(r), r.UserAgent(), adminAuthRequestID(w, r))
 	if err != nil {
-		writeAdminAuthError(w, resp, err)
+		writeAdminAuthError(w, r, resp, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -117,7 +117,7 @@ func (h *AdminHandler) users(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeAdminAuthError(w http.ResponseWriter, resp *application.AdminAuthResponse, err error) {
+func writeAdminAuthError(w http.ResponseWriter, r *http.Request, resp *application.AdminAuthResponse, err error) {
 	switch {
 	case errors.Is(err, domain.ErrMFARequired):
 		if resp == nil {
@@ -125,20 +125,22 @@ func writeAdminAuthError(w http.ResponseWriter, resp *application.AdminAuthRespo
 		}
 		writeJSON(w, http.StatusUnauthorized, resp)
 	case errors.Is(err, domain.ErrMFAEnrollmentRequired):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "mfa enrollment required"})
+		writeError(w, r, http.StatusForbidden, "mfa_required", "MFA enrollment required.")
 	case errors.Is(err, domain.ErrTOTPInvalid):
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid TOTP code"})
+		writeError(w, r, http.StatusUnauthorized, "invalid_totp", "Invalid code.")
 	case errors.Is(err, domain.ErrAccountSuspended):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "account suspended"})
+		writeError(w, r, http.StatusForbidden, "account_suspended", "Account is suspended.")
 	case errors.Is(err, domain.ErrInvalidPassword):
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid email or password"})
+		writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password.")
+	case errors.Is(err, domain.ErrInvalidAdminToken):
+		writeError(w, r, http.StatusUnauthorized, "invalid_admin_token", "Invalid or expired admin token.")
 	default:
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "required") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 	}
 }
 
