@@ -27,28 +27,147 @@ public struct AuthServiceConfig {
 public struct AuthServiceAPIError: Error, Decodable, LocalizedError {
     public let statusCode: Int
     public let error: String
+    public let code: String?
+    public let authCode: String
+    public let userMessage: String
+    public let retryable: Bool
 
-    public init(statusCode: Int, error: String) {
+    public init(statusCode: Int, error: String, code: String? = nil, authCode: String? = nil, userMessage: String? = nil, retryable: Bool? = nil) {
         self.statusCode = statusCode
         self.error = error
+        self.code = code
+        let mappedAuthCode = authCode ?? Self.mapAuthCode(providerCode: code, message: error, statusCode: statusCode)
+        self.authCode = mappedAuthCode
+        self.userMessage = userMessage ?? Self.userMessage(for: mappedAuthCode)
+        self.retryable = retryable ?? Self.retryable(for: mappedAuthCode)
     }
 
     public var errorDescription: String? {
-        error
+        userMessage
     }
 
     enum CodingKeys: String, CodingKey {
         case statusCode = "status_code"
         case error
         case message
+        case code
+        case authCode = "auth_code"
+        case userMessage = "user_message"
+        case retryable
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode) ?? 0
+        code = try container.decodeIfPresent(String.self, forKey: .code)
         error = try container.decodeIfPresent(String.self, forKey: .error)
             ?? container.decodeIfPresent(String.self, forKey: .message)
             ?? "AuthService request failed"
+        let mappedAuthCode = try container.decodeIfPresent(String.self, forKey: .authCode)
+            ?? Self.mapAuthCode(providerCode: code ?? error, message: error, statusCode: statusCode)
+        authCode = mappedAuthCode
+        userMessage = try container.decodeIfPresent(String.self, forKey: .userMessage)
+            ?? Self.userMessage(for: mappedAuthCode)
+        retryable = try container.decodeIfPresent(Bool.self, forKey: .retryable)
+            ?? Self.retryable(for: mappedAuthCode)
+    }
+
+    private static func mapAuthCode(providerCode: String?, message: String, statusCode: Int) -> String {
+        let normalized = (providerCode ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        switch normalized {
+        case "invalid_request", "invalid_request_body":
+            return "AUTH_INVALID_REQUEST"
+        case "email_required":
+            return "AUTH_EMAIL_REQUIRED"
+        case "invalid_email":
+            return "AUTH_INVALID_EMAIL"
+        case "weak_password", "password_too_short":
+            return "AUTH_PASSWORD_TOO_SHORT"
+        case "invalid_credentials", "user_not_found":
+            return "AUTH_INVALID_CREDENTIALS"
+        case "account_locked":
+            return "AUTH_ACCOUNT_LOCKED"
+        case "account_suspended", "account_disabled":
+            return "AUTH_ACCOUNT_DISABLED"
+        case "rate_limited":
+            return "AUTH_RATE_LIMITED"
+        case "refresh_token_missing", "missing_authorization_header":
+            return "AUTH_TOKEN_MISSING"
+        case "invalid_access_token":
+            return "AUTH_SESSION_EXPIRED"
+        case "invalid_refresh_token":
+            return "AUTH_TOKEN_REVOKED"
+        case "missing_api_key", "invalid_api_key", "redis_required", "email_not_configured", "internal_error":
+            return "AUTH_SERVICE_UNAVAILABLE"
+        case "oauth_failed":
+            return "AUTH_OAUTH_FAILED"
+        case "access_denied":
+            return "AUTH_OAUTH_CANCELLED"
+        case "invalid_state":
+            return "AUTH_OAUTH_STATE_MISMATCH"
+        case "oauth_provider_unavailable":
+            return "AUTH_OAUTH_PROVIDER_UNAVAILABLE"
+        case "sso_required":
+            return "AUTH_SSO_FAILED"
+        case "passkey_failed", "authentication_failed":
+            return "AUTH_PASSKEY_FAILED"
+        case "invalid_totp", "invalid_code":
+            return "AUTH_MFA_CODE_INVALID"
+        case "invalid_recovery_code":
+            return "AUTH_MFA_RECOVERY_CODE_INVALID"
+        default:
+            let lowerMessage = message.lowercased()
+            if lowerMessage.contains("invalid email or password") { return "AUTH_INVALID_CREDENTIALS" }
+            if lowerMessage.contains("too many") || lowerMessage.contains("rate") { return "AUTH_RATE_LIMITED" }
+            if statusCode == 429 { return "AUTH_RATE_LIMITED" }
+            if statusCode == 401 { return "AUTH_SESSION_EXPIRED" }
+            if statusCode >= 500 { return "AUTH_SERVICE_UNAVAILABLE" }
+            return "AUTH_UNKNOWN"
+        }
+    }
+
+    private static func userMessage(for authCode: String) -> String {
+        switch authCode {
+        case "AUTH_INVALID_REQUEST": return "We could not process that request. Try again."
+        case "AUTH_EMAIL_REQUIRED": return "Enter your email address."
+        case "AUTH_PASSWORD_REQUIRED": return "Enter your password."
+        case "AUTH_EMAIL_PASSWORD_REQUIRED": return "Enter your email and password."
+        case "AUTH_INVALID_EMAIL": return "Enter a valid email address."
+        case "AUTH_PASSWORD_TOO_SHORT": return "Use at least 8 characters for your password."
+        case "AUTH_INVALID_CREDENTIALS": return "The email or password is incorrect."
+        case "AUTH_ACCOUNT_LOCKED": return "This account is locked. Check your email for next steps."
+        case "AUTH_ACCOUNT_DISABLED": return "This account cannot sign in right now."
+        case "AUTH_RATE_LIMITED": return "Too many attempts. Try again in a few minutes."
+        case "AUTH_SESSION_EXPIRED": return "Your session expired. Sign in again."
+        case "AUTH_TOKEN_MISSING": return "Sign in again to continue."
+        case "AUTH_TOKEN_REVOKED": return "Your session is no longer active. Sign in again."
+        case "AUTH_SERVICE_UNAVAILABLE": return "We could not sign you in right now. Try again later."
+        case "AUTH_OAUTH_FAILED": return "We could not complete sign-in with that provider."
+        case "AUTH_OAUTH_CANCELLED": return "Sign-in was cancelled."
+        case "AUTH_OAUTH_STATE_MISMATCH": return "We could not verify that sign-in. Try again."
+        case "AUTH_OAUTH_PROVIDER_UNAVAILABLE": return "That sign-in provider is unavailable. Try again later."
+        case "AUTH_SSO_FAILED": return "We could not complete single sign-on. Try again."
+        case "AUTH_PASSKEY_FAILED": return "We could not complete passkey sign-in. Try again."
+        case "AUTH_PASSKEY_CANCELLED": return "Passkey sign-in was cancelled."
+        case "AUTH_MFA_REQUIRED": return "Enter the code from your authenticator app."
+        case "AUTH_MFA_CODE_INVALID": return "That code is incorrect. Try again."
+        case "AUTH_MFA_CODE_EXPIRED": return "That code expired. Request a new one."
+        case "AUTH_MFA_RECOVERY_CODE_INVALID": return "That recovery code is incorrect."
+        default: return "Something went wrong. Try again."
+        }
+    }
+
+    private static func retryable(for authCode: String) -> Bool {
+        switch authCode {
+        case "AUTH_RATE_LIMITED", "AUTH_STORAGE_WRITE_FAILED", "AUTH_NETWORK_UNAVAILABLE", "AUTH_SERVICE_UNAVAILABLE", "AUTH_OAUTH_FAILED", "AUTH_OAUTH_PROVIDER_UNAVAILABLE", "AUTH_SSO_FAILED", "AUTH_PASSKEY_FAILED", "AUTH_MFA_CODE_EXPIRED", "AUTH_MFA_PUSH_TIMEOUT", "AUTH_MFA_SMS_UNAVAILABLE", "AUTH_UNKNOWN":
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -424,8 +543,14 @@ public final class AuthServiceClient {
         }
         guard (200..<300).contains(http.statusCode) else {
             let decodedError = try? decoder.decode(AuthServiceAPIError.self, from: data)
-            let message = decodedError?.error ?? responseErrorFallback(data: data, statusCode: http.statusCode)
-            let apiError = AuthServiceAPIError(statusCode: http.statusCode, error: message)
+            let apiError = AuthServiceAPIError(
+                statusCode: http.statusCode,
+                error: decodedError?.error ?? responseErrorFallback(data: data, statusCode: http.statusCode),
+                code: decodedError?.code,
+                authCode: decodedError?.authCode,
+                userMessage: decodedError?.userMessage,
+                retryable: decodedError?.retryable
+            )
             throw apiError
         }
         if data.isEmpty {

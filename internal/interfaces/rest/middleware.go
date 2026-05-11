@@ -103,7 +103,7 @@ func RequireAdminKey(adminAPIKey string) func(http.Handler) http.Handler {
 			}
 			key := r.Header.Get("X-Admin-Key")
 			if key == "" || key != adminAPIKey {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin key"})
+				writeError(w, r, http.StatusUnauthorized, "invalid_api_key", "Invalid admin key.")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -117,29 +117,29 @@ func RequireUserAuth(clientSvc *application.ClientService) func(http.HandlerFunc
 		return func(w http.ResponseWriter, r *http.Request) {
 			client := GetClient(r)
 			if client == nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client context"})
+				writeError(w, r, http.StatusUnauthorized, "missing_client_context", "Missing client context.")
 				return
 			}
 
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing authorization header"})
+				writeError(w, r, http.StatusUnauthorized, "missing_authorization_header", "Missing authorization header.")
 				return
 			}
 
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid authorization format"})
+				writeError(w, r, http.StatusUnauthorized, "invalid_authorization_format", "Invalid authorization format.")
 				return
 			}
 
 			claims, err := application.ValidateAccessToken(r.Context(), client, parts[1])
 			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+				writeError(w, r, http.StatusUnauthorized, "invalid_access_token", "Invalid or expired token.")
 				return
 			}
 			if claims.ClientID != client.ID {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "token does not belong to this client"})
+				writeError(w, r, http.StatusUnauthorized, "token_client_mismatch", "Token does not belong to this client.")
 				return
 			}
 
@@ -198,7 +198,7 @@ func CORSHandler(origin string, next http.HandlerFunc) http.HandlerFunc {
 		requestOrigin := strings.TrimSpace(r.Header.Get("Origin"))
 		corsOrigin, allowCredentials, allowed := resolveAllowedOrigin(requestOrigin, origin, client)
 		if requestOrigin != "" && !allowed {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin is not allowed"})
+			writeError(w, r, http.StatusForbidden, "origin_not_allowed", "Origin is not allowed.")
 			return
 		}
 		if requestOrigin != "" || corsOrigin != "" {
@@ -218,7 +218,7 @@ func MethodCheck(method string, next http.HandlerFunc) http.HandlerFunc {
 			return // already handled by CORSHandler
 		}
 		if r.Method != method {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": fmt.Sprintf("method not allowed, expected %s", method)})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Sprintf("Method not allowed, expected %s.", method))
 			return
 		}
 		next(w, r)

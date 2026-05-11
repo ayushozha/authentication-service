@@ -252,7 +252,7 @@ func (h *ClientHandler) requireAdminAction(w http.ResponseWriter, r *http.Reques
 	}
 	decision, err := h.adaptive.EvaluateAdminAction(ctx, clientID, action, GetAdminActor(r), stepUpTokenFromRequest(r), clientIP(r), r.UserAgent())
 	if err != nil {
-		writeAdaptiveSecurityError(w, err)
+		writeAdaptiveSecurityError(w, r, err)
 		return false
 	}
 	if decision != nil && (decision.Blocked || decision.StepUpRequired) {

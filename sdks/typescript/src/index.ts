@@ -28,22 +28,184 @@ export interface AuthServiceClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+export const AUTH_ERROR_CODES = [
+  "AUTH_INVALID_REQUEST",
+  "AUTH_EMAIL_REQUIRED",
+  "AUTH_PASSWORD_REQUIRED",
+  "AUTH_EMAIL_PASSWORD_REQUIRED",
+  "AUTH_INVALID_EMAIL",
+  "AUTH_PASSWORD_TOO_SHORT",
+  "AUTH_INVALID_CREDENTIALS",
+  "AUTH_ACCOUNT_LOCKED",
+  "AUTH_ACCOUNT_DISABLED",
+  "AUTH_RATE_LIMITED",
+  "AUTH_SESSION_EXPIRED",
+  "AUTH_TOKEN_MISSING",
+  "AUTH_TOKEN_REVOKED",
+  "AUTH_STORAGE_UNAVAILABLE",
+  "AUTH_STORAGE_WRITE_FAILED",
+  "AUTH_NETWORK_UNAVAILABLE",
+  "AUTH_SERVICE_UNAVAILABLE",
+  "AUTH_OAUTH_FAILED",
+  "AUTH_OAUTH_CANCELLED",
+  "AUTH_OAUTH_STATE_MISMATCH",
+  "AUTH_OAUTH_PROVIDER_UNAVAILABLE",
+  "AUTH_SSO_FAILED",
+  "AUTH_PASSKEY_FAILED",
+  "AUTH_PASSKEY_CANCELLED",
+  "AUTH_BIOMETRIC_UNAVAILABLE",
+  "AUTH_BIOMETRIC_CANCELLED",
+  "AUTH_BIOMETRIC_LOCKOUT",
+  "AUTH_MFA_REQUIRED",
+  "AUTH_MFA_CODE_INVALID",
+  "AUTH_MFA_CODE_EXPIRED",
+  "AUTH_MFA_RECOVERY_CODE_INVALID",
+  "AUTH_MFA_PUSH_TIMEOUT",
+  "AUTH_MFA_SMS_UNAVAILABLE",
+  "AUTH_UNKNOWN",
+] as const;
+
+export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
+
+export interface NormalizedAuthError {
+  code: AuthErrorCode;
+  userMessage: string;
+  retryable: boolean;
+  providerCode?: string;
+}
+
 export class AuthServiceError extends Error {
-  constructor(message: string, public status: number, public response: unknown) {
-    super(message);
+  readonly code: AuthErrorCode;
+  readonly userMessage: string;
+  readonly retryable: boolean;
+  readonly providerCode?: string;
+
+  constructor(message: string, public status: number, public response: unknown, normalized?: NormalizedAuthError) {
+    const error = normalized || normalizeAuthServiceError(status, response, message);
+    super(error.userMessage || message);
     this.name = "AuthServiceError";
+    this.code = error.code;
+    this.userMessage = error.userMessage;
+    this.retryable = error.retryable;
+    this.providerCode = error.providerCode;
   }
 }
 
-const invalidLoginCredentialsMessage = "Invalid email or password.";
+const ERROR_DEFINITIONS: Record<AuthErrorCode, { userMessage: string; retryable: boolean }> = {
+  AUTH_INVALID_REQUEST: { userMessage: "We could not process that request. Try again.", retryable: false },
+  AUTH_EMAIL_REQUIRED: { userMessage: "Enter your email address.", retryable: false },
+  AUTH_PASSWORD_REQUIRED: { userMessage: "Enter your password.", retryable: false },
+  AUTH_EMAIL_PASSWORD_REQUIRED: { userMessage: "Enter your email and password.", retryable: false },
+  AUTH_INVALID_EMAIL: { userMessage: "Enter a valid email address.", retryable: false },
+  AUTH_PASSWORD_TOO_SHORT: { userMessage: "Use at least 8 characters for your password.", retryable: false },
+  AUTH_INVALID_CREDENTIALS: { userMessage: "The email or password is incorrect.", retryable: false },
+  AUTH_ACCOUNT_LOCKED: { userMessage: "This account is locked. Check your email for next steps.", retryable: false },
+  AUTH_ACCOUNT_DISABLED: { userMessage: "This account cannot sign in right now.", retryable: false },
+  AUTH_RATE_LIMITED: { userMessage: "Too many attempts. Try again in a few minutes.", retryable: true },
+  AUTH_SESSION_EXPIRED: { userMessage: "Your session expired. Sign in again.", retryable: false },
+  AUTH_TOKEN_MISSING: { userMessage: "Sign in again to continue.", retryable: false },
+  AUTH_TOKEN_REVOKED: { userMessage: "Your session is no longer active. Sign in again.", retryable: false },
+  AUTH_STORAGE_UNAVAILABLE: { userMessage: "Secure storage is unavailable on this device.", retryable: false },
+  AUTH_STORAGE_WRITE_FAILED: { userMessage: "We could not save your sign-in securely. Try again.", retryable: true },
+  AUTH_NETWORK_UNAVAILABLE: { userMessage: "Check your connection and try again.", retryable: true },
+  AUTH_SERVICE_UNAVAILABLE: { userMessage: "We could not sign you in right now. Try again later.", retryable: true },
+  AUTH_OAUTH_FAILED: { userMessage: "We could not complete sign-in with that provider.", retryable: true },
+  AUTH_OAUTH_CANCELLED: { userMessage: "Sign-in was cancelled.", retryable: false },
+  AUTH_OAUTH_STATE_MISMATCH: { userMessage: "We could not verify that sign-in. Try again.", retryable: false },
+  AUTH_OAUTH_PROVIDER_UNAVAILABLE: { userMessage: "That sign-in provider is unavailable. Try again later.", retryable: true },
+  AUTH_SSO_FAILED: { userMessage: "We could not complete single sign-on. Try again.", retryable: true },
+  AUTH_PASSKEY_FAILED: { userMessage: "We could not complete passkey sign-in. Try again.", retryable: true },
+  AUTH_PASSKEY_CANCELLED: { userMessage: "Passkey sign-in was cancelled.", retryable: false },
+  AUTH_BIOMETRIC_UNAVAILABLE: { userMessage: "Biometric unlock is unavailable on this device.", retryable: false },
+  AUTH_BIOMETRIC_CANCELLED: { userMessage: "Biometric unlock was cancelled.", retryable: false },
+  AUTH_BIOMETRIC_LOCKOUT: { userMessage: "Biometric unlock is locked. Use your device passcode.", retryable: false },
+  AUTH_MFA_REQUIRED: { userMessage: "Enter the code from your authenticator app.", retryable: false },
+  AUTH_MFA_CODE_INVALID: { userMessage: "That code is incorrect. Try again.", retryable: false },
+  AUTH_MFA_CODE_EXPIRED: { userMessage: "That code expired. Request a new one.", retryable: true },
+  AUTH_MFA_RECOVERY_CODE_INVALID: { userMessage: "That recovery code is incorrect.", retryable: false },
+  AUTH_MFA_PUSH_TIMEOUT: { userMessage: "The approval request timed out. Try again.", retryable: true },
+  AUTH_MFA_SMS_UNAVAILABLE: { userMessage: "SMS codes are unavailable right now. Try another method.", retryable: true },
+  AUTH_UNKNOWN: { userMessage: "Something went wrong. Try again.", retryable: true },
+};
+
+const LEGACY_CODE_MAP: Record<string, AuthErrorCode> = {
+  invalid_request: "AUTH_INVALID_REQUEST",
+  invalid_request_body: "AUTH_INVALID_REQUEST",
+  email_required: "AUTH_EMAIL_REQUIRED",
+  invalid_email: "AUTH_INVALID_EMAIL",
+  weak_password: "AUTH_PASSWORD_TOO_SHORT",
+  invalid_credentials: "AUTH_INVALID_CREDENTIALS",
+  user_not_found: "AUTH_INVALID_CREDENTIALS",
+  account_locked: "AUTH_ACCOUNT_LOCKED",
+  account_suspended: "AUTH_ACCOUNT_DISABLED",
+  account_disabled: "AUTH_ACCOUNT_DISABLED",
+  rate_limited: "AUTH_RATE_LIMITED",
+  refresh_token_missing: "AUTH_TOKEN_MISSING",
+  missing_authorization_header: "AUTH_TOKEN_MISSING",
+  invalid_access_token: "AUTH_SESSION_EXPIRED",
+  invalid_refresh_token: "AUTH_TOKEN_REVOKED",
+  missing_api_key: "AUTH_SERVICE_UNAVAILABLE",
+  invalid_api_key: "AUTH_SERVICE_UNAVAILABLE",
+  redis_required: "AUTH_SERVICE_UNAVAILABLE",
+  email_not_configured: "AUTH_SERVICE_UNAVAILABLE",
+  internal_error: "AUTH_SERVICE_UNAVAILABLE",
+  oauth_failed: "AUTH_OAUTH_FAILED",
+  access_denied: "AUTH_OAUTH_CANCELLED",
+  invalid_state: "AUTH_OAUTH_STATE_MISMATCH",
+  oauth_provider_unavailable: "AUTH_OAUTH_PROVIDER_UNAVAILABLE",
+  sso_required: "AUTH_SSO_FAILED",
+  passkey_failed: "AUTH_PASSKEY_FAILED",
+  authentication_failed: "AUTH_PASSKEY_FAILED",
+  invalid_totp: "AUTH_MFA_CODE_INVALID",
+  invalid_code: "AUTH_MFA_CODE_INVALID",
+  invalid_recovery_code: "AUTH_MFA_RECOVERY_CODE_INVALID",
+};
+
+const invalidLoginCredentialsMessage = "The email or password is incorrect.";
+
+function isAuthErrorCode(value: unknown): value is AuthErrorCode {
+  return typeof value === "string" && (AUTH_ERROR_CODES as readonly string[]).includes(value);
+}
 
 function errorPayloadMessage(response: unknown): string {
   if (response && typeof response === "object") {
-    const payload = response as { error?: unknown; message?: unknown };
-    return String(payload.error || payload.message || "").trim();
+    const payload = response as { error?: unknown; message?: unknown; user_message?: unknown; userMessage?: unknown };
+    return String(payload.userMessage || payload.user_message || payload.error || payload.message || "").trim();
   }
   if (typeof response === "string") return response.trim();
   return "";
+}
+
+function normalizeAuthServiceError(status: number, response: unknown, fallbackMessage = ""): NormalizedAuthError {
+  const payload = response && typeof response === "object" ? response as Record<string, unknown> : {};
+  const providerCode = String(payload.code || payload.error || "").trim();
+  let code: AuthErrorCode = "AUTH_UNKNOWN";
+  if (isAuthErrorCode(payload.auth_code) || isAuthErrorCode(payload.authCode)) {
+    code = (payload.auth_code || payload.authCode) as AuthErrorCode;
+  } else {
+    const legacyCode = providerCode.toLowerCase().replace(/[\s-]+/g, "_");
+    code = LEGACY_CODE_MAP[legacyCode] || codeFromStatusAndMessage(status, errorPayloadMessage(response) || fallbackMessage);
+  }
+  const definition = ERROR_DEFINITIONS[code];
+  const userMessage = String(payload.userMessage || payload.user_message || definition.userMessage).trim();
+  return {
+    code,
+    userMessage: userMessage || definition.userMessage,
+    retryable: typeof payload.retryable === "boolean" ? payload.retryable : definition.retryable,
+    providerCode: providerCode || undefined,
+  };
+}
+
+function codeFromStatusAndMessage(status: number, message: string): AuthErrorCode {
+  const lower = message.toLowerCase();
+  if (lower.includes("invalid email or password")) return "AUTH_INVALID_CREDENTIALS";
+  if (lower.includes("too many") || lower.includes("rate")) return "AUTH_RATE_LIMITED";
+  if (lower.includes("passkey") || lower.includes("webauthn")) return "AUTH_PASSKEY_FAILED";
+  if (lower.includes("totp") || lower.includes("2fa") || lower.includes("mfa")) return "AUTH_MFA_REQUIRED";
+  if (status === 429) return "AUTH_RATE_LIMITED";
+  if (status === 401) return "AUTH_SESSION_EXPIRED";
+  if (status >= 500) return "AUTH_SERVICE_UNAVAILABLE";
+  return "AUTH_UNKNOWN";
 }
 
 function normalizeLoginError(error: unknown): unknown {
@@ -102,10 +264,8 @@ export class AuthServiceClient {
       data = null;
     }
     if (!res.ok) {
-      const message = data && typeof data === "object" && ("error" in data || "message" in data)
-        ? String((data as any).error || (data as any).message)
-        : res.statusText;
-      throw new AuthServiceError(message, res.status, data);
+      const normalized = normalizeAuthServiceError(res.status, data, res.statusText);
+      throw new AuthServiceError(normalized.userMessage, res.status, data, normalized);
     }
     return data as T;
   }

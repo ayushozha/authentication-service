@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Ayush10/authentication-service/internal/application"
@@ -31,12 +32,12 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 
 		mux.HandleFunc("/api/auth/oauth/"+provName, CORSHandler(h.cfg.AllowOrigin, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
-				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 				return
 			}
 			client := GetClient(r)
 			if client == nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+				writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 				return
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -45,10 +46,10 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 			redirectURL, err := h.svc.BeginOAuth(ctx, client, provCfg, provName, r.URL.Query().Get("session_mode"))
 			if err != nil {
 				if err == domain.ErrRedisRequired {
-					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "oauth requires Redis"})
+					writeError(w, r, http.StatusServiceUnavailable, "oauth_provider_unavailable", "OAuth requires Redis.")
 					return
 				}
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+				writeError(w, r, http.StatusInternalServerError, "oauth_failed", "OAuth failed.")
 				return
 			}
 			http.Redirect(w, r, redirectURL, http.StatusFound)
@@ -63,7 +64,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 
 		mux.HandleFunc("/api/auth/oauth/"+provName+"/callback", CORSHandler(h.cfg.AllowOrigin, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet && r.Method != http.MethodPost {
-				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 				return
 			}
 			if r.Method == http.MethodPost {
@@ -73,11 +74,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 			code := r.FormValue("code")
 			state := r.FormValue("state")
 			if code == "" || state == "" {
-				errorMsg := r.FormValue("error")
-				if errorMsg == "" {
-					errorMsg = "missing code or state"
-				}
-				http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+errorMsg, http.StatusFound)
+				redirectWithLoginAuthError(w, r, h.cfg, authCodeForOAuthCallbackError(r.FormValue("error")))
 				return
 			}
 
@@ -86,7 +83,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 
 			_, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
-				http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+err.Error(), http.StatusFound)
+				redirectWithLoginAuthError(w, r, h.cfg, authCodeForOAuthCallbackError(err.Error()))
 				return
 			}
 
@@ -102,4 +99,30 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 			redirectWithAuthCode(w, r, h.cfg, resp, refreshToken, tokenMode)
 		}))
 	}
+}
+
+func authCodeForOAuthCallbackError(value string) string {
+	switch normalizeLegacyErrorCode(value) {
+	case "access_denied", "cancelled", "canceled", "oauth_cancelled":
+		return "AUTH_OAUTH_CANCELLED"
+	case "invalid_state", "state_mismatch", "missing_code_or_state":
+		return "AUTH_OAUTH_STATE_MISMATCH"
+	case "redis_required", "oauth_requires_redis", "provider_unavailable", "temporarily_unavailable":
+		return "AUTH_OAUTH_PROVIDER_UNAVAILABLE"
+	case "sso_required":
+		return "AUTH_SSO_FAILED"
+	case "account_suspended", "account_disabled":
+		return "AUTH_ACCOUNT_DISABLED"
+	}
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return "AUTH_OAUTH_STATE_MISMATCH"
+	}
+	if strings.Contains(lower, "redis") || strings.Contains(lower, "temporarily unavailable") {
+		return "AUTH_OAUTH_PROVIDER_UNAVAILABLE"
+	}
+	if strings.Contains(lower, "sso") {
+		return "AUTH_SSO_FAILED"
+	}
+	return "AUTH_OAUTH_FAILED"
 }

@@ -42,11 +42,13 @@ func (h *TOTPHandler) setup(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.svc.Setup(ctx, client, claims.Subject, issuerName)
 	if err != nil {
 		if err == domain.ErrTOTPAlreadyOn {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		} else if err == domain.ErrRedisRequired {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
+		} else if err == domain.ErrNotFound {
+			writeError(w, r, http.StatusNotFound, "user_not_found", "User not found.")
 		} else {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -60,7 +62,7 @@ func (h *TOTPHandler) enable(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code is required"})
+		writeError(w, r, http.StatusBadRequest, "code_is_required", "Code is required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -69,13 +71,13 @@ func (h *TOTPHandler) enable(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Enable(ctx, client, claims.Subject, req.Code, clientIP(r), r.UserAgent()); err != nil {
 		switch err {
 		case domain.ErrTOTPInvalid:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid code"})
+			writeError(w, r, http.StatusBadRequest, "invalid_totp", "Invalid code.")
 		case domain.ErrTOTPNoPending:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		case domain.ErrRedisRequired:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -93,11 +95,11 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 		DeviceName     string `json:"device_name"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	if req.TwoFAToken == "" || req.Code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two_factor_token and code are required"})
+		writeError(w, r, http.StatusBadRequest, "token_and_code_are_required", "Two-factor token and code are required.")
 		return
 	}
 
@@ -108,13 +110,13 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch err {
 		case domain.ErrInvalidToken:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired 2FA token"})
+			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_2fa_token", "Invalid or expired 2FA token.")
 		case domain.ErrTOTPInvalid:
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid code"})
+			writeError(w, r, http.StatusUnauthorized, "invalid_totp", "Invalid code.")
 		case domain.ErrRedisRequired:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -133,19 +135,19 @@ func (h *TOTPHandler) recoveryCodes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		resp, err := h.svc.CountRecoveryCodes(ctx, client, claims.Subject)
 		if err != nil {
-			writeRecoveryCodeError(w, err)
+			writeRecoveryCodeError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
 		resp, err := h.svc.GenerateRecoveryCodes(ctx, client, claims.Subject, clientIP(r), r.UserAgent())
 		if err != nil {
-			writeRecoveryCodeError(w, err)
+			writeRecoveryCodeError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
@@ -160,11 +162,11 @@ func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request)
 		DeviceName     string `json:"device_name"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	if req.TwoFAToken == "" || req.Code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two_factor_token and code are required"})
+		writeError(w, r, http.StatusBadRequest, "token_and_code_are_required", "Two-factor token and code are required.")
 		return
 	}
 
@@ -175,13 +177,13 @@ func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		switch err {
 		case domain.ErrInvalidToken:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired 2FA token"})
+			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_2fa_token", "Invalid or expired 2FA token.")
 		case domain.ErrTOTPInvalid:
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid recovery code"})
+			writeError(w, r, http.StatusUnauthorized, "invalid_recovery_code", "Invalid recovery code.")
 		case domain.ErrRedisRequired:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -197,7 +199,7 @@ func (h *TOTPHandler) disable(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code is required"})
+		writeError(w, r, http.StatusBadRequest, "code_is_required", "Code is required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -206,26 +208,26 @@ func (h *TOTPHandler) disable(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Disable(ctx, client, claims.Subject, req.Code, clientIP(r), r.UserAgent()); err != nil {
 		switch err {
 		case domain.ErrTOTPInvalid:
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid code"})
+			writeError(w, r, http.StatusUnauthorized, "invalid_totp", "Invalid code.")
 		case domain.ErrTOTPNotEnabled:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
-func writeRecoveryCodeError(w http.ResponseWriter, err error) {
+func writeRecoveryCodeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch err {
 	case domain.ErrTOTPNotEnabled:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TOTP must be enabled before generating recovery codes"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "TOTP must be enabled before generating recovery codes.")
 	case domain.ErrNotFound:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		writeError(w, r, http.StatusNotFound, "user_not_found", "User not found.")
 	case domain.ErrInvalidToken:
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "invalid_access_token", "Unauthorized.")
 	default:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 	}
 }

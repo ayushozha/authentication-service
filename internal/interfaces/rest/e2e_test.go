@@ -105,7 +105,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	adminSvc := application.NewAdminService(adminRepo, audit, rl, e2eAdminKey, time.Hour)
 	authSvc := application.NewAuthService(users, sessions, cache, audit, rl)
 	verifySvc := application.NewEmailVerifyService(users, tokens, mailer)
-	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer)
+	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer, rl)
 	magicSvc := application.NewMagicLinkService(clients, users, sessions, cache, mailer, audit, rl)
 	totpSvc := application.NewTOTPService(users, sessions, cache, audit, recoveryCodes)
 	oauthSvc := application.NewOAuthService(users, clients, oauthRepo, sessions, cache, audit)
@@ -238,10 +238,9 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 		"password": e2ePassword,
 	}, env.apiHeaders())
 	assertStatus(t, invalidLoginEmailRec, http.StatusBadRequest)
-	var invalidLoginEmail map[string]string
-	decodeBody(t, invalidLoginEmailRec, &invalidLoginEmail)
-	if invalidLoginEmail["error"] != domain.ErrInvalidEmail.Error() {
-		t.Fatalf("expected invalid email error, got %q", invalidLoginEmail["error"])
+	invalidLoginEmail := assertAuthError(t, invalidLoginEmailRec, "invalid_email", "AUTH_INVALID_EMAIL", false)
+	if invalidLoginEmail.Error != domain.ErrInvalidEmail.Error() {
+		t.Fatalf("expected invalid email error, got %q", invalidLoginEmail.Error)
 	}
 
 	invalidMagicEmailRec := env.request(t, http.MethodPost, "/api/auth/magic-link/send", map[string]string{
@@ -291,6 +290,20 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 		"session_mode": "token",
 	}, env.apiHeaders())
 	assertStatus(t, badLoginRec, http.StatusUnauthorized)
+	badLogin := assertAuthError(t, badLoginRec, "invalid_credentials", "AUTH_INVALID_CREDENTIALS", false)
+	if badLogin.UserMessage != "The email or password is incorrect." {
+		t.Fatalf("invalid login copy mismatch: %+v", badLogin)
+	}
+	unknownLoginRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":        "unknown@example.com",
+		"password":     "wrong-password",
+		"session_mode": "token",
+	}, env.apiHeaders())
+	assertStatus(t, unknownLoginRec, http.StatusUnauthorized)
+	unknownLogin := assertAuthError(t, unknownLoginRec, "invalid_credentials", "AUTH_INVALID_CREDENTIALS", false)
+	if unknownLogin.Error != badLogin.Error || unknownLogin.UserMessage != badLogin.UserMessage {
+		t.Fatalf("login should not distinguish unknown email from wrong password: known=%+v unknown=%+v", badLogin, unknownLogin)
+	}
 
 	loginRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
 		"email":        "alice@example.com",
@@ -449,11 +462,40 @@ func TestE2ERefreshTransportContract(t *testing.T) {
 
 	missingRefreshRec := env.request(t, http.MethodPost, "/api/auth/refresh", map[string]string{}, env.apiHeaders())
 	assertStatus(t, missingRefreshRec, http.StatusBadRequest)
-	var missingRefresh errorPayload
-	decodeBody(t, missingRefreshRec, &missingRefresh)
-	if missingRefresh.Code != "refresh_token_missing" {
-		t.Fatalf("expected refresh_token_missing, got %+v", missingRefresh)
+	assertAuthError(t, missingRefreshRec, "refresh_token_missing", "AUTH_TOKEN_MISSING", false)
+}
+
+func TestE2EPasswordResetIsEnumerationSafeAndRateLimited(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+	signupE2EUser(t, env, "reset-known@example.com", e2ePassword)
+
+	knownRec := env.request(t, http.MethodPost, "/api/auth/forgot-password", map[string]string{
+		"email": "reset-known@example.com",
+	}, env.apiHeaders())
+	assertStatus(t, knownRec, http.StatusOK)
+
+	unknownRec := env.request(t, http.MethodPost, "/api/auth/forgot-password", map[string]string{
+		"email": "reset-unknown@example.com",
+	}, env.apiHeaders())
+	assertStatus(t, unknownRec, http.StatusOK)
+	if strings.TrimSpace(knownRec.Body.String()) != strings.TrimSpace(unknownRec.Body.String()) {
+		t.Fatalf("forgot-password should not distinguish known and unknown email: known=%s unknown=%s", knownRec.Body.String(), unknownRec.Body.String())
 	}
+
+	for i := 0; i < 3; i++ {
+		rec := env.request(t, http.MethodPost, "/api/auth/forgot-password", map[string]string{
+			"email": "reset-limit@example.com",
+		}, env.apiHeaders())
+		assertStatus(t, rec, http.StatusOK)
+	}
+	limitedRec := env.request(t, http.MethodPost, "/api/auth/forgot-password", map[string]string{
+		"email": "reset-limit@example.com",
+	}, env.apiHeaders())
+	assertStatus(t, limitedRec, http.StatusTooManyRequests)
+	if limitedRec.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited reset should include Retry-After")
+	}
+	assertAuthError(t, limitedRec, "rate_limited", "AUTH_RATE_LIMITED", true)
 }
 
 func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
@@ -570,6 +612,7 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 		"session_mode":     "token",
 	}, env.apiHeaders())
 	assertStatus(t, badTOTPRec, http.StatusUnauthorized)
+	assertAuthError(t, badTOTPRec, "invalid_totp", "AUTH_MFA_CODE_INVALID", false)
 
 	validCode, err := totp.GenerateCode(setup.Secret, time.Now())
 	if err != nil {
@@ -637,6 +680,7 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 		"session_mode":     "token",
 	}, env.apiHeaders())
 	assertStatus(t, reuseRecoveryRec, http.StatusUnauthorized)
+	assertAuthError(t, reuseRecoveryRec, "invalid_recovery_code", "AUTH_MFA_RECOVERY_CODE_INVALID", false)
 
 	disableCode, err := totp.GenerateCode(setup.Secret, time.Now())
 	if err != nil {
@@ -952,7 +996,7 @@ func TestE2EOAuthAndPasskeyRouteCoverage(t *testing.T) {
 
 	replayCallbackRec := env.request(t, http.MethodGet, "/api/auth/oauth/test/callback?code=oauth-code&state="+url.QueryEscape(state), nil, nil)
 	assertStatus(t, replayCallbackRec, http.StatusFound)
-	if !strings.Contains(replayCallbackRec.Header().Get("Location"), "error=invalid_state") {
+	if !strings.Contains(replayCallbackRec.Header().Get("Location"), "error=AUTH_OAUTH_STATE_MISMATCH") {
 		t.Fatalf("expected replayed oauth state to fail, got %s", replayCallbackRec.Header().Get("Location"))
 	}
 
@@ -2062,6 +2106,25 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, out interface{}) {
 	if err := json.NewDecoder(rec.Body).Decode(out); err != nil {
 		t.Fatalf("decode response %d %s: %v", rec.Code, rec.Body.String(), err)
 	}
+}
+
+func assertAuthError(t *testing.T, rec *httptest.ResponseRecorder, legacyCode, authCode string, retryable bool) errorPayload {
+	t.Helper()
+	var payload errorPayload
+	decodeBody(t, rec, &payload)
+	if payload.Code != legacyCode {
+		t.Fatalf("expected legacy code %q, got %+v", legacyCode, payload)
+	}
+	if payload.AuthCode != authCode {
+		t.Fatalf("expected auth code %q, got %+v", authCode, payload)
+	}
+	if payload.UserMessage == "" {
+		t.Fatalf("expected user-safe message, got %+v", payload)
+	}
+	if payload.Retryable != retryable {
+		t.Fatalf("expected retryable=%v, got %+v", retryable, payload)
+	}
+	return payload
 }
 
 func tokenFromURL(t *testing.T, rawURL string) string {

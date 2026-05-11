@@ -119,7 +119,7 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		case domain.ErrInvalidEmail:
 			writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
 		case domain.ErrInvalidPassword:
-			writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password.")
+			writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "The email or password is incorrect.")
 		case domain.ErrAccountSuspended:
 			writeError(w, r, http.StatusForbidden, "account_suspended", err.Error())
 		case domain.ErrSSORequired:
@@ -240,7 +240,7 @@ func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	claims := GetUserClaims(r)
 	if claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
@@ -250,7 +250,7 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		user, err := h.authSvc.GetUser(ctx, claims.Subject)
 		if err != nil || user == nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			writeError(w, r, http.StatusNotFound, "user_not_found", "User not found.")
 			return
 		}
 		writeJSON(w, http.StatusOK, user)
@@ -260,26 +260,26 @@ func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPatch {
 		var req application.UpdateProfileRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 			return
 		}
 		user, err := h.authSvc.UpdateProfile(ctx, claims.Subject, req)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not update profile"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 			return
 		}
 		writeJSON(w, http.StatusOK, user)
 		return
 	}
 
-	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 }
 
 func (h *AuthHandler) sessions(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
@@ -290,36 +290,36 @@ func (h *AuthHandler) sessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		sessions, err := h.authSvc.ListSessions(ctx, client, claims.Subject)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not list sessions"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"sessions": sessions})
 	case http.MethodDelete:
 		if err := h.authSvc.RevokeAllSessions(ctx, client, claims.Subject, clientIP(r), r.UserAgent()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not revoke sessions"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 			return
 		}
 		ClearRefreshCookie(w, h.cfg)
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
 func (h *AuthHandler) sessionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 	sessionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/sessions/"), "/")
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id required"})
+		writeError(w, r, http.StatusBadRequest, "session_id_required", "Session ID required.")
 		return
 	}
 
@@ -327,10 +327,10 @@ func (h *AuthHandler) sessionByID(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := h.authSvc.RevokeSession(ctx, client, claims.Subject, sessionID, clientIP(r), r.UserAgent()); err != nil {
 		if err == domain.ErrNotFound {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			writeError(w, r, http.StatusNotFound, "invalid_access_token", "Session not found.")
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not revoke session"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
@@ -342,7 +342,7 @@ func (h *AuthHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	var req application.ChangePasswordRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 
@@ -351,11 +351,11 @@ func (h *AuthHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.authSvc.ChangePassword(ctx, client, claims.Subject, req, clientIP(r), r.UserAgent(), h.cfg.BcryptCost); err != nil {
 		if err == domain.ErrNotFound {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			writeError(w, r, http.StatusNotFound, "user_not_found", "User not found.")
 		} else if err == domain.ErrSSORequired {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusForbidden, "sso_required", err.Error())
 		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		}
 		return
 	}

@@ -41,7 +41,7 @@ func (h *AdaptiveSecurityHandler) verifyStepUp(w http.ResponseWriter, r *http.Re
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 	var req struct {
@@ -50,18 +50,18 @@ func (h *AdaptiveSecurityHandler) verifyStepUp(w http.ResponseWriter, r *http.Re
 		Code           string `json:"code"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	if strings.TrimSpace(req.ChallengeToken) == "" || strings.TrimSpace(req.Code) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "challenge_token and code are required"})
+		writeError(w, r, http.StatusBadRequest, "token_and_code_are_required", "Challenge token and code are required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	resp, err := h.svc.VerifyStepUp(ctx, client, claims.Subject, req.ChallengeToken, req.Factor, req.Code, clientIP(r), r.UserAgent())
 	if err != nil {
-		writeAdaptiveSecurityError(w, err)
+		writeAdaptiveSecurityError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -74,12 +74,12 @@ func (h *AdaptiveSecurityHandler) verifyAdminStepUp(w http.ResponseWriter, r *ht
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	actor := GetAdminActor(r)
 	if actor == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 	var req struct {
@@ -88,18 +88,18 @@ func (h *AdaptiveSecurityHandler) verifyAdminStepUp(w http.ResponseWriter, r *ht
 		Code           string `json:"code"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	if strings.TrimSpace(req.ChallengeToken) == "" || strings.TrimSpace(req.Code) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "challenge_token and code are required"})
+		writeError(w, r, http.StatusBadRequest, "token_and_code_are_required", "Challenge token and code are required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	resp, err := h.svc.VerifyAdminStepUp(ctx, actor, req.ChallengeToken, req.Factor, req.Code, clientIP(r), r.UserAgent())
 	if err != nil {
-		writeAdaptiveSecurityError(w, err)
+		writeAdaptiveSecurityError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -109,18 +109,18 @@ func (h *AdaptiveSecurityHandler) devices(w http.ResponseWriter, r *http.Request
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	devices, err := h.svc.ListDevices(ctx, client, claims.Subject)
 	if err != nil {
-		writeAdaptiveSecurityError(w, err)
+		writeAdaptiveSecurityError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": devices})
@@ -130,12 +130,12 @@ func (h *AdaptiveSecurityHandler) deviceByID(w http.ResponseWriter, r *http.Requ
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 	deviceID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/devices/"), "/")
 	if deviceID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "device_id required"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "Device ID required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -147,7 +147,7 @@ func (h *AdaptiveSecurityHandler) deviceByID(w http.ResponseWriter, r *http.Requ
 			Trusted *bool  `json:"trusted"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 			return
 		}
 		trusted := false
@@ -156,18 +156,18 @@ func (h *AdaptiveSecurityHandler) deviceByID(w http.ResponseWriter, r *http.Requ
 		}
 		device, err := h.svc.TrustDevice(ctx, client, claims.Subject, deviceID, req.Name, trusted)
 		if err != nil {
-			writeAdaptiveSecurityError(w, err)
+			writeAdaptiveSecurityError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, device)
 	case http.MethodDelete:
 		if err := h.svc.DeleteDevice(ctx, client, claims.Subject, deviceID); err != nil {
-			writeAdaptiveSecurityError(w, err)
+			writeAdaptiveSecurityError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
@@ -186,11 +186,19 @@ func writeAdaptiveActionDecision(w http.ResponseWriter, decision *application.Ac
 	}
 	status := http.StatusForbidden
 	errorCode := "step_up_required"
+	authCode := "AUTH_MFA_REQUIRED"
 	if decision.Blocked {
 		errorCode = "blocked_by_security_policy"
+		authCode = "AUTH_ACCOUNT_DISABLED"
 	}
+	definition := authErrorDefinitions[authCode]
 	writeJSON(w, status, map[string]interface{}{
 		"error":            errorCode,
+		"code":             errorCode,
+		"message":          definition.UserMessage,
+		"auth_code":        authCode,
+		"user_message":     definition.UserMessage,
+		"retryable":        definition.Retryable,
 		"action":           decision.Action,
 		"step_up_required": decision.StepUpRequired,
 		"challenge_token":  decision.ChallengeToken,
@@ -200,19 +208,19 @@ func writeAdaptiveActionDecision(w http.ResponseWriter, decision *application.Ac
 	})
 }
 
-func writeAdaptiveSecurityError(w http.ResponseWriter, err error) {
+func writeAdaptiveSecurityError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrRedisRequired):
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "adaptive security requires Redis"})
+		writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Adaptive security requires Redis.")
 	case errors.Is(err, domain.ErrInvalidToken):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired security token"})
+		writeError(w, r, http.StatusBadRequest, "invalid_or_expired_2fa_token", "Invalid or expired security token.")
 	case errors.Is(err, domain.ErrTOTPInvalid):
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid code"})
+		writeError(w, r, http.StatusUnauthorized, "invalid_totp", "Invalid code.")
 	case errors.Is(err, domain.ErrStepUpEnrollmentRequired):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "step-up factor enrollment required"})
+		writeError(w, r, http.StatusForbidden, "mfa_required", "Step-up factor enrollment required.")
 	case errors.Is(err, domain.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "user_not_found", "Not found.")
 	default:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 	}
 }

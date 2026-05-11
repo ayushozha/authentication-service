@@ -61,6 +61,18 @@ final class AuthServiceClientTest {
     }
 
     @Test
+    void responseExposesCanonicalAuthErrorFields() {
+        AuthServiceClient.AuthServiceResponse response = new AuthServiceClient.AuthServiceResponse(
+                429,
+                "{\"error\":\"too many requests\",\"code\":\"rate_limited\",\"auth_code\":\"AUTH_RATE_LIMITED\",\"user_message\":\"Too many attempts. Try again in a few minutes.\",\"retryable\":true}"
+        );
+
+        assertEquals("AUTH_RATE_LIMITED", response.getAuthCode());
+        assertEquals("Too many attempts. Try again in a few minutes.", response.getUserMessage());
+        assertTrue(response.isRetryable());
+    }
+
+    @Test
     void responseErrorFallsBackToBody() {
         AuthServiceClient.AuthServiceResponse response = new AuthServiceClient.AuthServiceResponse(
                 500,
@@ -105,6 +117,32 @@ final class AuthServiceClientTest {
             assertTrue(requestBody.get().contains("\"token_transport\":\"json\""));
             assertEquals("access", store.getAccessToken());
             assertEquals("refresh", store.getRefreshToken());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void requestExceptionUsesCanonicalAuthErrorFields() throws Exception {
+        HttpServer server = startJsonServer(
+                401,
+                "{\"error\":\"The email or password is incorrect.\",\"code\":\"invalid_credentials\",\"auth_code\":\"AUTH_INVALID_CREDENTIALS\",\"user_message\":\"The email or password is incorrect.\",\"retryable\":false}",
+                exchange -> {}
+        );
+
+        try {
+            AuthServiceClient client = new AuthServiceClient(baseUrl(server), "api-key");
+
+            try {
+                client.login("user@example.com", "wrong");
+            } catch (AuthServiceClient.AuthServiceException err) {
+                assertEquals(401, err.getStatusCode());
+                assertEquals("AUTH_INVALID_CREDENTIALS", err.getAuthCode());
+                assertEquals("The email or password is incorrect.", err.getMessage());
+                assertTrue(!err.isRetryable());
+                return;
+            }
+            throw new AssertionError("Expected login to throw");
         } finally {
             server.stop(0);
         }

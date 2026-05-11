@@ -147,7 +147,7 @@ func main() {
 	adminSvc := application.NewAdminService(adminRepo, auditRepo, rl, cfg.AdminTokenSecret, cfg.AdminAccessTTL)
 	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditEvents, rl)
 	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer)
-	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer)
+	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer, rl)
 	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, auditEvents, rl)
 	totpSvc := application.NewTOTPService(userRepo, sessionRepo, rdb, auditEvents, recoveryCodeRepo)
 	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditEvents)

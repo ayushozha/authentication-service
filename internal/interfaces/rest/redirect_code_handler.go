@@ -25,16 +25,16 @@ func RegisterRedirectCodeRoute(mux *http.ServeMux, cfg *HandlerConfig) {
 			code = strings.TrimSpace(r.URL.Query().Get("code"))
 		}
 		if code == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code is required"})
+			writeError(w, r, http.StatusBadRequest, "code_is_required", "Code is required.")
 			return
 		}
 		resp, err := consumeRedirectAuthCode(r.Context(), cfg, code)
 		if err != nil {
 			if err == domain.ErrRedisRequired {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "redirect code exchange requires Redis"})
+				writeError(w, r, http.StatusServiceUnavailable, "redirect_code_unavailable", "Redirect code exchange requires Redis.")
 				return
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired code"})
+			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_token", "Invalid or expired code.")
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -44,7 +44,7 @@ func RegisterRedirectCodeRoute(mux *http.ServeMux, cfg *HandlerConfig) {
 func redirectWithAuthCode(w http.ResponseWriter, r *http.Request, cfg *HandlerConfig, resp *application.AuthResponse, refreshToken string, includeRefresh bool) {
 	code, err := issueRedirectAuthCode(r.Context(), cfg, resp, refreshToken, includeRefresh)
 	if err != nil {
-		http.Redirect(w, r, strings.TrimRight(cfg.BaseURL, "/")+"/login.html?error=redirect_code_unavailable", http.StatusFound)
+		redirectWithLoginAuthError(w, r, cfg, "AUTH_SERVICE_UNAVAILABLE")
 		return
 	}
 	http.Redirect(w, r, strings.TrimRight(cfg.BaseURL, "/")+"/login.html?auth_code="+url.QueryEscape(code), http.StatusFound)

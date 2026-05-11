@@ -32,7 +32,7 @@ func (h *PasskeyHandler) registerBegin(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
@@ -42,14 +42,14 @@ func (h *PasskeyHandler) registerBegin(w http.ResponseWriter, r *http.Request) {
 	options, err := h.svc.BeginRegistration(ctx, client, claims.Subject)
 	if err != nil {
 		if err == domain.ErrRedisRequired {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "passkeys require Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Passkeys require Redis.")
 			return
 		}
 		if err == domain.ErrNotFound {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			writeError(w, r, http.StatusNotFound, "user_not_found", "User not found.")
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		return
 	}
 	writeJSON(w, http.StatusOK, options)
@@ -59,7 +59,7 @@ func (h *PasskeyHandler) registerFinish(w http.ResponseWriter, r *http.Request) 
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
@@ -70,15 +70,15 @@ func (h *PasskeyHandler) registerFinish(w http.ResponseWriter, r *http.Request) 
 	if err := h.svc.FinishRegistration(ctx, client, claims.Subject, friendlyName, r, clientIP(r), r.UserAgent()); err != nil {
 		switch err {
 		case domain.ErrRedisRequired:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "passkeys require Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Passkeys require Redis.")
 		case domain.ErrInvalidToken:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no registration in progress"})
+			writeError(w, r, http.StatusBadRequest, "no_registration_in_progress", "No registration in progress.")
 		case domain.ErrNotFound:
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			writeError(w, r, http.StatusNotFound, "user_not_found", "User not found.")
 		case domain.ErrPasskeyAttestation:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "passkey attestation rejected"})
+			writeError(w, r, http.StatusBadRequest, "passkey_attestation_rejected", "Passkey attestation rejected.")
 		default:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "registration failed"})
+			writeError(w, r, http.StatusBadRequest, "registration_failed", "Registration failed.")
 		}
 		return
 	}
@@ -89,7 +89,7 @@ func (h *PasskeyHandler) registerFinish(w http.ResponseWriter, r *http.Request) 
 func (h *PasskeyHandler) loginBegin(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 
@@ -99,9 +99,9 @@ func (h *PasskeyHandler) loginBegin(w http.ResponseWriter, r *http.Request) {
 	options, _, err := h.svc.BeginLogin(ctx, client)
 	if err != nil {
 		if err == domain.ErrRedisRequired {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "passkeys require Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Passkeys require Redis.")
 		} else {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -111,13 +111,13 @@ func (h *PasskeyHandler) loginBegin(w http.ResponseWriter, r *http.Request) {
 func (h *PasskeyHandler) loginFinish(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session_id required"})
+		writeError(w, r, http.StatusBadRequest, "session_id_required", "Session ID required.")
 		return
 	}
 
@@ -128,15 +128,15 @@ func (h *PasskeyHandler) loginFinish(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch err {
 		case domain.ErrRedisRequired:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "passkeys require Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Passkeys require Redis.")
 		case domain.ErrInvalidToken:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no login in progress"})
+			writeError(w, r, http.StatusBadRequest, "no_login_in_progress", "No login in progress.")
 		case domain.ErrNotFound:
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+			writeError(w, r, http.StatusUnauthorized, "user_not_found", "User not found.")
 		case domain.ErrAccountSuspended:
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "account is suspended"})
+			writeError(w, r, http.StatusForbidden, "account_suspended", "Account is suspended.")
 		default:
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication failed"})
+			writeError(w, r, http.StatusUnauthorized, "authentication_failed", "Authentication failed.")
 		}
 		return
 	}
@@ -149,7 +149,7 @@ func (h *PasskeyHandler) listOrDeleteRoot(w http.ResponseWriter, r *http.Request
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
@@ -160,7 +160,7 @@ func (h *PasskeyHandler) listOrDeleteRoot(w http.ResponseWriter, r *http.Request
 	case http.MethodGet:
 		creds, err := h.svc.ListPasskeys(ctx, claims.Subject)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 			return
 		}
 		writeJSON(w, http.StatusOK, creds)
@@ -168,16 +168,16 @@ func (h *PasskeyHandler) listOrDeleteRoot(w http.ResponseWriter, r *http.Request
 		// Backward compatible delete style: DELETE /api/auth/passkeys?id=<passkey-id>
 		passkeyID := strings.TrimSpace(r.URL.Query().Get("id"))
 		if passkeyID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "passkey ID required"})
+			writeError(w, r, http.StatusBadRequest, "passkey_id_required", "Passkey ID required.")
 			return
 		}
 		if err := h.svc.DeletePasskey(ctx, client, passkeyID, claims.Subject, clientIP(r), r.UserAgent()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not delete passkey"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
@@ -185,14 +185,14 @@ func (h *PasskeyHandler) deletePasskeyByPath(w http.ResponseWriter, r *http.Requ
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
 	passkeyID := strings.TrimPrefix(r.URL.Path, "/api/auth/passkeys/")
 	passkeyID = strings.TrimSpace(passkeyID)
 	if passkeyID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "passkey ID required"})
+		writeError(w, r, http.StatusBadRequest, "passkey_id_required", "Passkey ID required.")
 		return
 	}
 
@@ -200,7 +200,7 @@ func (h *PasskeyHandler) deletePasskeyByPath(w http.ResponseWriter, r *http.Requ
 	defer cancel()
 
 	if err := h.svc.DeletePasskey(ctx, client, passkeyID, claims.Subject, clientIP(r), r.UserAgent()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not delete passkey"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
