@@ -82,6 +82,35 @@ final class AuthServiceClientTest {
     }
 
     @Test
+    void loginRequestsJsonTokenTransportAndPersistsTokens() throws Exception {
+        AuthServiceClient.MemoryTokenStore store = new AuthServiceClient.MemoryTokenStore();
+        AtomicReference<String> requestPath = new AtomicReference<>();
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = startJsonServer(
+                200,
+                "{\"access_token\":\"access\",\"refresh_token\":\"refresh\",\"refresh\":{\"transport\":\"json\",\"expires_in\":604800}}",
+                exchange -> {
+                    requestPath.set(exchange.getRequestURI().toString());
+                    requestBody.set(readAll(exchange.getRequestBody()));
+                }
+        );
+
+        try {
+            AuthServiceClient client = new AuthServiceClient(baseUrl(server), "api-key", "token", store);
+
+            client.login("user@example.com", "Password123!");
+
+            assertEquals("/api/auth/login", requestPath.get());
+            assertTrue(requestBody.get().contains("\"session_mode\":\"token\""));
+            assertTrue(requestBody.get().contains("\"token_transport\":\"json\""));
+            assertEquals("access", store.getAccessToken());
+            assertEquals("refresh", store.getRefreshToken());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void verifyEmailSendsToken() throws Exception {
         AtomicReference<String> requestPath = new AtomicReference<>();
         AtomicReference<String> requestBody = new AtomicReference<>();
@@ -154,6 +183,7 @@ final class AuthServiceClientTest {
 
             assertEquals("/api/auth/totp/verify", requestPath.get());
             assertTrue(requestBody.get().contains("\"two_factor_token\":\"challenge\""));
+            assertTrue(requestBody.get().contains("\"token_transport\":\"json\""));
             assertTrue(requestBody.get().contains("\"remember_device\":true"));
             assertEquals("mfa-access", response.getAccessToken());
             assertEquals("mfa-access", store.getAccessToken());
@@ -182,7 +212,7 @@ final class AuthServiceClientTest {
 
             client.finishPasskeyLogin("session 1", "{\"id\":\"credential\"}");
 
-            assertEquals("/api/auth/passkey/login/finish?session_id=session+1&session_mode=token", requestPath.get());
+            assertEquals("/api/auth/passkey/login/finish?session_id=session+1&session_mode=token&token_transport=json", requestPath.get());
             assertEquals("{\"id\":\"credential\"}", requestBody.get());
             assertEquals("passkey-access", store.getAccessToken());
             assertEquals("passkey-refresh", store.getRefreshToken());

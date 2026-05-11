@@ -88,6 +88,7 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 		TwoFAToken     string `json:"two_factor_token"`
 		Code           string `json:"code"`
 		SessionMode    string `json:"session_mode"`
+		TokenTransport string `json:"token_transport"`
 		RememberDevice bool   `json:"remember_device"`
 		DeviceName     string `json:"device_name"`
 	}
@@ -118,11 +119,7 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isTokenSessionMode(r, req.SessionMode) {
-		resp.RefreshToken = refreshToken
-	} else {
-		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-	}
+	applyRefreshTransport(w, h.cfg, resp, refreshToken, tokenTransport(r, req.TokenTransport, req.SessionMode))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -158,6 +155,7 @@ func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request)
 		TwoFAToken     string `json:"two_factor_token"`
 		Code           string `json:"code"`
 		SessionMode    string `json:"session_mode"`
+		TokenTransport string `json:"token_transport"`
 		RememberDevice bool   `json:"remember_device"`
 		DeviceName     string `json:"device_name"`
 	}
@@ -188,11 +186,7 @@ func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if isTokenSessionMode(r, req.SessionMode) {
-		resp.RefreshToken = refreshToken
-	} else {
-		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-	}
+	applyRefreshTransport(w, h.cfg, resp, refreshToken, tokenTransport(r, req.TokenTransport, req.SessionMode))
 	writeJSON(w, http.StatusOK, resp)
 }
 

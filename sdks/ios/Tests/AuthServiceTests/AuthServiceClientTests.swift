@@ -33,10 +33,15 @@ final class AuthServiceClientTests: XCTestCase {
         MockURLProtocol.requestHandler = { request in
             XCTAssertEqual(request.url?.path, "/api/auth/signup")
             XCTAssertEqual(request.value(forHTTPHeaderField: "X-API-Key"), "api-key")
+            let requestBody = try XCTUnwrap(Self.requestBodyData(from: request))
+            let payload = try JSONSerialization.jsonObject(with: requestBody) as? [String: String]
+            XCTAssertEqual(payload?["session_mode"], "token")
+            XCTAssertEqual(payload?["token_transport"], "json")
             let body = """
             {
               "access_token": "access",
               "refresh_token": "refresh",
+              "refresh": { "transport": "json", "expires_in": 604800 },
               "token_type": "Bearer",
               "expires_in": 900,
               "user": {
@@ -60,9 +65,40 @@ final class AuthServiceClientTests: XCTestCase {
 
         XCTAssertEqual(response.accessToken, "access")
         XCTAssertEqual(response.refreshToken, "refresh")
+        XCTAssertEqual(response.refresh?.transport, "json")
         XCTAssertEqual(response.user?.email, "user@example.com")
         XCTAssertEqual(tokenStore.accessToken, "access")
         XCTAssertEqual(tokenStore.refreshToken, "refresh")
+    }
+
+    func testRefreshUsesJsonTokenTransport() async throws {
+        let tokenStore = InMemoryAuthServiceTokenStore()
+        tokenStore.refreshToken = "refresh"
+        let client = try makeClient(tokenStore: tokenStore)
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/refresh")
+            let requestBody = try XCTUnwrap(Self.requestBodyData(from: request))
+            let payload = try JSONSerialization.jsonObject(with: requestBody) as? [String: String]
+            XCTAssertEqual(payload?["refresh_token"], "refresh")
+            XCTAssertEqual(payload?["token_transport"], "json")
+            let body = """
+            {
+              "access_token": "new-access",
+              "refresh_token": "new-refresh",
+              "refresh": { "transport": "json", "expires_in": 604800 },
+              "token_type": "Bearer",
+              "expires_in": 900
+            }
+            """
+            return Self.jsonResponse(status: 200, body: body, request: request)
+        }
+
+        let response = try await client.refresh()
+
+        XCTAssertEqual(response.refresh?.transport, "json")
+        XCTAssertEqual(tokenStore.accessToken, "new-access")
+        XCTAssertEqual(tokenStore.refreshToken, "new-refresh")
     }
 
     func testAPIErrorUsesServerMessage() async throws {
@@ -131,6 +167,7 @@ final class AuthServiceClientTests: XCTestCase {
             XCTAssertEqual(payload?["two_factor_token"] as? String, "challenge")
             XCTAssertEqual(payload?["code"] as? String, "123456")
             XCTAssertEqual(payload?["session_mode"] as? String, "token")
+            XCTAssertEqual(payload?["token_transport"] as? String, "json")
             let responseBody = """
             {
               "access_token": "mfa-access",
@@ -171,6 +208,26 @@ final class AuthServiceClientTests: XCTestCase {
         XCTAssertEqual(challenge.sessionID, "session-1")
         XCTAssertEqual(challenge.publicKey["challenge"], .string("abc"))
         XCTAssertEqual(challenge.publicKey["timeout"], .number(60000))
+    }
+
+    func testFinishPasskeyLoginRequestsJsonTokenTransport() async throws {
+        let tokenStore = InMemoryAuthServiceTokenStore()
+        let client = try makeClient(tokenStore: tokenStore)
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(request.url?.path, "/api/auth/passkey/login/finish")
+            XCTAssertEqual(request.url?.query?.contains("session_id=session-1"), true)
+            XCTAssertEqual(request.url?.query?.contains("session_mode=token"), true)
+            XCTAssertEqual(request.url?.query?.contains("token_transport=json"), true)
+            let body = try XCTUnwrap(Self.requestBodyData(from: request))
+            XCTAssertEqual(String(data: body, encoding: .utf8), #"{"id":"credential"}"#)
+            return Self.jsonResponse(status: 200, body: #"{"access_token":"passkey-access","refresh_token":"passkey-refresh"}"#, request: request)
+        }
+
+        let response = try await client.finishPasskeyLogin(sessionID: "session-1", credentialJSON: Data(#"{"id":"credential"}"#.utf8))
+
+        XCTAssertEqual(response.accessToken, "passkey-access")
+        XCTAssertEqual(tokenStore.accessToken, "passkey-access")
+        XCTAssertEqual(tokenStore.refreshToken, "passkey-refresh")
     }
 
     private func makeClient(tokenStore: AuthServiceTokenStore = InMemoryAuthServiceTokenStore()) throws -> AuthServiceClient {

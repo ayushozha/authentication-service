@@ -130,7 +130,10 @@ class AuthServiceNodeClient {
 
   withSessionMode(body) {
     const next = Object.assign({}, body || {});
-    if (this.sessionMode === 'token' && !next.session_mode) next.session_mode = 'token';
+    if (this.sessionMode === 'token') {
+      if (!next.session_mode) next.session_mode = 'token';
+      if (!next.token_transport) next.token_transport = 'json';
+    }
     return next;
   }
 

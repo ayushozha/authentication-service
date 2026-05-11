@@ -111,7 +111,9 @@ export class AuthServiceClient {
   }
 
   private withSessionMode(body: Json = {}) {
-    return this.sessionMode === "token" && !body.session_mode ? { ...body, session_mode: "token" } : body;
+    return this.sessionMode === "token"
+      ? { ...body, session_mode: body.session_mode || "token", token_transport: body.token_transport || "json" }
+      : body;
   }
 
   private persist<T extends Json | null>(data: T): T {

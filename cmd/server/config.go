@@ -159,7 +159,17 @@ func loadConfig() Config {
 	})
 
 	serveFrontend := envStr("SERVE_FRONTEND", "true") == "true"
-	cookieSecure := envStr("COOKIE_SECURE", "false") == "true"
+	baseURL := envStr("BASE_URL", "http://localhost:8080")
+	cookieSecureEnv := strings.TrimSpace(os.Getenv("COOKIE_SECURE"))
+	cookieSecure := strings.EqualFold(cookieSecureEnv, "true") || (cookieSecureEnv == "" && strings.HasPrefix(baseURL, "https://"))
+	cookieSameSite := strings.TrimSpace(os.Getenv("COOKIE_SAMESITE"))
+	if cookieSameSite == "" {
+		if cookieSecure {
+			cookieSameSite = "none"
+		} else {
+			cookieSameSite = "lax"
+		}
+	}
 
 	return Config{
 		Port:             envStr("PORT", "8080"),
@@ -173,7 +183,7 @@ func loadConfig() Config {
 		AdminAPIKey:      envStr("ADMIN_API_KEY", ""),
 		AdminTokenSecret: envStr("ADMIN_TOKEN_SECRET", envStr("ADMIN_API_KEY", "")),
 		AdminAccessTTL:   adminAccessTTL,
-		BaseURL:          envStr("BASE_URL", "http://localhost:8080"),
+		BaseURL:          baseURL,
 
 		JWTAccessTTL:  accessTTL,
 		JWTRefreshTTL: refreshTTL,
@@ -203,7 +213,7 @@ func loadConfig() Config {
 
 		BcryptCost:     bcryptCost,
 		CookieSecure:   cookieSecure,
-		CookieSameSite: envStr("COOKIE_SAMESITE", "lax"),
+		CookieSameSite: cookieSameSite,
 		CookieDomain:   envStr("COOKIE_DOMAIN", ""),
 
 		PasswordMinLength:     passwordMinLength,

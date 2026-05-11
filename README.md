@@ -46,7 +46,8 @@ A multi-tenant authentication microservice built with Go, providing email/passwo
   - App-initiated routes still require `X-API-Key`.
 - Added cross-site session controls:
   - `COOKIE_SECURE`, `COOKIE_SAMESITE`, `COOKIE_DOMAIN`.
-  - `session_mode=token` support to return `refresh_token` in response JSON.
+  - Explicit `token_transport=json|cookie` support; `session_mode=token` remains a compatibility alias for JSON refresh tokens.
+  - Auth responses include `refresh.transport`, `refresh.cookie_name`, and `refresh.expires_in` metadata so clients do not infer session behavior from side effects.
 - Completed passkey service orchestration in the application layer:
   - Registration and login begin/finish flows are Redis-backed and client-scoped.
   - Canonical delete endpoint `DELETE /api/auth/passkeys/{id}` added, with root-delete backward compatibility.
@@ -144,8 +145,8 @@ go run ./cmd/server
 | `BASE_URL` | `http://localhost:8080` | No | Public base URL (used in email links) |
 | `JWT_ACCESS_TTL` | `15m` | No | Access token time-to-live |
 | `JWT_REFRESH_TTL` | `168h` | No | Refresh token time-to-live (default 7 days) |
-| `COOKIE_SECURE` | `false` | No | Set refresh cookie `Secure` flag (`true` in production HTTPS) |
-| `COOKIE_SAMESITE` | `lax` | No | Refresh cookie SameSite policy (`lax`, `strict`, `none`) |
+| `COOKIE_SECURE` | auto | No | Set refresh cookie `Secure` flag. Defaults to `true` when `BASE_URL` is HTTPS, otherwise `false`. |
+| `COOKIE_SAMESITE` | auto | No | Refresh cookie SameSite policy (`lax`, `strict`, `none`). Defaults to `none` for HTTPS secure cookies and `lax` for local HTTP. |
 | `COOKIE_DOMAIN` | -- | No | Optional cookie domain override for refresh cookie |
 | `BCRYPT_COST` | `12` | No | bcrypt cost factor (range 10-16) |
 | `PASSWORD_MIN_LENGTH` | `8` | No | Minimum password length |
@@ -199,6 +200,7 @@ Live docs:
 - Admin/customer portal: <https://authservice.ayushojha.com/portal.html>
 - Browser SDK: <https://authservice.ayushojha.com/authservice.js>
 - SDK starters: `sdks/`
+- Session contract: `docs/auth-session-contract.md`
 - Operations runbook: `docs/operations-runbook.md`
 - Passkey QA checklist: `docs/passkey-qa.md`
 - Enterprise provider roadmap: `docs/enterprise-auth-provider-roadmap.md`
@@ -208,7 +210,7 @@ Integration flow for companies/products:
 
 1. Create one client per product, environment, or tenant boundary using `POST /api/admin/clients`.
 2. Store the returned `api_key` securely and send it as `X-API-Key` on app-initiated auth requests.
-3. Use cookie mode for browser products or `session_mode=token` for mobile, CLI, SSR, desktop, and API-only clients.
+3. Use `token_transport=cookie` for browser products or `token_transport=json` for mobile, CLI, SSR, desktop, and API-only clients. Legacy `session_mode=token` still maps to JSON refresh tokens.
 4. Authenticate users with email/password, OAuth2, magic links, TOTP, or passkeys, either by calling the REST API directly, loading `/authservice.js`, or using the SDK starters under `sdks/`.
 5. For B2B products, create organizations, invite users, and mint org-scoped access tokens before calling tenant-aware product APIs.
 6. For backend automation, provision service accounts and call `/oauth/token` with the `client_credentials` grant.
@@ -231,7 +233,7 @@ Route access requirements:
 ```
 POST /api/auth/signup              Register a new user
 POST /api/auth/login               Login with email and password
-POST /api/auth/refresh             Refresh access token (uses auth_refresh cookie)
+POST /api/auth/refresh             Refresh access token (uses refresh_token JSON or auth_refresh cookie)
 POST /api/auth/logout              Revoke the current session (cookie or refresh_token body)
 GET  /api/auth/me                  Get the authenticated user profile
 PATCH /api/auth/me                 Update the authenticated user profile

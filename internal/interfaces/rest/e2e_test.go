@@ -395,6 +395,67 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 	assertStatus(t, afterLogoutRec, http.StatusUnauthorized)
 }
 
+func TestE2ERefreshTransportContract(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+
+	cookieSignupRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
+		"email":    "cookie-transport@example.com",
+		"password": e2ePassword,
+	}, env.apiHeaders())
+	assertStatus(t, cookieSignupRec, http.StatusCreated)
+	var cookieSignup application.AuthResponse
+	decodeBody(t, cookieSignupRec, &cookieSignup)
+	if cookieSignup.AccessToken == "" || cookieSignup.RefreshToken != "" || cookieSignup.Refresh == nil {
+		t.Fatalf("cookie transport should return access token and refresh metadata only: %+v", cookieSignup)
+	}
+	if cookieSignup.Refresh.Transport != "cookie" || cookieSignup.Refresh.CookieName != "auth_refresh" || cookieSignup.Refresh.ExpiresIn != int(env.cfg.RefreshTTL.Seconds()) {
+		t.Fatalf("unexpected cookie refresh metadata: %+v", cookieSignup.Refresh)
+	}
+	var refreshCookie *http.Cookie
+	for _, cookie := range cookieSignupRec.Result().Cookies() {
+		if cookie.Name == "auth_refresh" {
+			refreshCookie = cookie
+			break
+		}
+	}
+	if refreshCookie == nil || refreshCookie.Value == "" {
+		t.Fatalf("cookie transport should set auth_refresh cookie: %v", cookieSignupRec.Result().Cookies())
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", strings.NewReader("{}"))
+	refreshReq.Header.Set("Content-Type", "application/json")
+	refreshReq.Header.Set("X-API-Key", env.apiKey)
+	refreshReq.AddCookie(refreshCookie)
+	refreshRec := httptest.NewRecorder()
+	env.handler.ServeHTTP(refreshRec, refreshReq)
+	assertStatus(t, refreshRec, http.StatusOK)
+	var cookieRefresh application.AuthResponse
+	decodeBody(t, refreshRec, &cookieRefresh)
+	if cookieRefresh.AccessToken == "" || cookieRefresh.RefreshToken != "" || cookieRefresh.Refresh == nil || cookieRefresh.Refresh.Transport != "cookie" {
+		t.Fatalf("cookie refresh should rotate cookie and return cookie metadata: %+v", cookieRefresh)
+	}
+
+	jsonLoginRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":           "cookie-transport@example.com",
+		"password":        e2ePassword,
+		"token_transport": "json",
+	}, env.apiHeaders())
+	assertStatus(t, jsonLoginRec, http.StatusOK)
+	var jsonLogin application.AuthResponse
+	decodeBody(t, jsonLoginRec, &jsonLogin)
+	if jsonLogin.AccessToken == "" || jsonLogin.RefreshToken == "" || jsonLogin.Refresh == nil || jsonLogin.Refresh.Transport != "json" {
+		t.Fatalf("json transport should return refresh token and metadata: %+v", jsonLogin)
+	}
+
+	missingRefreshRec := env.request(t, http.MethodPost, "/api/auth/refresh", map[string]string{}, env.apiHeaders())
+	assertStatus(t, missingRefreshRec, http.StatusBadRequest)
+	var missingRefresh errorPayload
+	decodeBody(t, missingRefreshRec, &missingRefresh)
+	if missingRefresh.Code != "refresh_token_missing" {
+		t.Fatalf("expected refresh_token_missing, got %+v", missingRefresh)
+	}
+}
+
 func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 	env := newE2EEnv(t, e2eOptions{})
 
@@ -517,13 +578,16 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 	verifyTOTPRec := env.request(t, http.MethodPost, "/api/auth/totp/verify", map[string]string{
 		"two_factor_token": challenge.TwoFAToken,
 		"code":             validCode,
-		"session_mode":     "token",
+		"token_transport":  "json",
 	}, env.apiHeaders())
 	assertStatus(t, verifyTOTPRec, http.StatusOK)
 	var twoFALogin application.AuthResponse
 	decodeBody(t, verifyTOTPRec, &twoFALogin)
 	if twoFALogin.AccessToken == "" || twoFALogin.RefreshToken == "" {
 		t.Fatalf("2FA verify should issue tokens: %+v", twoFALogin)
+	}
+	if twoFALogin.Refresh == nil || twoFALogin.Refresh.Transport != "json" || twoFALogin.Refresh.ExpiresIn <= 0 {
+		t.Fatalf("2FA verify should describe JSON refresh transport: %+v", twoFALogin.Refresh)
 	}
 
 	recoveryChallengeRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
@@ -540,13 +604,16 @@ func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {
 	recoveryVerifyRec := env.request(t, http.MethodPost, "/api/auth/recovery-codes/verify", map[string]string{
 		"two_factor_token": recoveryChallenge.TwoFAToken,
 		"code":             recoveryCodes.RecoveryCodes[0],
-		"session_mode":     "token",
+		"token_transport":  "json",
 	}, env.apiHeaders())
 	assertStatus(t, recoveryVerifyRec, http.StatusOK)
 	var recoveryLogin application.AuthResponse
 	decodeBody(t, recoveryVerifyRec, &recoveryLogin)
 	if recoveryLogin.AccessToken == "" || recoveryLogin.RefreshToken == "" {
 		t.Fatalf("recovery code verify should issue tokens: %+v", recoveryLogin)
+	}
+	if recoveryLogin.Refresh == nil || recoveryLogin.Refresh.Transport != "json" || recoveryLogin.Refresh.ExpiresIn <= 0 {
+		t.Fatalf("recovery code verify should describe JSON refresh transport: %+v", recoveryLogin.Refresh)
 	}
 	recoveryCountAfterUseRec := env.request(t, http.MethodGet, "/api/auth/recovery-codes", nil, env.bearerHeaders(recoveryLogin.AccessToken))
 	assertStatus(t, recoveryCountAfterUseRec, http.StatusOK)
@@ -601,6 +668,11 @@ func TestE2ETenantIsolationAdminAndAbuseControls(t *testing.T) {
 		"password": e2ePassword,
 	}, nil)
 	assertStatus(t, noAPIKeyRec, http.StatusUnauthorized)
+	var noAPIKey errorPayload
+	decodeBody(t, noAPIKeyRec, &noAPIKey)
+	if noAPIKey.Code != "missing_api_key" {
+		t.Fatalf("expected missing_api_key code, got %+v", noAPIKey)
+	}
 
 	blockedOriginRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]string{
 		"email":    "origin@example.com",
@@ -709,6 +781,9 @@ func TestE2ETenantIsolationAdminAndAbuseControls(t *testing.T) {
 			assertStatus(t, rec, http.StatusCreated)
 		} else {
 			assertStatus(t, rec, http.StatusTooManyRequests)
+			if rec.Header().Get("Retry-After") == "" {
+				t.Fatal("expected Retry-After header on signup rate limit")
+			}
 		}
 	}
 
@@ -734,6 +809,9 @@ func TestE2ETenantIsolationAdminAndAbuseControls(t *testing.T) {
 		"X-Forwarded-For": "198.51.100.25",
 	})
 	assertStatus(t, lockedRec, http.StatusTooManyRequests)
+	if lockedRec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header on account lock")
+	}
 
 	auditRec := env.request(t, http.MethodGet, "/api/admin/audit-events?client_id="+url.QueryEscape(env.client.ID)+"&event_type=signup&limit=3", nil, map[string]string{"X-Admin-Key": e2eAdminKey})
 	assertStatus(t, auditRec, http.StatusOK)

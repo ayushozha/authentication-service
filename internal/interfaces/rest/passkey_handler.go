@@ -141,11 +141,7 @@ func (h *PasskeyHandler) loginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isTokenSessionMode(r, "") {
-		resp.RefreshToken = refreshToken
-	} else {
-		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-	}
+	applyRefreshTransport(w, h.cfg, resp, refreshToken, tokenTransport(r, "", ""))
 	writeJSON(w, http.StatusOK, resp)
 }
 

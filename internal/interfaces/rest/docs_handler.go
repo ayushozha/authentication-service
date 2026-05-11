@@ -380,14 +380,14 @@ const docsHTML = `<!doctype html>
 
         <div class="code-panel">
           <h2>Production login request</h2>
-          <p>Token mode returns a refresh token in JSON for non-browser clients. Browser clients can omit session_mode and use the HttpOnly cookie.</p>
+          <p>Token transport returns a refresh token in JSON for non-browser clients. Browser clients can omit token_transport and use the HttpOnly cookie.</p>
           <pre><code>curl -X POST https://authservice.ayushojha.com/api/auth/login \
   -H "X-API-Key: $AUTH_SERVICE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
     "password": "correct-horse-battery-staple",
-    "session_mode": "token"
+    "token_transport": "json"
   }'</code></pre>
         </div>
       </div>

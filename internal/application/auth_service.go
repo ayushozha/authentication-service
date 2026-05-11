@@ -123,6 +123,7 @@ func WithOIDCAccessTokenClaims(issuer, authorizedParty string, audiences, scopes
 type AuthResponse struct {
 	AccessToken  string       `json:"access_token,omitempty"`
 	RefreshToken string       `json:"refresh_token,omitempty"`
+	Refresh      *RefreshInfo `json:"refresh,omitempty"`
 	TokenType    string       `json:"token_type,omitempty"`
 	ExpiresIn    int          `json:"expires_in,omitempty"`
 	User         *domain.User `json:"user,omitempty"`
@@ -133,12 +134,19 @@ type AuthResponse struct {
 	SessionMode  string       `json:"-"`
 }
 
+type RefreshInfo struct {
+	Transport  string `json:"transport"`
+	CookieName string `json:"cookie_name,omitempty"`
+	ExpiresIn  int    `json:"expires_in"`
+}
+
 type SignupRequest struct {
-	Email        string `json:"email"`
-	Password     string `json:"password"`
-	DisplayName  string `json:"display_name"`
-	SessionMode  string `json:"session_mode,omitempty"`
-	CaptchaToken string `json:"captcha_token,omitempty"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	DisplayName    string `json:"display_name"`
+	SessionMode    string `json:"session_mode,omitempty"`
+	TokenTransport string `json:"token_transport,omitempty"`
+	CaptchaToken   string `json:"captcha_token,omitempty"`
 }
 
 type LoginRequest struct {
@@ -379,15 +387,6 @@ func loginRiskFromAssessment(assessment domain.RiskAssessment) LoginRisk {
 }
 
 func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req SignupRequest, ip, ua string, bcryptCost int, accessTTL, refreshTTL time.Duration) (*AuthResponse, string, error) {
-	// Rate limit
-	if allowed, _, _ := s.rl.Allow(ctx, "rate:signup:"+ip, 5, 1*time.Hour); !allowed {
-		return nil, "", domain.ErrRateLimit
-	}
-	if err := verifyBotToken(ctx, botProtection.SignupRequired, req.CaptchaToken, ip); err != nil {
-		s.audit.Log(ctx, client.ID, nil, "signup_blocked", ip, ua, map[string]interface{}{"reason": "bot_verification"})
-		return nil, "", err
-	}
-
 	if strings.TrimSpace(req.Email) == "" {
 		return nil, "", fmt.Errorf("email is required")
 	}
@@ -413,6 +412,14 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 	if msg := ValidatePassword(req.Password, email, displayName); msg != "" {
 		s.audit.Log(ctx, client.ID, nil, "signup_blocked", ip, ua, map[string]interface{}{"reason": "password_policy", "email": email})
 		return nil, "", fmt.Errorf("%s", msg)
+	}
+
+	if allowed, _, _ := s.rl.Allow(ctx, "rate:signup:"+ip, 5, 1*time.Hour); !allowed {
+		return nil, "", domain.ErrRateLimit
+	}
+	if err := verifyBotToken(ctx, botProtection.SignupRequired, req.CaptchaToken, ip); err != nil {
+		s.audit.Log(ctx, client.ID, nil, "signup_blocked", ip, ua, map[string]interface{}{"reason": "bot_verification"})
+		return nil, "", err
 	}
 
 	existing, err := s.users.GetByEmail(ctx, client.ID, email)

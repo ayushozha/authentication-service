@@ -30,8 +30,8 @@ info:
     1. **Create a client** for each product, environment, or tenant boundary with `POST /api/admin/clients`.
     2. **Store the returned `api_key` securely**. Send it as `X-API-Key` on app-initiated auth requests.
     3. **Choose a session model**:
-       - Browser apps: omit `session_mode` and let AuthService set the `HttpOnly` `auth_refresh` cookie.
-       - Native apps, CLIs, server-side rendered apps, and API-only products: pass `session_mode=token` to receive `refresh_token` in JSON.
+       - Browser apps: omit `token_transport` and let AuthService set the `HttpOnly` `auth_refresh` cookie.
+       - Native apps, CLIs, server-side rendered apps, and API-only products: pass `token_transport=json` to receive `refresh_token` in JSON. Legacy `session_mode=token` remains supported.
     4. **Authenticate users** through signup, login, OAuth, magic links, TOTP, or passkeys.
     5. **For B2B products**, create organizations, invite members, and mint org-scoped access tokens before calling tenant-aware product APIs.
     6. **For service-to-service automation**, provision service accounts and exchange scoped client credentials at `/oauth/token`.
@@ -45,7 +45,7 @@ info:
       -d '{
         "email": "user@example.com",
         "password": "correct-horse-battery-staple",
-        "session_mode": "token"
+        "token_transport": "json"
       }'
     ```
 
@@ -61,7 +61,7 @@ info:
     | Organization | B2B workspace/account under a client, with role and permission scoped memberships |
     | Service account | Machine identity under a client, with scoped credentials for backend automation |
     | Refresh token | Long-lived, single-use session credential rotated on every refresh |
-    | Token mode | JSON refresh-token delivery for mobile, CLI, API, or SSR integrations |
+    | Token transport | JSON refresh-token delivery for mobile, CLI, API, or SSR integrations |
     | Cookie mode | Default browser session mode using an `HttpOnly` `auth_refresh` cookie |
     | JWKS | Public key discovery endpoint for RS256 token validation |
 
@@ -84,7 +84,7 @@ info:
 
     ### Mobile, Desktop, CLI, or API-only Product
 
-    Use `session_mode=token`, store refresh tokens in the platform's secure storage, call `/api/auth/refresh` before access-token expiry, and send `Authorization: Bearer <access_token>` to your own APIs.
+    Use `token_transport=json`, store refresh tokens in the platform's secure storage, call `/api/auth/refresh` before access-token expiry, and send `Authorization: Bearer <access_token>` to your own APIs. Legacy `session_mode=token` maps to the same JSON refresh-token transport.
 
     ### Microservices
 
@@ -3767,7 +3767,11 @@ components:
         session_mode:
           type: string
           enum: [token]
-          description: Set to `token` to receive refresh token in JSON instead of cookie
+          description: Legacy alias for `token_transport=json`
+        token_transport:
+          type: string
+          enum: [json, cookie]
+          description: Use `json` for native/server clients or `cookie` for HttpOnly browser refresh cookies
         captcha_token:
           type: string
           description: Required when `CAPTCHA_SIGNUP_REQUIRED=true`
@@ -3786,7 +3790,11 @@ components:
         session_mode:
           type: string
           enum: [token]
-          description: Set to `token` to receive refresh token in JSON instead of cookie
+          description: Legacy alias for `token_transport=json`
+        token_transport:
+          type: string
+          enum: [json, cookie]
+          description: Use `json` for native/server clients or `cookie` for HttpOnly browser refresh cookies
         captcha_token:
           type: string
           description: Required when `CAPTCHA_LOGIN_REQUIRED=true`
@@ -3796,10 +3804,15 @@ components:
       properties:
         refresh_token:
           type: string
-          description: Refresh token (required in token mode)
+          description: Refresh token for JSON transport; `refreshToken` is accepted as a compatibility alias
         session_mode:
           type: string
           enum: [token]
+          description: Legacy alias for `token_transport=json`
+        token_transport:
+          type: string
+          enum: [json, cookie]
+          description: Use `json` to return the rotated refresh token in JSON or `cookie` to rotate `auth_refresh`
 
     LogoutRequest:
       type: object
@@ -4288,8 +4301,20 @@ components:
       properties:
         error:
           type: string
-          description: Error message
-          example: invalid request
+          description: Backwards-compatible human-readable error message
+          example: Invalid email or password.
+        code:
+          type: string
+          description: Stable machine-readable error code
+          example: invalid_credentials
+        message:
+          type: string
+          description: Human-readable error message safe to show to a user or operator
+          example: Invalid email or password.
+        request_id:
+          type: string
+          description: Echoes `X-Request-ID` when supplied
+          example: req_123
 
     AuthResponse:
       type: object
@@ -4308,7 +4333,20 @@ components:
           $ref: "#/components/schemas/User"
         refresh_token:
           type: string
-          description: Refresh token (only present in token session mode)
+          description: Refresh token (only present when `token_transport=json` or legacy `session_mode=token` is requested)
+        refresh:
+          type: object
+          description: Refresh-token transport metadata; always present when a new refresh credential is issued
+          properties:
+            transport:
+              type: string
+              enum: [json, cookie]
+            cookie_name:
+              type: string
+              example: auth_refresh
+            expires_in:
+              type: integer
+              example: 604800
         risk:
           $ref: "#/components/schemas/LoginRisk"
 

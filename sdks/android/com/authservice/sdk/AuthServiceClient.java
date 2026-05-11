@@ -33,7 +33,8 @@ public final class AuthServiceClient {
                 "email", email,
                 "password", password,
                 "display_name", displayName,
-                "session_mode", sessionMode
+                "session_mode", sessionMode,
+                "token_transport", tokenTransport()
         );
         AuthServiceResponse response = request("POST", "/api/auth/signup", body, false);
         persist(response);
@@ -44,7 +45,8 @@ public final class AuthServiceClient {
         String body = jsonObject(
                 "email", email,
                 "password", password,
-                "session_mode", sessionMode
+                "session_mode", sessionMode,
+                "token_transport", tokenTransport()
         );
         AuthServiceResponse response = request("POST", "/api/auth/login", body, false);
         persist(response);
@@ -54,7 +56,8 @@ public final class AuthServiceClient {
     public AuthServiceResponse refresh() throws IOException {
         String body = jsonObject(
                 "refresh_token", tokenStore.getRefreshToken(),
-                "session_mode", sessionMode
+                "session_mode", sessionMode,
+                "token_transport", tokenTransport()
         );
         AuthServiceResponse response = request("POST", "/api/auth/refresh", body, false);
         persist(response);
@@ -105,6 +108,7 @@ public final class AuthServiceClient {
                 "two_factor_token", twoFactorToken,
                 "code", code,
                 "session_mode", sessionMode,
+                "token_transport", tokenTransport(),
                 "remember_device", rememberDevice,
                 "device_name", deviceName
         );
@@ -122,6 +126,7 @@ public final class AuthServiceClient {
                 "two_factor_token", twoFactorToken,
                 "code", code,
                 "session_mode", sessionMode,
+                "token_transport", tokenTransport(),
                 "remember_device", rememberDevice,
                 "device_name", deviceName
         );
@@ -160,7 +165,8 @@ public final class AuthServiceClient {
                 "POST",
                 "/api/auth/passkey/login/finish" + queryString(
                         "session_id", sessionId,
-                        "session_mode", "token".equals(sessionMode) ? "token" : null
+                        "session_mode", "token".equals(sessionMode) ? "token" : null,
+                        "token_transport", tokenTransport()
                 ),
                 credentialJson,
                 false
@@ -245,6 +251,10 @@ public final class AuthServiceClient {
     private void persist(AuthServiceResponse response) {
         if (response.getAccessToken() != null) tokenStore.setAccessToken(response.getAccessToken());
         if (response.getRefreshToken() != null) tokenStore.setRefreshToken(response.getRefreshToken());
+    }
+
+    private String tokenTransport() {
+        return "token".equals(sessionMode) ? "json" : "cookie";
     }
 
     private static String trimRightSlash(String value) {

@@ -47,15 +47,16 @@ func (h *AuthHandler) RegisterRoutes(mux *http.ServeMux, authMw func(http.Handle
 func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 
 	var req application.SignupRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
+	transport := tokenTransport(r, req.TokenTransport, req.SessionMode)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -64,26 +65,21 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch err {
 		case domain.ErrDuplicateEmail:
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusConflict, "duplicate_email", err.Error())
 		case domain.ErrRateLimit:
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
 		case domain.ErrBotVerification:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "bot_verification_failed", err.Error())
 		case domain.ErrSSORequired:
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusForbidden, "sso_required", err.Error())
 		default:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_signup", err.Error())
 		}
 		return
 	}
 
-	if refreshToken != "" {
-		if isTokenSessionMode(r, req.SessionMode) {
-			resp.RefreshToken = refreshToken
-		} else {
-			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-		}
-	}
+	h.applyRefreshTransport(w, resp, refreshToken, transport)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -91,20 +87,22 @@ func (h *AuthHandler) signup(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 
 	var req struct {
-		Email        string `json:"email"`
-		Password     string `json:"password"`
-		SessionMode  string `json:"session_mode"`
-		CaptchaToken string `json:"captcha_token"`
+		Email          string `json:"email"`
+		Password       string `json:"password"`
+		SessionMode    string `json:"session_mode"`
+		TokenTransport string `json:"token_transport"`
+		CaptchaToken   string `json:"captcha_token"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
+	transport := tokenTransport(r, req.TokenTransport, req.SessionMode)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -117,71 +115,76 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch err {
 		case domain.ErrBotVerification:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "bot_verification_failed", err.Error())
 		case domain.ErrInvalidEmail:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
 		case domain.ErrInvalidPassword:
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password.")
 		case domain.ErrAccountSuspended:
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusForbidden, "account_suspended", err.Error())
 		case domain.ErrSSORequired:
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusForbidden, "sso_required", err.Error())
 		case domain.ErrSecurityPolicyBlocked:
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusForbidden, "security_policy_blocked", err.Error())
 		case domain.ErrStepUpEnrollmentRequired:
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusForbidden, "step_up_enrollment_required", err.Error())
 		case domain.ErrAccountLocked:
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "account temporarily locked, try again in 30 minutes"})
+			w.Header().Set("Retry-After", "1800")
+			writeError(w, r, http.StatusTooManyRequests, "account_locked", "Account temporarily locked, try again in 30 minutes.")
 		case domain.ErrRateLimit:
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+			w.Header().Set("Retry-After", "900")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
 		case domain.ErrRedisRequired:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "2FA requires Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
 
-	if refreshToken != "" {
-		if isTokenSessionMode(r, req.SessionMode) {
-			resp.RefreshToken = refreshToken
-		} else {
-			SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
-		}
-	}
+	h.applyRefreshTransport(w, resp, refreshToken, transport)
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *AuthHandler) applyRefreshTransport(w http.ResponseWriter, resp *application.AuthResponse, refreshToken, transport string) {
+	applyRefreshTransport(w, h.cfg, resp, refreshToken, transport)
 }
 
 func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 
 	var body struct {
-		RefreshToken string `json:"refresh_token"`
-		SessionMode  string `json:"session_mode"`
+		RefreshToken      string `json:"refresh_token"`
+		RefreshTokenCamel string `json:"refreshToken"`
+		SessionMode       string `json:"session_mode"`
+		TokenTransport    string `json:"token_transport"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil && err != io.EOF {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
-	tokenMode := isTokenSessionMode(r, body.SessionMode)
+	transport := tokenTransport(r, body.TokenTransport, body.SessionMode)
 
-	rawRefreshToken := ""
-	if tokenMode {
-		rawRefreshToken = body.RefreshToken
-	} else {
-		cookie, err := r.Cookie("auth_refresh")
+	rawRefreshToken := strings.TrimSpace(body.RefreshToken)
+	if rawRefreshToken == "" {
+		rawRefreshToken = strings.TrimSpace(body.RefreshTokenCamel)
+	}
+	usedCookie := false
+	if rawRefreshToken == "" {
+		cookie, err := r.Cookie(refreshCookieName)
 		if err == nil {
-			rawRefreshToken = cookie.Value
+			rawRefreshToken = strings.TrimSpace(cookie.Value)
+			usedCookie = rawRefreshToken != ""
 		}
 	}
 
 	if rawRefreshToken == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no refresh token"})
+		writeError(w, r, http.StatusBadRequest, "refresh_token_missing", "Refresh token missing. Send refresh_token in JSON mode or include the auth_refresh cookie in cookie mode.")
 		return
 	}
 
@@ -190,38 +193,38 @@ func (h *AuthHandler) refresh(w http.ResponseWriter, r *http.Request) {
 
 	resp, newRefreshToken, err := h.authSvc.Refresh(ctx, client, rawRefreshToken, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
-		if !tokenMode {
+		if usedCookie {
 			ClearRefreshCookie(w, h.cfg)
 		}
 		if err == domain.ErrInvalidToken {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired refresh token"})
+			writeError(w, r, http.StatusUnauthorized, "invalid_refresh_token", "Invalid or expired refresh token.")
 		} else {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
 
-	if tokenMode {
-		resp.RefreshToken = newRefreshToken
-	} else {
-		SetRefreshCookie(w, newRefreshToken, h.cfg.RefreshTTL, h.cfg)
-	}
+	h.applyRefreshTransport(w, resp, newRefreshToken, transport)
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *AuthHandler) logout(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 	var body struct {
-		RefreshToken string `json:"refresh_token"`
+		RefreshToken      string `json:"refresh_token"`
+		RefreshTokenCamel string `json:"refreshToken"`
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body)
 
-	rawRefreshToken := body.RefreshToken
-	cookie, err := r.Cookie("auth_refresh")
+	rawRefreshToken := strings.TrimSpace(body.RefreshToken)
+	if rawRefreshToken == "" {
+		rawRefreshToken = strings.TrimSpace(body.RefreshTokenCamel)
+	}
+	cookie, err := r.Cookie(refreshCookieName)
 	if err == nil {
 		rawRefreshToken = cookie.Value
 	}

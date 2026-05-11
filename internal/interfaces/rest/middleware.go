@@ -67,7 +67,7 @@ func RequireAPIKey(clientSvc *application.ClientService) func(http.Handler) http
 			}
 			apiKey := r.Header.Get("X-API-Key")
 			if apiKey == "" {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing X-API-Key header"})
+				writeError(w, r, http.StatusUnauthorized, "missing_api_key", "Missing X-API-Key header.")
 				return
 			}
 
@@ -77,11 +77,11 @@ func RequireAPIKey(clientSvc *application.ClientService) func(http.Handler) http
 			client, err := clientSvc.GetClientByAPIKey(ctx, apiKey)
 			if err != nil {
 				if err == domain.ErrInvalidClient {
-					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
+					writeError(w, r, http.StatusUnauthorized, "invalid_api_key", "Invalid API key.")
 				} else if err == domain.ErrClientSuspended {
-					writeJSON(w, http.StatusForbidden, map[string]string{"error": "client suspended"})
+					writeError(w, r, http.StatusForbidden, "client_suspended", "Client is suspended.")
 				} else {
-					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 				}
 				return
 			}
@@ -164,7 +164,7 @@ func SetRefreshCookie(w http.ResponseWriter, token string, ttl time.Duration, cf
 		cfg = &HandlerConfig{}
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     "auth_refresh",
+		Name:     refreshCookieName,
 		Value:    token,
 		Path:     "/",
 		Domain:   cfg.CookieDomain,
@@ -180,7 +180,7 @@ func ClearRefreshCookie(w http.ResponseWriter, cfg *HandlerConfig) {
 		cfg = &HandlerConfig{}
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     "auth_refresh",
+		Name:     refreshCookieName,
 		Value:    "",
 		Path:     "/",
 		Domain:   cfg.CookieDomain,

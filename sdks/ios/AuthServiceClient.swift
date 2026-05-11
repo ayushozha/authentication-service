@@ -83,6 +83,7 @@ public struct AuthServiceUser: Codable {
 public struct AuthServiceAuthResponse: Codable {
     public let accessToken: String?
     public let refreshToken: String?
+    public let refresh: AuthServiceRefreshInfo?
     public let tokenType: String?
     public let expiresIn: Int?
     public let user: AuthServiceUser?
@@ -93,12 +94,25 @@ public struct AuthServiceAuthResponse: Codable {
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
+        case refresh
         case tokenType = "token_type"
         case expiresIn = "expires_in"
         case user
         case requires2FA = "requires_2fa"
         case twoFactorToken = "two_factor_token"
         case twoFactorMethods = "two_factor_methods"
+    }
+}
+
+public struct AuthServiceRefreshInfo: Codable {
+    public let transport: String
+    public let cookieName: String?
+    public let expiresIn: Int
+
+    enum CodingKeys: String, CodingKey {
+        case transport
+        case cookieName = "cookie_name"
+        case expiresIn = "expires_in"
     }
 }
 
@@ -230,7 +244,7 @@ public final class AuthServiceClient {
 
     @discardableResult
     public func signup(email: String, password: String, displayName: String? = nil) async throws -> AuthServiceAuthResponse {
-        let body = SignupRequest(email: email, password: password, displayName: displayName, sessionMode: config.sessionMode)
+        let body = SignupRequest(email: email, password: password, displayName: displayName, sessionMode: config.sessionMode, tokenTransport: tokenTransport)
         let response: AuthServiceAuthResponse = try await send("/api/auth/signup", method: "POST", body: body, authorized: false)
         persist(response)
         return response
@@ -238,7 +252,7 @@ public final class AuthServiceClient {
 
     @discardableResult
     public func login(email: String, password: String) async throws -> AuthServiceAuthResponse {
-        let body = LoginRequest(email: email, password: password, sessionMode: config.sessionMode)
+        let body = LoginRequest(email: email, password: password, sessionMode: config.sessionMode, tokenTransport: tokenTransport)
         let response: AuthServiceAuthResponse = try await send("/api/auth/login", method: "POST", body: body, authorized: false)
         persist(response)
         return response
@@ -246,7 +260,7 @@ public final class AuthServiceClient {
 
     @discardableResult
     public func refresh() async throws -> AuthServiceAuthResponse {
-        let body = RefreshRequest(refreshToken: tokenStore.refreshToken, sessionMode: config.sessionMode)
+        let body = RefreshRequest(refreshToken: tokenStore.refreshToken, sessionMode: config.sessionMode, tokenTransport: tokenTransport)
         let response: AuthServiceAuthResponse = try await send("/api/auth/refresh", method: "POST", body: body, authorized: false)
         persist(response)
         return response
@@ -294,7 +308,7 @@ public final class AuthServiceClient {
 
     @discardableResult
     public func verifyTOTP(twoFactorToken: String, code: String, rememberDevice: Bool = false, deviceName: String? = nil) async throws -> AuthServiceAuthResponse {
-        let body = TwoFactorVerifyRequest(twoFactorToken: twoFactorToken, code: code, sessionMode: config.sessionMode, rememberDevice: rememberDevice, deviceName: deviceName)
+        let body = TwoFactorVerifyRequest(twoFactorToken: twoFactorToken, code: code, sessionMode: config.sessionMode, tokenTransport: tokenTransport, rememberDevice: rememberDevice, deviceName: deviceName)
         let response: AuthServiceAuthResponse = try await send("/api/auth/totp/verify", method: "POST", body: body, authorized: false)
         persist(response)
         return response
@@ -302,7 +316,7 @@ public final class AuthServiceClient {
 
     @discardableResult
     public func verifyRecoveryCode(twoFactorToken: String, code: String, rememberDevice: Bool = false, deviceName: String? = nil) async throws -> AuthServiceAuthResponse {
-        let body = TwoFactorVerifyRequest(twoFactorToken: twoFactorToken, code: code, sessionMode: config.sessionMode, rememberDevice: rememberDevice, deviceName: deviceName)
+        let body = TwoFactorVerifyRequest(twoFactorToken: twoFactorToken, code: code, sessionMode: config.sessionMode, tokenTransport: tokenTransport, rememberDevice: rememberDevice, deviceName: deviceName)
         let response: AuthServiceAuthResponse = try await send("/api/auth/recovery-codes/verify", method: "POST", body: body, authorized: false)
         persist(response)
         return response
@@ -333,7 +347,8 @@ public final class AuthServiceClient {
     public func finishPasskeyLogin(sessionID: String, credentialJSON: Data) async throws -> AuthServiceAuthResponse {
         let path = "/api/auth/passkey/login/finish" + queryString([
             "session_id": sessionID,
-            "session_mode": config.sessionMode == "token" ? "token" : nil
+            "session_mode": config.sessionMode == "token" ? "token" : nil,
+            "token_transport": tokenTransport
         ])
         let response: AuthServiceAuthResponse = try await sendRawJSON(path, method: "POST", body: credentialJSON, authorized: false)
         persist(response)
@@ -435,6 +450,10 @@ public final class AuthServiceClient {
         }
     }
 
+    private var tokenTransport: String {
+        config.sessionMode == "token" ? "json" : "cookie"
+    }
+
     private func makeURL(_ path: String) -> URL {
         let base = config.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let suffix = path.hasPrefix("/") ? path : "/" + path
@@ -476,12 +495,14 @@ private struct SignupRequest: Encodable {
     let password: String
     let displayName: String?
     let sessionMode: String
+    let tokenTransport: String
 
     enum CodingKeys: String, CodingKey {
         case email
         case password
         case displayName = "display_name"
         case sessionMode = "session_mode"
+        case tokenTransport = "token_transport"
     }
 }
 
@@ -489,21 +510,25 @@ private struct LoginRequest: Encodable {
     let email: String
     let password: String
     let sessionMode: String
+    let tokenTransport: String
 
     enum CodingKeys: String, CodingKey {
         case email
         case password
         case sessionMode = "session_mode"
+        case tokenTransport = "token_transport"
     }
 }
 
 private struct RefreshRequest: Encodable {
     let refreshToken: String?
     let sessionMode: String
+    let tokenTransport: String
 
     enum CodingKeys: String, CodingKey {
         case refreshToken = "refresh_token"
         case sessionMode = "session_mode"
+        case tokenTransport = "token_transport"
     }
 }
 
@@ -541,6 +566,7 @@ private struct TwoFactorVerifyRequest: Encodable {
     let twoFactorToken: String
     let code: String
     let sessionMode: String
+    let tokenTransport: String
     let rememberDevice: Bool
     let deviceName: String?
 
@@ -548,6 +574,7 @@ private struct TwoFactorVerifyRequest: Encodable {
         case twoFactorToken = "two_factor_token"
         case code
         case sessionMode = "session_mode"
+        case tokenTransport = "token_transport"
         case rememberDevice = "remember_device"
         case deviceName = "device_name"
     }

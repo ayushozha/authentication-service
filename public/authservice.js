@@ -354,7 +354,10 @@
 
   AuthClient.prototype.withSessionMode = function(payload) {
     payload = merge({}, payload);
-    if (this.sessionMode === 'token' && !payload.session_mode) payload.session_mode = 'token';
+    if (this.sessionMode === 'token') {
+      if (!payload.session_mode) payload.session_mode = 'token';
+      if (!payload.token_transport) payload.token_transport = 'json';
+    }
     return payload;
   };
 
@@ -587,7 +590,11 @@
     var self = this;
     return this.request('/api/auth/passkey/login/finish', {
       method: 'POST',
-      query: { session_id: sessionID, session_mode: this.sessionMode === 'token' ? 'token' : '' },
+      query: {
+        session_id: sessionID,
+        session_mode: this.sessionMode === 'token' ? 'token' : '',
+        token_transport: this.sessionMode === 'token' ? 'json' : 'cookie'
+      },
       body: credentialToJSON(credential),
       auth: false
     }).then(function(data) {
