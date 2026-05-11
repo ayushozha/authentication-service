@@ -1,8 +1,12 @@
 package rest
 
 import (
+	"bytes"
+	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
@@ -83,5 +87,70 @@ func TestWriteErrorMarksRateLimitRetryable(t *testing.T) {
 	decodeBody(t, rec, &payload)
 	if payload.AuthCode != "AUTH_RATE_LIMITED" || !payload.Retryable {
 		t.Fatalf("expected retryable rate-limit payload, got %+v", payload)
+	}
+}
+
+func TestWriteErrorLogsStructuredRedactedAuthEvent(t *testing.T) {
+	var buf bytes.Buffer
+	oldOutput := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	defer func() {
+		log.SetOutput(oldOutput)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/oauth/google/callback", nil)
+	req.Header.Set("X-Request-ID", "req-user@example.com-123456")
+	req.Header.Set("User-Agent", "Mozilla/5.0 secret@example.com 654321")
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature")
+	rec := httptest.NewRecorder()
+
+	writeError(rec, req, http.StatusBadRequest, "invalid_state", "OAuth state mismatch.")
+
+	logLine := strings.TrimSpace(buf.String())
+	if logLine == "" {
+		t.Fatal("expected auth error log line")
+	}
+	for _, secret := range []string{
+		"user@example.com",
+		"secret@example.com",
+		"123456",
+		"654321",
+		"Mozilla/5.0",
+		"eyJhbGciOiJIUzI1NiJ9",
+	} {
+		if strings.Contains(logLine, secret) {
+			t.Fatalf("auth error log leaked %q: %s", secret, logLine)
+		}
+	}
+
+	var entry map[string]interface{}
+	if err := json.Unmarshal([]byte(logLine), &entry); err != nil {
+		t.Fatalf("auth error log should be JSON: %v\n%s", err, logLine)
+	}
+	if entry["event"] != "auth.error" ||
+		entry["platform"] != "auth-service" ||
+		entry["app"] != "auth-service" ||
+		entry["component"] != "/api/auth/oauth/google/callback" ||
+		entry["operation"] != "oauth" ||
+		entry["code"] != "AUTH_OAUTH_STATE_MISMATCH" ||
+		entry["provider_code"] != "invalid_state" ||
+		entry["method"] != http.MethodPost {
+		t.Fatalf("unexpected structured auth log fields: %+v", entry)
+	}
+	if entry["status"] != float64(http.StatusBadRequest) || entry["retryable"] != false {
+		t.Fatalf("unexpected status/retryable fields: %+v", entry)
+	}
+	if entry["request_id"] != "[REDACTED_EMAIL]-[REDACTED_CODE]" {
+		t.Fatalf("request id should be redacted in auth log: %+v", entry)
+	}
+	device, ok := entry["device"].(map[string]interface{})
+	if !ok || device["user_agent"] != "[REDACTED_USER_AGENT]" {
+		t.Fatalf("user agent should be structurally redacted in auth log: %+v", entry)
 	}
 }
