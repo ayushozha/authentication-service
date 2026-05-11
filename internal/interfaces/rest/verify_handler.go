@@ -44,7 +44,7 @@ func (h *VerifyHandler) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Token == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+		writeError(w, r, http.StatusBadRequest, "token_is_required", "Token is required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -52,9 +52,9 @@ func (h *VerifyHandler) verifyEmail(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.verifySvc.VerifyEmail(ctx, req.Token); err != nil {
 		if err == domain.ErrInvalidToken {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired token"})
+			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_token", "Invalid or expired token.")
 		} else {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -69,11 +69,11 @@ func (h *VerifyHandler) resendVerification(w http.ResponseWriter, r *http.Reques
 	if err := h.verifySvc.ResendVerification(ctx, claims.Subject, h.cfg.BaseURL); err != nil {
 		switch err {
 		case domain.ErrEmailNotConfigured:
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusServiceUnavailable, "email_not_configured", err.Error())
 		case domain.ErrEmailAlreadyVerified:
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}
@@ -82,22 +82,38 @@ func (h *VerifyHandler) resendVerification(w http.ResponseWriter, r *http.Reques
 
 func (h *VerifyHandler) forgotPassword(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
+	if client == nil {
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
+		return
+	}
 	var req struct {
 		Email string `json:"email"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Email == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email is required"})
+		writeError(w, r, http.StatusBadRequest, "email_required", "Email is required.")
 		return
 	}
 	email, err := application.NormalizeEmailAddress(req.Email)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	_ = h.resetSvc.ForgotPassword(ctx, client.ID, email, h.cfg.BaseURL)
+	if err := h.resetSvc.ForgotPassword(ctx, client.ID, email, h.cfg.BaseURL); err != nil {
+		switch err {
+		case domain.ErrRateLimit:
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
+		case domain.ErrEmailNotConfigured:
+			writeError(w, r, http.StatusServiceUnavailable, "email_not_configured", err.Error())
+		default:
+			// Preserve password-reset enumeration safety for lookup/provider errors.
+			writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+		}
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -107,11 +123,11 @@ func (h *VerifyHandler) resetPassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword string `json:"new_password"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return
 	}
 	if req.Token == "" || req.NewPassword == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token and new_password are required"})
+		writeError(w, r, http.StatusBadRequest, "token_and_new_password_are_required", "Token and new password are required.")
 		return
 	}
 
@@ -120,9 +136,9 @@ func (h *VerifyHandler) resetPassword(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.resetSvc.ResetPassword(ctx, req.Token, req.NewPassword, h.cfg.BcryptCost); err != nil {
 		if err == domain.ErrInvalidToken {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired token"})
+			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_token", "Invalid or expired token.")
 		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		}
 		return
 	}

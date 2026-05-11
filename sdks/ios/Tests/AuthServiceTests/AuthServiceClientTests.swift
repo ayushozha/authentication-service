@@ -113,7 +113,32 @@ final class AuthServiceClientTests: XCTestCase {
         } catch let error as AuthServiceAPIError {
             XCTAssertEqual(error.statusCode, 400)
             XCTAssertEqual(error.error, "invalid email")
-            XCTAssertEqual(error.localizedDescription, "invalid email")
+            XCTAssertEqual(error.authCode, "AUTH_INVALID_EMAIL")
+            XCTAssertEqual(error.userMessage, "Enter a valid email address.")
+            XCTAssertEqual(error.localizedDescription, "Enter a valid email address.")
+            XCTAssertFalse(error.retryable)
+        }
+    }
+
+    func testAPIErrorUsesCanonicalServerFields() async throws {
+        let client = try makeClient()
+        MockURLProtocol.requestHandler = { request in
+            Self.jsonResponse(
+                status: 429,
+                body: #"{"error":"too many requests","code":"rate_limited","auth_code":"AUTH_RATE_LIMITED","user_message":"Too many attempts. Try again in a few minutes.","retryable":true}"#,
+                request: request
+            )
+        }
+
+        do {
+            try await client.forgotPassword(email: "user@example.com")
+            XCTFail("Expected forgotPassword to throw")
+        } catch let error as AuthServiceAPIError {
+            XCTAssertEqual(error.statusCode, 429)
+            XCTAssertEqual(error.code, "rate_limited")
+            XCTAssertEqual(error.authCode, "AUTH_RATE_LIMITED")
+            XCTAssertEqual(error.localizedDescription, "Too many attempts. Try again in a few minutes.")
+            XCTAssertTrue(error.retryable)
         }
     }
 

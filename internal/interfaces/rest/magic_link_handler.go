@@ -39,7 +39,7 @@ func (h *MagicLinkHandler) send(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || req.Email == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email is required"})
+		writeError(w, r, http.StatusBadRequest, "email_required", "Email is required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -47,19 +47,20 @@ func (h *MagicLinkHandler) send(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.svc.SendMagicLink(ctx, client, req.Email, h.cfg.BaseURL, clientIP(r), r.UserAgent()); err != nil {
 		if err == domain.ErrInvalidEmail {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
 			return
 		}
 		if err == domain.ErrEmailNotConfigured {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusServiceUnavailable, "email_not_configured", err.Error())
 			return
 		}
 		if err == domain.ErrRedisRequired {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "magic links require Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Magic links require Redis.")
 			return
 		}
 		if err == domain.ErrRateLimit {
-			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
 			return
 		}
 	}
@@ -68,12 +69,12 @@ func (h *MagicLinkHandler) send(w http.ResponseWriter, r *http.Request) {
 
 func (h *MagicLinkHandler) verify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	token := r.URL.Query().Get("token")
 	if token == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+		writeError(w, r, http.StatusBadRequest, "token_is_required", "Token is required.")
 		return
 	}
 
@@ -83,11 +84,11 @@ func (h *MagicLinkHandler) verify(w http.ResponseWriter, r *http.Request) {
 	resp, refreshToken, err := h.svc.VerifyMagicLinkPublic(ctx, token, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 	if err != nil {
 		if err == domain.ErrInvalidToken {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired magic link"})
+			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_token", "Invalid or expired magic link.")
 		} else if err == domain.ErrRedisRequired {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "magic links require Redis"})
+			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Magic links require Redis.")
 		} else {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}
 		return
 	}

@@ -440,7 +440,7 @@ func (h *OrganizationHandler) requireStepUp(w http.ResponseWriter, r *http.Reque
 	}
 	decision, err := h.adaptive.EvaluateAction(ctx, client, organizationID, actorUserID, action, stepUpTokenFromRequest(r), clientIP(r), r.UserAgent())
 	if err != nil {
-		writeAdaptiveSecurityError(w, err)
+		writeAdaptiveSecurityError(w, r, err)
 		return false
 	}
 	if decision != nil && (decision.Blocked || decision.StepUpRequired) {

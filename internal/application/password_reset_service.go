@@ -14,15 +14,24 @@ type PasswordResetService struct {
 	tokens   TokenRepository
 	sessions SessionRepository
 	mailer   EmailSender
+	rl       RateLimiter
 	sso      EnterpriseSSORepository
 }
 
-func NewPasswordResetService(users UserRepository, tokens TokenRepository, sessions SessionRepository, mailer EmailSender) *PasswordResetService {
-	return &PasswordResetService{users: users, tokens: tokens, sessions: sessions, mailer: mailer}
+func NewPasswordResetService(users UserRepository, tokens TokenRepository, sessions SessionRepository, mailer EmailSender, rateLimiters ...RateLimiter) *PasswordResetService {
+	svc := &PasswordResetService{users: users, tokens: tokens, sessions: sessions, mailer: mailer}
+	if len(rateLimiters) > 0 {
+		svc.rl = rateLimiters[0]
+	}
+	return svc
 }
 
 func (s *PasswordResetService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
 	s.sso = repo
+}
+
+func (s *PasswordResetService) SetRateLimiter(rl RateLimiter) {
+	s.rl = rl
 }
 
 func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, email, baseURL string) error {
@@ -30,11 +39,22 @@ func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, ema
 	if err != nil {
 		return err
 	}
+	if s.mailer == nil {
+		return domain.ErrEmailNotConfigured
+	}
+	if s.rl != nil {
+		allowed, _, err := s.rl.Allow(ctx, "rate:email:password_reset:"+emailKey, 3, time.Hour)
+		if err != nil {
+			log.Printf("password reset rate limit error: %v", err)
+		} else if !allowed {
+			return domain.ErrRateLimit
+		}
+	}
 	user, err := s.users.GetByEmail(ctx, clientID, emailKey)
 	if err != nil {
 		log.Printf("forgot password lookup error: %v", err)
 	}
-	if user != nil && s.mailer != nil {
+	if user != nil {
 		if _, enforced, enforceErr := enforcedSSOConnectionForEmail(ctx, s.sso, clientID, user.Email); enforceErr != nil {
 			log.Printf("forgot password sso enforcement lookup error: %v", enforceErr)
 			return nil

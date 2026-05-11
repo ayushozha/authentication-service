@@ -114,6 +114,27 @@
     return value === undefined || value === null || value === '' ? fallback : value;
   }
 
+  function authErrorMessage(value) {
+    var code = String(value || '').trim().toUpperCase();
+    var messages = {
+      AUTH_INVALID_CREDENTIALS: 'The email or password is incorrect.',
+      AUTH_RATE_LIMITED: 'Too many attempts. Try again in a few minutes.',
+      AUTH_SESSION_EXPIRED: 'Your session expired. Sign in again.',
+      AUTH_TOKEN_MISSING: 'Sign in again to continue.',
+      AUTH_TOKEN_REVOKED: 'Your session is no longer active. Sign in again.',
+      AUTH_SERVICE_UNAVAILABLE: 'We could not sign you in right now. Try again later.',
+      AUTH_OAUTH_FAILED: 'We could not complete sign-in with that provider.',
+      AUTH_OAUTH_CANCELLED: 'Sign-in was cancelled.',
+      AUTH_OAUTH_STATE_MISMATCH: 'We could not verify that sign-in. Try again.',
+      AUTH_OAUTH_PROVIDER_UNAVAILABLE: 'That sign-in provider is unavailable. Try again later.',
+      AUTH_SSO_FAILED: 'We could not complete single sign-on. Try again.',
+      AUTH_PASSKEY_FAILED: 'We could not complete passkey sign-in. Try again.'
+    };
+    if (messages[code]) return messages[code];
+    if (String(value || '').toLowerCase() === 'invalid_state') return messages.AUTH_OAUTH_STATE_MISMATCH;
+    return '';
+  }
+
   function escapeHTML(value) {
     return String(value || '').replace(/[&<>"']/g, function(ch) {
       return {
@@ -206,6 +227,13 @@
       autoVerified: false
     };
     this.consumeFlashMessage();
+    if (!this.state.message) {
+      var initialError = authErrorMessage(this.params.get('error'));
+      if (initialError) {
+        this.state.message = initialError;
+        this.state.messageType = 'error';
+      }
+    }
     this.client = AuthService.createClient({
       baseUrl: this.baseUrl,
       apiKey: this.apiKey,
