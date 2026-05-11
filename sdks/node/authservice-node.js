@@ -58,6 +58,22 @@ function permissionFor(resource, action) {
   return resource && action ? resource + ':' + action : '';
 }
 
+const INVALID_LOGIN_CREDENTIALS_MESSAGE = 'Invalid email or password.';
+
+function errorPayloadMessage(response) {
+  if (response && typeof response === 'object') return String(response.error || response.message || '').trim();
+  if (typeof response === 'string') return response.trim();
+  return '';
+}
+
+function normalizeLoginError(err) {
+  const serverMessage = errorPayloadMessage(err && err.response).toLowerCase();
+  if (err instanceof AuthServiceNodeError && err.status === 401 && serverMessage === 'invalid email or password') {
+    return new AuthServiceNodeError(INVALID_LOGIN_CREDENTIALS_MESSAGE, err.status, err.response);
+  }
+  return err;
+}
+
 class AuthServiceNodeClient {
   constructor(options) {
     options = options || {};
@@ -220,7 +236,9 @@ class AuthServiceNodeClient {
   }
 
   login(params) {
-    return this.request('/api/auth/login', { method: 'POST', body: this.withSessionMode(params), auth: false }).then((data) => this.persist(data));
+    return this.request('/api/auth/login', { method: 'POST', body: this.withSessionMode(params), auth: false })
+      .then((data) => this.persist(data))
+      .catch((err) => { throw normalizeLoginError(err); });
   }
 
   refresh(params) {

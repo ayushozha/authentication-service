@@ -275,7 +275,8 @@
       self.locale = self.params.get('locale') || self.ui.locale || self.locale;
       self.applyTheme();
       self.render();
-    }).catch(function() {
+    }).catch(function(err) {
+      self.setMessage(err && err.message ? err.message : '', 'error');
       self.render();
     });
   };

@@ -35,6 +35,28 @@ export class AuthServiceError extends Error {
   }
 }
 
+const invalidLoginCredentialsMessage = "Invalid email or password.";
+
+function errorPayloadMessage(response: unknown): string {
+  if (response && typeof response === "object") {
+    const payload = response as { error?: unknown; message?: unknown };
+    return String(payload.error || payload.message || "").trim();
+  }
+  if (typeof response === "string") return response.trim();
+  return "";
+}
+
+function normalizeLoginError(error: unknown): unknown {
+  if (error instanceof AuthServiceError && error.status === 401 && errorPayloadMessage(error.response).toLowerCase() === "invalid email or password") {
+    return new AuthServiceError(invalidLoginCredentialsMessage, error.status, error.response);
+  }
+  return error;
+}
+
+function rethrowLoginError(error: unknown): never {
+  throw normalizeLoginError(error);
+}
+
 export class AuthServiceClient {
   readonly baseUrl: string;
   readonly apiKey?: string;
@@ -99,7 +121,7 @@ export class AuthServiceClient {
   }
 
   signup(params: Json) { return this.request<Json>("/api/auth/signup", { method: "POST", body: this.withSessionMode(params), auth: false }).then(x => this.persist(x)); }
-  login(params: Json) { return this.request<Json>("/api/auth/login", { method: "POST", body: this.withSessionMode(params), auth: false }).then(x => this.persist(x)); }
+  login(params: Json) { return this.request<Json>("/api/auth/login", { method: "POST", body: this.withSessionMode(params), auth: false }).then(x => this.persist(x)).catch(rethrowLoginError); }
   refresh(params: Json = {}) {
     const body = this.withSessionMode({ ...params });
     if (this.sessionMode === "token" && !body.refresh_token) body.refresh_token = this.tokenStore.getRefreshToken();

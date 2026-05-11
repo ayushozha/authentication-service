@@ -7,8 +7,25 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function(root) {
   'use strict';
 
-  var VERSION = '0.1.0';
+  var VERSION = '0.1.1';
   var DEFAULT_PREFIX = 'authservice_';
+  var INVALID_LOGIN_CREDENTIALS_MESSAGE = 'Invalid email or password.';
+
+  function errorPayloadMessage(response) {
+    if (response && typeof response === 'object') {
+      return String(response.error || response.message || '').trim();
+    }
+    if (typeof response === 'string') return response.trim();
+    return '';
+  }
+
+  function normalizeLoginError(err) {
+    var serverMessage = errorPayloadMessage(err && err.response).toLowerCase();
+    if (err && err.status === 401 && serverMessage === 'invalid email or password') {
+      return new AuthServiceError(INVALID_LOGIN_CREDENTIALS_MESSAGE, err.status, err.response);
+    }
+    return err;
+  }
 
   function AuthServiceError(message, status, response) {
     this.name = 'AuthServiceError';
@@ -388,6 +405,8 @@
     var self = this;
     return this.request('/api/auth/login', { method: 'POST', body: this.withSessionMode(params), auth: false }).then(function(data) {
       return self.setSession(data);
+    }).catch(function(err) {
+      throw normalizeLoginError(err);
     });
   };
 
