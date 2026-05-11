@@ -263,6 +263,28 @@ func authOperationForPath(r *http.Request) string {
 	}
 	path := r.URL.Path
 	switch {
+	case strings.Contains(path, "/enterprise-onboarding"):
+		return "enterprise_onboarding"
+	case strings.Contains(path, "/organizations"), strings.Contains(path, "/organization-invitations"):
+		return "organization"
+	case strings.Contains(path, "/magic-link"):
+		return "magic_link"
+	case strings.Contains(path, "/verify-email"), strings.Contains(path, "/resend-verification"):
+		return "email_verification"
+	case strings.Contains(path, "/redirect/exchange"):
+		return "redirect_exchange"
+	case strings.Contains(path, "/change-password"):
+		return "password_change"
+	case strings.Contains(path, "/logout"):
+		return "logout"
+	case strings.Contains(path, "/ui/config"):
+		return "ui_config"
+	case strings.Contains(path, "/step-up"):
+		return "mfa"
+	case strings.Contains(path, "/devices"):
+		return "device"
+	case strings.Contains(path, "/passkey"):
+		return "passkey"
 	case strings.Contains(path, "/login"):
 		return "login"
 	case strings.Contains(path, "/signup"):
@@ -277,8 +299,6 @@ func authOperationForPath(r *http.Request) string {
 		return "sso"
 	case strings.Contains(path, "/totp"), strings.Contains(path, "/recovery-codes"):
 		return "mfa"
-	case strings.Contains(path, "/passkey"):
-		return "passkey"
 	case strings.Contains(path, "/me"), strings.Contains(path, "/sessions"):
 		return "session"
 	default:

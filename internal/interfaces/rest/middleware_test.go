@@ -154,3 +154,42 @@ func TestWriteErrorLogsStructuredRedactedAuthEvent(t *testing.T) {
 		t.Fatalf("user agent should be structurally redacted in auth log: %+v", entry)
 	}
 }
+
+func TestAuthOperationForPathCoversAuthSurfaces(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/api/auth/login", "login"},
+		{"/api/auth/signup", "signup"},
+		{"/api/auth/refresh", "refresh"},
+		{"/api/auth/logout", "logout"},
+		{"/api/auth/change-password", "password_change"},
+		{"/api/auth/forgot-password", "password_reset"},
+		{"/api/auth/reset-password", "password_reset"},
+		{"/api/auth/verify-email", "email_verification"},
+		{"/api/auth/resend-verification", "email_verification"},
+		{"/api/auth/magic-link/send", "magic_link"},
+		{"/api/auth/redirect/exchange", "redirect_exchange"},
+		{"/api/auth/oauth/google/callback", "oauth"},
+		{"/api/auth/sso/callback/connection-id", "sso"},
+		{"/api/auth/totp/verify", "mfa"},
+		{"/api/auth/recovery-codes/verify", "mfa"},
+		{"/api/auth/step-up/verify", "mfa"},
+		{"/api/auth/passkey/login/finish", "passkey"},
+		{"/api/auth/me", "session"},
+		{"/api/auth/sessions/session-id", "session"},
+		{"/api/auth/devices/device-id", "device"},
+		{"/api/auth/ui/config", "ui_config"},
+		{"/api/auth/organizations/org-id/invitations", "organization"},
+		{"/api/auth/organization-invitations/accept", "organization"},
+		{"/api/auth/enterprise-onboarding/organizations/org-id/audit-events", "enterprise_onboarding"},
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+		if got := authOperationForPath(req); got != tt.want {
+			t.Fatalf("authOperationForPath(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
