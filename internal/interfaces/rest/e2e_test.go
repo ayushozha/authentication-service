@@ -1144,6 +1144,7 @@ func TestE2EOAuthAndPasskeyRouteCoverage(t *testing.T) {
 
 	missingSessionFinishRec := env.request(t, http.MethodPost, "/api/auth/passkey/login/finish", nil, env.apiHeaders())
 	assertStatus(t, missingSessionFinishRec, http.StatusBadRequest)
+	assertAuthError(t, missingSessionFinishRec, "session_id_required", "AUTH_INVALID_REQUEST", false)
 }
 
 func TestE2ERedisRequiredFeaturesFailExplicitlyWithoutCache(t *testing.T) {
@@ -1160,6 +1161,7 @@ func TestE2ERedisRequiredFeaturesFailExplicitlyWithoutCache(t *testing.T) {
 
 	passkeyRec := env.request(t, http.MethodPost, "/api/auth/passkey/login/begin", nil, env.apiHeaders())
 	assertStatus(t, passkeyRec, http.StatusServiceUnavailable)
+	assertAuthError(t, passkeyRec, "redis_required", "AUTH_SERVICE_UNAVAILABLE", true)
 }
 
 func TestE2EOrganizationRBACLifecycle(t *testing.T) {

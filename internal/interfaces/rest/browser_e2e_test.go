@@ -185,17 +185,50 @@ func TestBrowserSDKSignupOrganizationsAndUserWidget(t *testing.T) {
 	slug := fmt.Sprintf("browser-sdk-%d", time.Now().UnixNano())
 
 	var result struct {
-		OK         bool   `json:"ok"`
-		Email      string `json:"email"`
-		Display    string `json:"display"`
-		WidgetText string `json:"widgetText"`
-		Error      string `json:"error"`
+		OK           bool   `json:"ok"`
+		Email        string `json:"email"`
+		Display      string `json:"display"`
+		WidgetText   string `json:"widgetText"`
+		LoginCode    string `json:"loginCode"`
+		PasskeyCode  string `json:"passkeyCode"`
+		PasskeyError string `json:"passkeyError"`
+		Error        string `json:"error"`
 	}
 	expr := fmt.Sprintf(`(async () => {
 		try {
 			const client = AuthService.createClient({ baseUrl: location.origin, apiKey: %q, sessionMode: "token" });
 			const signup = await client.signup({ email: %q, password: %q, display_name: "SDK User" });
 			if (!signup.access_token || !client.getAccessToken() || !client.getRefreshToken()) throw new Error("signup did not persist token session");
+
+			let loginError = null;
+			try {
+				await client.login({ email: %q, password: "wrong-password" });
+			} catch (err) {
+				loginError = err;
+			}
+			if (!loginError || loginError.code !== "AUTH_INVALID_CREDENTIALS" || loginError.message !== "Invalid email or password." || loginError.retryable !== false) {
+				throw new Error("login error was not canonical: " + JSON.stringify({
+					code: loginError && loginError.code,
+					message: loginError && loginError.message,
+					retryable: loginError && loginError.retryable,
+					providerCode: loginError && loginError.providerCode
+				}));
+			}
+
+			let passkeyError = null;
+			try {
+				await client.request("/api/auth/passkey/login/finish", { method: "POST", body: {}, auth: false });
+			} catch (err) {
+				passkeyError = err;
+			}
+			if (!passkeyError || passkeyError.code !== "AUTH_INVALID_REQUEST" || passkeyError.message !== "We could not process that request. Try again." || passkeyError.providerCode !== "session_id_required" || passkeyError.retryable !== false) {
+				throw new Error("passkey error was not canonical: " + JSON.stringify({
+					code: passkeyError && passkeyError.code,
+					message: passkeyError && passkeyError.message,
+					retryable: passkeyError && passkeyError.retryable,
+					providerCode: passkeyError && passkeyError.providerCode
+				}));
+			}
 
 			const me = await client.me();
 			const updated = await client.updateProfile({ display_name: "SDK Renamed", timezone: "America/Los_Angeles" });
@@ -211,12 +244,15 @@ func TestBrowserSDKSignupOrganizationsAndUserWidget(t *testing.T) {
 				ok: me.email === %q && updated.display_name === "SDK Renamed" && widgetText.includes("SDK Renamed"),
 				email: me.email,
 				display: updated.display_name,
-				widgetText
+				widgetText,
+				loginCode: loginError.code,
+				passkeyCode: passkeyError.code,
+				passkeyError: passkeyError.message
 			};
 		} catch (err) {
 			return { ok: false, error: err && err.message ? err.message : String(err) };
 		}
-	})()`, env.apiKey, email, e2ePassword, slug, email)
+	})()`, env.apiKey, email, e2ePassword, email, slug, email)
 
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(baseURL+"/sdk-test"),

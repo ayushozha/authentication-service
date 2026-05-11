@@ -19,6 +19,10 @@ Clients should render `user_message`, branch on `auth_code`, and use `retryable`
 for retry affordances. The lowercase `code` remains the provider/service code
 for compatibility and diagnostics.
 
+The browser, Node, TypeScript, iOS, and Android SDKs normalize failed requests
+into error objects with canonical `code`, `userMessage`, `retryable`, and
+`providerCode` fields.
+
 Required guarantees:
 
 - Login failures for unknown email and wrong password both use

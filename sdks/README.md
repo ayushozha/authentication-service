@@ -6,6 +6,8 @@ Starter native clients for teams that want to call AuthService without hand-writ
 
 `public/authservice.js` is served by AuthService itself and exposes token/session helpers, active-session listing/revocation, WebAuthn/passkey helpers, TOTP/recovery-code helpers, organization helpers, admin SSO/SCIM/audit helpers, and embeddable sign-in/signup/profile/org/enterprise widgets.
 
+Failed requests throw `AuthServiceError` with canonical `code`, `userMessage`, `retryable`, and `providerCode` fields. Widgets render the canonical message instead of raw provider/service copy.
+
 It also includes lightweight authorization helpers: `getAccessClaims()`, `hasScope(scope)`, `hasOrganizationPermission(permission)`, and `isAuthorized(resource, action)`. These are useful for UI gating; backend APIs should still validate JWTs and enforce permissions server-side.
 
 OIDC helpers cover PKCE redirect flows: `createOIDCAuthorizationURL()`, `startOIDC()`, `handleOIDCCallback()`, `exchangeOIDCCode()`, and `oidcUserInfo()`.
@@ -74,6 +76,8 @@ const session = await loadSession(request, {
 ## Node.js
 
 `sdks/node/authservice-node.js` is a dependency-free Node 18+ SDK for server-side rendering, API routes, workers, and service-to-service flows.
+
+Failed requests throw `AuthServiceNodeError` with canonical `code`, `userMessage`, `retryable`, and `providerCode` fields, matching the browser and TypeScript SDK error contract.
 
 Node helpers include `getAccessClaims()`, `hasScope(scope)`, `hasOrganizationPermission(permission)`, `isAuthorized(resource, action)`, policy/group-mapping APIs, and exported `decodeJwt(token)` for framework middleware.
 Node OIDC helpers include `createOIDCAuthorizationURL()`, `handleOIDCCallback()`, `exchangeOIDCCode()`, and `oidcUserInfo()`.
