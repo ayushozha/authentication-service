@@ -3,6 +3,8 @@ package redis
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -14,14 +16,32 @@ func NewRateLimiter(rdb *Client) *RateLimiter {
 	return &RateLimiter{rdb: rdb}
 }
 
+// failOpen reports whether the rate limiter should allow requests when Redis
+// is unavailable. Defaults to false (fail closed). Set
+// `RATE_LIMITER_FAIL_OPEN=true` only for local development.
+func failOpen() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("RATE_LIMITER_FAIL_OPEN")), "true")
+}
+
+// Allow returns whether `key` is under `limit` over `window`. When Redis is
+// unavailable, this fails CLOSED (denies the request) unless
+// `RATE_LIMITER_FAIL_OPEN=true` is set explicitly. Failing open allows
+// attackers to bypass throttling and account lockout by triggering a Redis
+// outage.
 func (rl *RateLimiter) Allow(ctx context.Context, key string, limit int64, window time.Duration) (bool, int64, error) {
 	if rl.rdb == nil {
-		return true, limit, nil
+		if failOpen() {
+			return true, limit, nil
+		}
+		return false, 0, fmt.Errorf("rate limiter unavailable: redis not configured")
 	}
 
 	count, err := rl.rdb.Incr(ctx, key)
 	if err != nil {
-		return true, limit, fmt.Errorf("rate limit incr: %w", err)
+		if failOpen() {
+			return true, limit, fmt.Errorf("rate limit incr (fail-open): %w", err)
+		}
+		return false, 0, fmt.Errorf("rate limit incr: %w", err)
 	}
 
 	if count == 1 {

@@ -301,6 +301,11 @@ func redirectWithLoginAuthError(w http.ResponseWriter, r *http.Request, cfg *Han
 	http.Redirect(w, r, baseURL+"/login.html?error="+url.QueryEscape(authCode), http.StatusFound)
 }
 
+// clientIP extracts the caller's IP. Currently trusts X-Forwarded-For
+// unconditionally for backwards compatibility — note the audit-flagged
+// spoofing risk in docs/security/known-issues.md. The fix (trusting XFF
+// only from configured proxy IPs) needs paired test updates and a
+// TRUSTED_PROXY_IPS env-var contract; landing in a follow-up.
 func clientIP(r *http.Request) string {
 	forwarded := r.Header.Get("X-Forwarded-For")
 	if forwarded != "" {

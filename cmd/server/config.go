@@ -179,7 +179,7 @@ func loadConfig() Config {
 		DatabaseURL:      envStr("DATABASE_URL", ""),
 		RedisURL:         envStr("REDIS_URL", ""),
 		RedisPrefix:      envStr("REDIS_KEY_PREFIX", "auth:"),
-		AllowOrigin:      envStr("ALLOW_ORIGIN", "*"),
+		AllowOrigin:      envStr("ALLOW_ORIGIN", ""),
 		AdminAPIKey:      envStr("ADMIN_API_KEY", ""),
 		AdminTokenSecret: envStr("ADMIN_TOKEN_SECRET", envStr("ADMIN_API_KEY", "")),
 		AdminAccessTTL:   adminAccessTTL,
