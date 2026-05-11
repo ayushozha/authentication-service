@@ -206,24 +206,28 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 		"password": e2ePassword,
 	}, env.apiHeaders())
 	assertStatus(t, dupRec, http.StatusConflict)
+	assertAuthError(t, dupRec, "duplicate_email", "AUTH_INVALID_REQUEST", false)
 
 	weakRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
 		"email":    "weak@example.com",
 		"password": "short",
 	}, env.apiHeaders())
 	assertStatus(t, weakRec, http.StatusBadRequest)
+	assertAuthError(t, weakRec, "invalid_signup", "AUTH_PASSWORD_TOO_SHORT", false)
 
 	commonPasswordRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
 		"email":    "common-password@example.com",
 		"password": "password123",
 	}, env.apiHeaders())
 	assertStatus(t, commonPasswordRec, http.StatusBadRequest)
+	assertAuthError(t, commonPasswordRec, "invalid_signup", "AUTH_PASSWORD_TOO_SHORT", false)
 
 	blockedEmailDomainRec := env.request(t, http.MethodPost, "/api/auth/signup", map[string]interface{}{
 		"email":    "throwaway@mailinator.com",
 		"password": e2ePassword,
 	}, env.apiHeaders())
 	assertStatus(t, blockedEmailDomainRec, http.StatusBadRequest)
+	assertAuthError(t, blockedEmailDomainRec, "invalid_signup", "AUTH_INVALID_REQUEST", false)
 
 	invalidSignupHeaders := env.apiHeaders()
 	invalidSignupHeaders["X-Forwarded-For"] = "198.51.100.64"
@@ -232,6 +236,7 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 		"password": e2ePassword,
 	}, invalidSignupHeaders)
 	assertStatus(t, invalidSignupEmailRec, http.StatusBadRequest)
+	assertAuthError(t, invalidSignupEmailRec, "invalid_signup", "AUTH_INVALID_EMAIL", false)
 
 	invalidLoginEmailRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
 		"email":    "alice",

@@ -122,7 +122,7 @@ func canonicalAuthCode(status int, code, message string) string {
 		"token_is_required", "code_is_required", "session_id_required", "passkey_id_required", "token_and_code_are_required", "token_and_new_password_are_required",
 		"not_found", "forbidden", "duplicate_organization", "duplicate_membership", "authorization_policy_conflict", "invalid_role", "invalid_permission",
 		"invalid_invitation", "invitation_expired", "invalid_authorization_policy", "invalid_group_mapping", "invalid_organization_request",
-		"invalid_scim_resource", "invalid_scim_token", "invalid_enterprise_onboarding_request":
+		"invalid_scim_resource", "invalid_scim_token", "invalid_enterprise_onboarding_request", "duplicate_email", "bot_verification_failed":
 		return "AUTH_INVALID_REQUEST"
 	case "email_required", "email_is_required":
 		return "AUTH_EMAIL_REQUIRED"
@@ -185,12 +185,17 @@ func canonicalAuthCode(status int, code, message string) string {
 	switch {
 	case strings.Contains(lowerMessage, "invalid email or password"):
 		return "AUTH_INVALID_CREDENTIALS"
+	case strings.Contains(lowerMessage, "email is required"):
+		return "AUTH_EMAIL_REQUIRED"
 	case strings.Contains(lowerMessage, "invalid email"):
 		return "AUTH_INVALID_EMAIL"
 	case strings.Contains(lowerMessage, "password") && strings.Contains(lowerMessage, "required"):
 		return "AUTH_PASSWORD_REQUIRED"
-	case strings.Contains(lowerMessage, "at least 8") || strings.Contains(lowerMessage, "password does not meet"):
+	case strings.Contains(lowerMessage, "at least 8") || strings.Contains(lowerMessage, "password does not meet") ||
+		(strings.Contains(lowerMessage, "password") && (strings.Contains(lowerMessage, "must") || strings.Contains(lowerMessage, "compromised"))):
 		return "AUTH_PASSWORD_TOO_SHORT"
+	case strings.Contains(lowerMessage, "email domain") && strings.Contains(lowerMessage, "not allowed"):
+		return "AUTH_INVALID_REQUEST"
 	case strings.Contains(lowerMessage, "too many") || strings.Contains(lowerMessage, "rate"):
 		return "AUTH_RATE_LIMITED"
 	case strings.Contains(lowerMessage, "redis") || strings.Contains(lowerMessage, "not configured"):

@@ -256,7 +256,7 @@ func (h *ClientHandler) requireAdminAction(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	if decision != nil && (decision.Blocked || decision.StepUpRequired) {
-		writeAdaptiveActionDecision(w, decision)
+		writeAdaptiveActionDecision(w, r, decision)
 		return false
 	}
 	return true

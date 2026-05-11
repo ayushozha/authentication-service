@@ -444,7 +444,7 @@ func (h *OrganizationHandler) requireStepUp(w http.ResponseWriter, r *http.Reque
 		return false
 	}
 	if decision != nil && (decision.Blocked || decision.StepUpRequired) {
-		writeAdaptiveActionDecision(w, decision)
+		writeAdaptiveActionDecision(w, r, decision)
 		return false
 	}
 	return true

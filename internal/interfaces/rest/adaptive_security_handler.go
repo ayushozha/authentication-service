@@ -179,9 +179,9 @@ func stepUpTokenFromRequest(r *http.Request) string {
 	return strings.TrimSpace(r.URL.Query().Get("step_up_token"))
 }
 
-func writeAdaptiveActionDecision(w http.ResponseWriter, decision *application.ActionSecurityDecision) {
+func writeAdaptiveActionDecision(w http.ResponseWriter, r *http.Request, decision *application.ActionSecurityDecision) {
 	if decision == nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		writeError(w, r, http.StatusForbidden, "forbidden", "Forbidden.")
 		return
 	}
 	status := http.StatusForbidden
