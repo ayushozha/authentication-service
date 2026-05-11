@@ -265,6 +265,8 @@ func authOperationForPath(r *http.Request) string {
 		return "password_reset"
 	case strings.Contains(path, "/oauth"):
 		return "oauth"
+	case strings.Contains(path, "/sso"):
+		return "sso"
 	case strings.Contains(path, "/totp"), strings.Contains(path, "/recovery-codes"):
 		return "mfa"
 	case strings.Contains(path, "/passkey"):

@@ -30,12 +30,12 @@ func (h *EnterpriseSSOHandler) RegisterAuthRoutes(authMux, publicMux *http.Serve
 
 func (h *EnterpriseSSOHandler) beginLoginByDomain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -47,7 +47,7 @@ func (h *EnterpriseSSOHandler) beginLoginByDomain(w http.ResponseWriter, r *http
 	}, h.externalBaseURL(r))
 	if err != nil {
 		application.Metrics().ObserveSSOError("begin_domain", err)
-		h.writeSSOError(w, err)
+		h.writeSSOError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
@@ -55,17 +55,17 @@ func (h *EnterpriseSSOHandler) beginLoginByDomain(w http.ResponseWriter, r *http
 
 func (h *EnterpriseSSOHandler) beginLoginByConnection(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 	connectionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/sso/"), "/")
 	if connectionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "connection ID required"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "Connection ID required.")
 		return
 	}
 
@@ -78,7 +78,7 @@ func (h *EnterpriseSSOHandler) beginLoginByConnection(w http.ResponseWriter, r *
 	}, h.externalBaseURL(r))
 	if err != nil {
 		application.Metrics().ObserveSSOError("begin_connection", err)
-		h.writeSSOError(w, err)
+		h.writeSSOError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
@@ -86,12 +86,12 @@ func (h *EnterpriseSSOHandler) beginLoginByConnection(w http.ResponseWriter, r *
 
 func (h *EnterpriseSSOHandler) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	connectionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/sso/callback/"), "/")
 	if connectionID == "" {
-		http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error=missing_sso_connection", http.StatusFound)
+		redirectWithLoginAuthError(w, r, h.cfg, "AUTH_SSO_FAILED")
 		return
 	}
 
@@ -110,7 +110,7 @@ func (h *EnterpriseSSOHandler) handleCallback(w http.ResponseWriter, r *http.Req
 	}
 	if err != nil {
 		application.Metrics().ObserveSSOError("callback", err)
-		http.Redirect(w, r, h.cfg.BaseURL+"/login.html?error="+err.Error(), http.StatusFound)
+		redirectWithLoginAuthError(w, r, h.cfg, authCodeForSSOError(err))
 		return
 	}
 	tokenMode := isTokenSessionMode(r, resp.SessionMode)
@@ -127,12 +127,12 @@ func (h *EnterpriseSSOHandler) handleCallback(w http.ResponseWriter, r *http.Req
 
 func (h *EnterpriseSSOHandler) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	connectionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/auth/sso/metadata/"), "/")
 	if connectionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "connection ID required"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "Connection ID required.")
 		return
 	}
 
@@ -142,7 +142,7 @@ func (h *EnterpriseSSOHandler) handleMetadata(w http.ResponseWriter, r *http.Req
 	metadata, err := h.svc.SAMLMetadata(ctx, connectionID)
 	if err != nil {
 		application.Metrics().ObserveSSOError("metadata", err)
-		h.writeSSOError(w, err)
+		h.writeSSOError(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/samlmetadata+xml")
@@ -152,7 +152,7 @@ func (h *EnterpriseSSOHandler) handleMetadata(w http.ResponseWriter, r *http.Req
 
 func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *http.Request, ctx context.Context, clientID string, parts []string) {
 	if h.svc == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "invalid_sso_connection", "SSO connection not found.")
 		return
 	}
 	switch len(parts) {
@@ -169,19 +169,19 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 		case http.MethodPost:
 			var req application.CreateEnterpriseSSOConnectionRequest
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 				return
 			}
 			connection, err := h.svc.CreateConnection(ctx, clientID, req, h.externalBaseURL(r))
 			if err != nil {
-				h.writeSSOError(w, err)
+				h.writeSSOError(w, r, err)
 				return
 			}
 			SetAdminAuditTarget(r, "sso_connection", connection.ID, clientID)
 			SetAdminAuditAfter(r, safeSSOConnectionMetadata(connection))
 			writeJSON(w, http.StatusCreated, sanitizeSSOConnection(connection))
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		}
 	case 7:
 		connectionID := parts[6]
@@ -189,7 +189,7 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 		case http.MethodGet:
 			connection, err := h.svc.GetConnection(ctx, clientID, connectionID)
 			if err != nil {
-				h.writeSSOError(w, err)
+				h.writeSSOError(w, r, err)
 				return
 			}
 			SetAdminAuditAfter(r, safeSSOConnectionMetadata(connection))
@@ -199,12 +199,12 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 			SetAdminAuditBefore(r, safeSSOConnectionMetadata(before))
 			var req application.UpdateEnterpriseSSOConnectionRequest
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 				return
 			}
 			connection, err := h.svc.UpdateConnection(ctx, clientID, connectionID, req, h.externalBaseURL(r))
 			if err != nil {
-				h.writeSSOError(w, err)
+				h.writeSSOError(w, r, err)
 				return
 			}
 			SetAdminAuditAfter(r, safeSSOConnectionMetadata(connection))
@@ -213,16 +213,16 @@ func (h *EnterpriseSSOHandler) handleAdminConnections(w http.ResponseWriter, r *
 			before, _ := h.svc.GetConnection(ctx, clientID, connectionID)
 			SetAdminAuditBefore(r, safeSSOConnectionMetadata(before))
 			if err := h.svc.DeactivateConnection(ctx, clientID, connectionID); err != nil {
-				h.writeSSOError(w, err)
+				h.writeSSOError(w, r, err)
 				return
 			}
 			SetAdminAuditAfter(r, map[string]interface{}{"connection_id": connectionID, "status": domain.SSOConnectionStatusInactive})
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		}
 	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "invalid_sso_connection", "SSO connection not found.")
 	}
 }
 
@@ -240,18 +240,35 @@ func (h *EnterpriseSSOHandler) externalBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-func (h *EnterpriseSSOHandler) writeSSOError(w http.ResponseWriter, err error) {
+func (h *EnterpriseSSOHandler) writeSSOError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "invalid_sso_connection", "SSO connection not found.")
 	case errors.Is(err, domain.ErrRedisRequired):
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "enterprise sso requires Redis"})
-	case errors.Is(err, domain.ErrInvalidClient), errors.Is(err, domain.ErrInvalidToken), errors.Is(err, domain.ErrInvalidSSOConnection):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, domain.ErrSSODomainNotAllowed), errors.Is(err, domain.ErrAccountSuspended):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		writeError(w, r, http.StatusServiceUnavailable, "redis_required", "Enterprise SSO requires Redis.")
+	case errors.Is(err, domain.ErrInvalidClient):
+		writeError(w, r, http.StatusBadRequest, "invalid_client", "Invalid SSO client.")
+	case errors.Is(err, domain.ErrInvalidToken), errors.Is(err, domain.ErrInvalidSSOConnection):
+		writeError(w, r, http.StatusBadRequest, "sso_failed", "Could not complete SSO.")
+	case errors.Is(err, domain.ErrSSODomainNotAllowed):
+		writeError(w, r, http.StatusForbidden, "sso_failed", "Could not complete SSO.")
+	case errors.Is(err, domain.ErrAccountSuspended):
+		writeError(w, r, http.StatusForbidden, "account_suspended", "Account is suspended.")
 	default:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
+	}
+}
+
+func authCodeForSSOError(err error) string {
+	switch {
+	case errors.Is(err, domain.ErrAccountSuspended):
+		return "AUTH_ACCOUNT_DISABLED"
+	case errors.Is(err, domain.ErrRedisRequired):
+		return "AUTH_SERVICE_UNAVAILABLE"
+	case errors.Is(err, domain.ErrInvalidClient):
+		return "AUTH_SERVICE_UNAVAILABLE"
+	default:
+		return "AUTH_SSO_FAILED"
 	}
 }
 
