@@ -56,14 +56,28 @@ func (rl *RateLimiter) Allow(ctx context.Context, key string, limit int64, windo
 	return count <= limit, remaining, nil
 }
 
+// accountLockoutEnabled controls the per-email account-lockout policy.
+// Off by default — locking accounts after a fixed number of wrong passwords
+// is a DoS vector (any attacker can lock any real user out by spraying bad
+// passwords). Per-IP rate-limiting via Allow() already protects against
+// online brute force without taking real users offline. Operators who want
+// the old behavior can flip ACCOUNT_LOCKOUT_ENABLED=true.
+func accountLockoutEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("ACCOUNT_LOCKOUT_ENABLED")), "true")
+}
+
 func (rl *RateLimiter) IsLocked(ctx context.Context, email string) bool {
-	if rl.rdb == nil {
+	if rl.rdb == nil || !accountLockoutEnabled() {
 		return false
 	}
 	exists, _ := rl.rdb.Exists(ctx, "lockout:"+email)
 	return exists
 }
 
+// RecordFailedLogin still counts failed-login attempts so risk-scoring and
+// observability stay intact, but it no longer sets the per-email lockout
+// unless ACCOUNT_LOCKOUT_ENABLED=true. The counter expires after 15 minutes
+// so legitimate users who mistype several times in a row aren't penalized.
 func (rl *RateLimiter) RecordFailedLogin(ctx context.Context, email string) {
 	if rl.rdb == nil {
 		return
@@ -76,7 +90,7 @@ func (rl *RateLimiter) RecordFailedLogin(ctx context.Context, email string) {
 	if count == 1 {
 		_ = rl.rdb.Expire(ctx, key, 15*time.Minute)
 	}
-	if count >= 5 {
+	if accountLockoutEnabled() && count >= 5 {
 		_ = rl.rdb.Set(ctx, "lockout:"+email, "1", 30*time.Minute)
 		_ = rl.rdb.Del(ctx, key)
 	}
