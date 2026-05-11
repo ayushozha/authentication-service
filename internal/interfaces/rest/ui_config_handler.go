@@ -22,7 +22,7 @@ func (h *UIConfigHandler) RegisterRoutes(mux *http.ServeMux) {
 func (h *UIConfigHandler) config(w http.ResponseWriter, r *http.Request) {
 	client := GetClient(r)
 	if client == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing client"})
+		writeError(w, r, http.StatusUnauthorized, "missing_client", "Missing client.")
 		return
 	}
 
