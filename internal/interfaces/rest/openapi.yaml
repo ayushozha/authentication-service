@@ -1287,7 +1287,7 @@ paths:
       summary: OAuth2 callback
       description: |
         Handles the OAuth provider's redirect. On success, redirects to `{base_url}/login.html?auth_code={one_time_code}` and sets a session cookie unless `session_mode=token` was requested.
-        On failure, redirects to `{base_url}/login.html?error={message}`.
+        On failure, redirects to `{base_url}/login.html?error={AUTH_OAUTH_*}` using a canonical auth error code. Raw provider error strings are not forwarded in the URL.
 
         This is a public endpoint called by the OAuth provider.
       tags: [OAuth2]
@@ -1319,7 +1319,7 @@ paths:
       description: |
         Handles providers that return OAuth callback parameters with `response_mode=form_post`.
 
-        On success, redirects to `{base_url}/login.html?auth_code={one_time_code}` and sets a session cookie unless token mode was requested. On failure, redirects to `{base_url}/login.html?error={message}`.
+        On success, redirects to `{base_url}/login.html?auth_code={one_time_code}` and sets a session cookie unless token mode was requested. On failure, redirects to `{base_url}/login.html?error={AUTH_OAUTH_*}` using a canonical auth error code.
       tags: [OAuth2]
       parameters:
         - name: provider
@@ -1344,7 +1344,7 @@ paths:
                   description: Signed state parameter
       responses:
         "302":
-          description: Redirect to application with token or error
+          description: Redirect to application with one-time auth code or canonical auth error
 
   # ──────────────────────────────────────────────
   # Passkeys (WebAuthn)
@@ -2326,7 +2326,7 @@ paths:
     get:
       operationId: enterpriseOIDCCallback
       summary: Complete an enterprise OIDC login
-      description: Public OIDC redirect callback. Validates cached state, PKCE, issuer, audience, signature, expiry, and nonce before issuing AuthService tokens.
+      description: Public OIDC redirect callback. Validates cached state, PKCE, issuer, audience, signature, expiry, and nonce before issuing AuthService tokens. Failures redirect to the login page with a canonical `AUTH_SSO_*` value in the `error` query parameter.
       tags: [Enterprise SSO]
       parameters:
         - $ref: "#/components/parameters/SSOConnectionID"
@@ -2346,7 +2346,7 @@ paths:
     post:
       operationId: enterpriseSAMLCallback
       summary: Complete an enterprise SAML login
-      description: Public SAML Assertion Consumer Service endpoint. Validates signed SAML responses using IdP metadata or configured X.509 certificates before issuing AuthService tokens.
+      description: Public SAML Assertion Consumer Service endpoint. Validates signed SAML responses using IdP metadata or configured X.509 certificates before issuing AuthService tokens. Failures redirect to the login page with a canonical `AUTH_SSO_*` value in the `error` query parameter.
       tags: [Enterprise SSO]
       parameters:
         - $ref: "#/components/parameters/SSOConnectionID"
@@ -4305,12 +4305,24 @@ components:
           example: Invalid email or password.
         code:
           type: string
-          description: Stable machine-readable error code
+          description: Backwards-compatible provider/service error code; auth clients should prefer `auth_code` when present
           example: invalid_credentials
         message:
           type: string
           description: Human-readable error message safe to show to a user or operator
           example: Invalid email or password.
+        auth_code:
+          type: string
+          description: Canonical app-facing auth error code. Auth clients should branch on this field when present.
+          example: AUTH_INVALID_CREDENTIALS
+        user_message:
+          type: string
+          description: Canonical end-user copy safe to render in auth UI
+          example: Invalid email or password.
+        retryable:
+          type: boolean
+          description: Whether the client should offer an immediate retry affordance for this auth failure
+          example: false
         request_id:
           type: string
           description: Echoes `X-Request-ID` when supplied
