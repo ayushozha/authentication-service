@@ -186,11 +186,19 @@ func writeAdaptiveActionDecision(w http.ResponseWriter, decision *application.Ac
 	}
 	status := http.StatusForbidden
 	errorCode := "step_up_required"
+	authCode := "AUTH_MFA_REQUIRED"
 	if decision.Blocked {
 		errorCode = "blocked_by_security_policy"
+		authCode = "AUTH_ACCOUNT_DISABLED"
 	}
+	definition := authErrorDefinitions[authCode]
 	writeJSON(w, status, map[string]interface{}{
 		"error":            errorCode,
+		"code":             errorCode,
+		"message":          definition.UserMessage,
+		"auth_code":        authCode,
+		"user_message":     definition.UserMessage,
+		"retryable":        definition.Retryable,
 		"action":           decision.Action,
 		"step_up_required": decision.StepUpRequired,
 		"challenge_token":  decision.ChallengeToken,

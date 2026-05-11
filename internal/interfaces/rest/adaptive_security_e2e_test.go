@@ -125,12 +125,18 @@ func TestE2EStepUpProtectsOrganizationMemberRoleChange(t *testing.T) {
 	assertStatus(t, challengeRec, http.StatusForbidden)
 	var challenge struct {
 		Error          string   `json:"error"`
+		AuthCode       string   `json:"auth_code"`
+		UserMessage    string   `json:"user_message"`
+		Retryable      bool     `json:"retryable"`
 		ChallengeToken string   `json:"challenge_token"`
 		Factors        []string `json:"factors"`
 	}
 	decodeBody(t, challengeRec, &challenge)
 	if challenge.Error != "step_up_required" || challenge.ChallengeToken == "" {
 		t.Fatalf("expected step-up challenge, got %+v", challenge)
+	}
+	if challenge.AuthCode != "AUTH_MFA_REQUIRED" || challenge.UserMessage == "" || challenge.Retryable {
+		t.Fatalf("expected canonical step-up metadata, got %+v", challenge)
 	}
 
 	code, err := totp.GenerateCode(secret, time.Now())
@@ -183,6 +189,15 @@ func TestE2EAdaptivePolicyBlocksHighRiskAdminKeyRotation(t *testing.T) {
 	assertStatus(t, rotateRec, http.StatusForbidden)
 	if !strings.Contains(rotateRec.Body.String(), "blocked_by_security_policy") {
 		t.Fatalf("expected policy block response, got %s", rotateRec.Body.String())
+	}
+	var blockPayload struct {
+		AuthCode    string `json:"auth_code"`
+		UserMessage string `json:"user_message"`
+		Retryable   bool   `json:"retryable"`
+	}
+	decodeBody(t, rotateRec, &blockPayload)
+	if blockPayload.AuthCode != "AUTH_ACCOUNT_DISABLED" || blockPayload.UserMessage == "" || blockPayload.Retryable {
+		t.Fatalf("expected canonical block metadata, got %+v", blockPayload)
 	}
 
 	events, err := env.audit.List(context.Background(), domain.AuditEventFilter{ClientID: env.client.ID, EventType: "adaptive_security_admin_action_blocked", Limit: 10})
@@ -240,12 +255,18 @@ func TestE2EAdaptiveAdminKeyRotationStepUpChallenge(t *testing.T) {
 	assertStatus(t, challengeRec, http.StatusForbidden)
 	var challenge struct {
 		Error          string   `json:"error"`
+		AuthCode       string   `json:"auth_code"`
+		UserMessage    string   `json:"user_message"`
+		Retryable      bool     `json:"retryable"`
 		ChallengeToken string   `json:"challenge_token"`
 		Factors        []string `json:"factors"`
 	}
 	decodeBody(t, challengeRec, &challenge)
 	if challenge.Error != "step_up_required" || challenge.ChallengeToken == "" || !containsString(challenge.Factors, domain.MFAFactorTOTP) {
 		t.Fatalf("expected admin step-up challenge, got %+v", challenge)
+	}
+	if challenge.AuthCode != "AUTH_MFA_REQUIRED" || challenge.UserMessage == "" || challenge.Retryable {
+		t.Fatalf("expected canonical admin step-up metadata, got %+v", challenge)
 	}
 
 	stepUpCode, err := totp.GenerateCode(adminTOTPSecret, time.Now())
