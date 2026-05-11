@@ -2902,8 +2902,36 @@ paths:
       responses:
         "200":
           description: Admin token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuthResponse"
+        "400":
+          description: Invalid request body or missing required login fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
-          description: Invalid credentials or MFA required
+          description: Invalid credentials canonical error or MFA challenge response
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/AdminAuthResponse"
+        "403":
+          description: Admin account disabled or MFA enrollment required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal auth-service failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/admin/auth/sso:
     post:
@@ -2927,6 +2955,34 @@ paths:
       responses:
         "200":
           description: Admin token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuthResponse"
+        "400":
+          description: Invalid request body or missing SSO provider/subject
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unknown SSO identity or invalid admin SSO token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Admin account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal auth-service failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/admin/step-up/verify:
     post:
@@ -4361,6 +4417,74 @@ components:
               example: 604800
         risk:
           $ref: "#/components/schemas/LoginRisk"
+
+    AdminAuthResponse:
+      type: object
+      description: |
+        Admin authentication success response. For existing MFA challenge compatibility,
+        `/api/admin/auth/login` can also return this schema with `mfa_required=true`
+        and `error=mfa_required` on HTTP 401 instead of the canonical `Error` schema.
+      properties:
+        access_token:
+          type: string
+          description: Admin JWT access token
+        token_type:
+          type: string
+          example: Bearer
+        expires_at:
+          type: string
+          format: date-time
+        admin:
+          $ref: "#/components/schemas/AdminUser"
+        mfa_required:
+          type: boolean
+          example: true
+        error:
+          type: string
+          example: mfa_required
+
+    AdminUser:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+          example: ["owner"]
+        scope_type:
+          type: string
+          enum: [all, client, organization]
+        scope_client_id:
+          type: string
+        scope_organization_id:
+          type: string
+        mfa_required:
+          type: boolean
+        totp_enabled:
+          type: boolean
+        sso_provider:
+          type: string
+        sso_subject:
+          type: string
+        status:
+          type: string
+          enum: [active, suspended]
+        last_login_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     TwoFactorChallenge:
       type: object
