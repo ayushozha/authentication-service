@@ -121,7 +121,8 @@ func canonicalAuthCode(status int, code, message string) string {
 	case "invalid_request", "invalid_request_body", "invalid_json", "malformed_body", "method_not_allowed", "origin_not_allowed",
 		"token_is_required", "code_is_required", "session_id_required", "passkey_id_required", "token_and_code_are_required", "token_and_new_password_are_required",
 		"not_found", "forbidden", "duplicate_organization", "duplicate_membership", "authorization_policy_conflict", "invalid_role", "invalid_permission",
-		"invalid_invitation", "invitation_expired", "invalid_authorization_policy", "invalid_group_mapping", "invalid_organization_request":
+		"invalid_invitation", "invitation_expired", "invalid_authorization_policy", "invalid_group_mapping", "invalid_organization_request",
+		"invalid_scim_resource", "invalid_scim_token", "invalid_enterprise_onboarding_request":
 		return "AUTH_INVALID_REQUEST"
 	case "email_required", "email_is_required":
 		return "AUTH_EMAIL_REQUIRED"
