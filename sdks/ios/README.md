@@ -12,6 +12,15 @@ swift test --package-path sdks/ios
 
 The XCTest target validates configuration defaults and token-store behavior without requiring a network service.
 
+## Password Reset
+
+Native apps can start and complete the hosted reset flow through the SDK:
+
+```swift
+try await auth.forgotPassword(email: email)
+try await auth.resetPassword(token: resetToken, newPassword: newPassword)
+```
+
 ## Secure Storage
 
 Use `KeychainAuthServiceTokenStore` for production apps:

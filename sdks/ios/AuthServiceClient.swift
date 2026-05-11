@@ -24,13 +24,31 @@ public struct AuthServiceConfig {
     }
 }
 
-public struct AuthServiceAPIError: Error, Decodable {
+public struct AuthServiceAPIError: Error, Decodable, LocalizedError {
     public let statusCode: Int
     public let error: String
 
     public init(statusCode: Int, error: String) {
         self.statusCode = statusCode
         self.error = error
+    }
+
+    public var errorDescription: String? {
+        error
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case statusCode = "status_code"
+        case error
+        case message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        statusCode = try container.decodeIfPresent(Int.self, forKey: .statusCode) ?? 0
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+            ?? container.decodeIfPresent(String.self, forKey: .message)
+            ?? "AuthService request failed"
     }
 }
 
@@ -171,6 +189,16 @@ public final class AuthServiceClient {
         tokenStore.refreshToken = nil
     }
 
+    public func forgotPassword(email: String) async throws {
+        let body = ForgotPasswordRequest(email: email)
+        let _: EmptyResponse = try await send("/api/auth/forgot-password", method: "POST", body: body, authorized: false)
+    }
+
+    public func resetPassword(token: String, newPassword: String) async throws {
+        let body = ResetPasswordRequest(token: token, newPassword: newPassword)
+        let _: EmptyResponse = try await send("/api/auth/reset-password", method: "POST", body: body, authorized: false)
+    }
+
     public func me() async throws -> AuthServiceUser {
         try await send("/api/auth/me", method: "GET", body: Optional<EmptyRequest>.none, authorized: true)
     }
@@ -215,7 +243,9 @@ public final class AuthServiceClient {
             throw AuthServiceAPIError(statusCode: 0, error: "invalid HTTP response")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let apiError = (try? decoder.decode(AuthServiceAPIError.self, from: data)) ?? AuthServiceAPIError(statusCode: http.statusCode, error: HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
+            let decodedError = try? decoder.decode(AuthServiceAPIError.self, from: data)
+            let message = decodedError?.error ?? responseErrorFallback(data: data, statusCode: http.statusCode)
+            let apiError = AuthServiceAPIError(statusCode: http.statusCode, error: message)
             throw apiError
         }
         if data.isEmpty {
@@ -224,7 +254,11 @@ public final class AuthServiceClient {
             }
             return empty
         }
-        return try decoder.decode(Response.self, from: data)
+        do {
+            return try decoder.decode(Response.self, from: data)
+        } catch {
+            throw AuthServiceAPIError(statusCode: http.statusCode, error: "AuthService returned a response this SDK could not decode")
+        }
     }
 
     private func persist(_ response: AuthServiceAuthResponse) {
@@ -240,6 +274,14 @@ public final class AuthServiceClient {
         let base = config.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let suffix = path.hasPrefix("/") ? path : "/" + path
         return URL(string: base + suffix)!
+    }
+
+    private func responseErrorFallback(data: Data, statusCode: Int) -> String {
+        let fallback = HTTPURLResponse.localizedString(forStatusCode: statusCode)
+        guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+            return fallback
+        }
+        return String(text.prefix(200))
     }
 }
 
@@ -287,6 +329,20 @@ private struct LogoutRequest: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case refreshToken = "refresh_token"
+    }
+}
+
+private struct ForgotPasswordRequest: Encodable {
+    let email: String
+}
+
+private struct ResetPasswordRequest: Encodable {
+    let token: String
+    let newPassword: String
+
+    enum CodingKeys: String, CodingKey {
+        case token
+        case newPassword = "new_password"
     }
 }
 
