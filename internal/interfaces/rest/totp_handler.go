@@ -113,6 +113,9 @@ func (h *TOTPHandler) verify(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_2fa_token", "Invalid or expired 2FA token.")
 		case domain.ErrTOTPInvalid:
 			writeError(w, r, http.StatusUnauthorized, "invalid_totp", "Invalid code.")
+		case domain.ErrRateLimit:
+			w.Header().Set("Retry-After", "900")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
 		case domain.ErrRedisRequired:
 			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
 		default:
@@ -180,6 +183,9 @@ func (h *TOTPHandler) verifyRecoveryCode(w http.ResponseWriter, r *http.Request)
 			writeError(w, r, http.StatusBadRequest, "invalid_or_expired_2fa_token", "Invalid or expired 2FA token.")
 		case domain.ErrTOTPInvalid:
 			writeError(w, r, http.StatusUnauthorized, "invalid_recovery_code", "Invalid recovery code.")
+		case domain.ErrRateLimit:
+			w.Header().Set("Retry-After", "900")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
 		case domain.ErrRedisRequired:
 			writeError(w, r, http.StatusServiceUnavailable, "redis_required", "2FA requires Redis.")
 		default:

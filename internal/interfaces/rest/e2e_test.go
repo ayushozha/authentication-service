@@ -107,7 +107,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	verifySvc := application.NewEmailVerifyService(users, tokens, mailer, rl)
 	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer, rl)
 	magicSvc := application.NewMagicLinkService(clients, users, sessions, cache, mailer, audit, rl)
-	totpSvc := application.NewTOTPService(users, sessions, cache, audit, recoveryCodes)
+	totpSvc := application.NewTOTPService(users, sessions, cache, audit, recoveryCodes, rl)
 	oauthSvc := application.NewOAuthService(users, clients, oauthRepo, sessions, cache, audit)
 	auditSvc := application.NewAuditService(audit)
 	orgSvc := application.NewOrganizationService(orgRepo, users, audit)
@@ -527,6 +527,87 @@ func TestE2EEmailVerificationAndMagicLinkRateLimits(t *testing.T) {
 		t.Fatalf("rate-limited magic link should include Retry-After")
 	}
 	assertAuthError(t, limitedMagicRec, "rate_limited", "AUTH_RATE_LIMITED", true)
+}
+
+func TestE2EMFAVerificationRateLimits(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+	signup := signupE2EUser(t, env, "mfa-limit@example.com", e2ePassword)
+
+	setupRec := env.request(t, http.MethodPost, "/api/auth/totp/setup", nil, env.bearerHeaders(signup.AccessToken))
+	assertStatus(t, setupRec, http.StatusOK)
+	var setup application.TOTPSetupResponse
+	decodeBody(t, setupRec, &setup)
+	code, err := totp.GenerateCode(setup.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate totp code: %v", err)
+	}
+	enableRec := env.request(t, http.MethodPost, "/api/auth/totp/enable", map[string]string{
+		"code": code,
+	}, env.bearerHeaders(signup.AccessToken))
+	assertStatus(t, enableRec, http.StatusOK)
+
+	recoveryCodesRec := env.request(t, http.MethodPost, "/api/auth/recovery-codes", nil, env.bearerHeaders(signup.AccessToken))
+	assertStatus(t, recoveryCodesRec, http.StatusOK)
+
+	totpChallengeRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":        "mfa-limit@example.com",
+		"password":     e2ePassword,
+		"session_mode": "token",
+	}, env.apiHeaders())
+	assertStatus(t, totpChallengeRec, http.StatusOK)
+	var totpChallenge application.AuthResponse
+	decodeBody(t, totpChallengeRec, &totpChallenge)
+	if totpChallenge.TwoFAToken == "" {
+		t.Fatalf("expected TOTP challenge token")
+	}
+	for i := 0; i < 5; i++ {
+		rec := env.request(t, http.MethodPost, "/api/auth/totp/verify", map[string]string{
+			"two_factor_token": totpChallenge.TwoFAToken,
+			"code":             "000000",
+			"session_mode":     "token",
+		}, env.apiHeaders())
+		assertStatus(t, rec, http.StatusUnauthorized)
+	}
+	limitedTOTPRec := env.request(t, http.MethodPost, "/api/auth/totp/verify", map[string]string{
+		"two_factor_token": totpChallenge.TwoFAToken,
+		"code":             "000000",
+		"session_mode":     "token",
+	}, env.apiHeaders())
+	assertStatus(t, limitedTOTPRec, http.StatusTooManyRequests)
+	if limitedTOTPRec.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited TOTP verify should include Retry-After")
+	}
+	assertAuthError(t, limitedTOTPRec, "rate_limited", "AUTH_RATE_LIMITED", true)
+
+	recoveryChallengeRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{
+		"email":        "mfa-limit@example.com",
+		"password":     e2ePassword,
+		"session_mode": "token",
+	}, env.apiHeaders())
+	assertStatus(t, recoveryChallengeRec, http.StatusOK)
+	var recoveryChallenge application.AuthResponse
+	decodeBody(t, recoveryChallengeRec, &recoveryChallenge)
+	if recoveryChallenge.TwoFAToken == "" {
+		t.Fatalf("expected recovery challenge token")
+	}
+	for i := 0; i < 5; i++ {
+		rec := env.request(t, http.MethodPost, "/api/auth/recovery-codes/verify", map[string]string{
+			"two_factor_token": recoveryChallenge.TwoFAToken,
+			"code":             "WRONG-CODE",
+			"session_mode":     "token",
+		}, env.apiHeaders())
+		assertStatus(t, rec, http.StatusUnauthorized)
+	}
+	limitedRecoveryRec := env.request(t, http.MethodPost, "/api/auth/recovery-codes/verify", map[string]string{
+		"two_factor_token": recoveryChallenge.TwoFAToken,
+		"code":             "WRONG-CODE",
+		"session_mode":     "token",
+	}, env.apiHeaders())
+	assertStatus(t, limitedRecoveryRec, http.StatusTooManyRequests)
+	if limitedRecoveryRec.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited recovery-code verify should include Retry-After")
+	}
+	assertAuthError(t, limitedRecoveryRec, "rate_limited", "AUTH_RATE_LIMITED", true)
 }
 
 func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {

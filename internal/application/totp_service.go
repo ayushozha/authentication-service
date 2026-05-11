@@ -18,10 +18,15 @@ type TOTPService struct {
 	audit         AuditRepository
 	recoveryCodes RecoveryCodeRepository
 	adaptive      *AdaptiveSecurityService
+	rl            RateLimiter
 }
 
-func NewTOTPService(users UserRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, recoveryCodes RecoveryCodeRepository) *TOTPService {
-	return &TOTPService{users: users, sessions: sessions, cache: cache, audit: audit, recoveryCodes: recoveryCodes}
+func NewTOTPService(users UserRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository, recoveryCodes RecoveryCodeRepository, limiters ...RateLimiter) *TOTPService {
+	var rl RateLimiter
+	if len(limiters) > 0 {
+		rl = limiters[0]
+	}
+	return &TOTPService{users: users, sessions: sessions, cache: cache, audit: audit, recoveryCodes: recoveryCodes, rl: rl}
 }
 
 func (s *TOTPService) SetAdaptiveSecurity(adaptive *AdaptiveSecurityService) {
@@ -137,6 +142,9 @@ func (s *TOTPService) Verify(ctx context.Context, client *domain.Client, twoFATo
 		return nil, "", domain.ErrTOTPNotEnabled
 	}
 
+	if !s.allowMFAAttempt(ctx, "totp", twoFAToken) {
+		return nil, "", domain.ErrRateLimit
+	}
 	if !totp.Validate(code, *user.TOTPSecret) {
 		return nil, "", domain.ErrTOTPInvalid
 	}
@@ -246,6 +254,9 @@ func (s *TOTPService) VerifyRecoveryCode(ctx context.Context, client *domain.Cli
 		return nil, "", domain.ErrTOTPNotEnabled
 	}
 
+	if !s.allowMFAAttempt(ctx, "recovery", twoFAToken) {
+		return nil, "", domain.ErrRateLimit
+	}
 	used, err := s.recoveryCodes.MarkUsedByHash(ctx, user.ID, HashToken(normalizeRecoveryCode(code)))
 	if err != nil {
 		return nil, "", err
@@ -302,4 +313,12 @@ func (s *TOTPService) Disable(ctx context.Context, client *domain.Client, userID
 
 func normalizeRecoveryCode(code string) string {
 	return strings.ToLower(strings.NewReplacer("-", "", " ", "").Replace(strings.TrimSpace(code)))
+}
+
+func (s *TOTPService) allowMFAAttempt(ctx context.Context, method, twoFAToken string) bool {
+	if s.rl == nil {
+		return true
+	}
+	allowed, _, _ := s.rl.Allow(ctx, "rate:mfa:"+method+":"+HashToken(twoFAToken), 5, 15*time.Minute)
+	return allowed
 }
