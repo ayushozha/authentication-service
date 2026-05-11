@@ -138,7 +138,7 @@ public struct AuthServiceAPIError: Error, Decodable, LocalizedError {
         case "AUTH_EMAIL_PASSWORD_REQUIRED": return "Enter your email and password."
         case "AUTH_INVALID_EMAIL": return "Enter a valid email address."
         case "AUTH_PASSWORD_TOO_SHORT": return "Use at least 8 characters for your password."
-        case "AUTH_INVALID_CREDENTIALS": return "The email or password is incorrect."
+        case "AUTH_INVALID_CREDENTIALS": return "Invalid email or password."
         case "AUTH_ACCOUNT_LOCKED": return "This account is locked. Check your email for next steps."
         case "AUTH_ACCOUNT_DISABLED": return "This account cannot sign in right now."
         case "AUTH_RATE_LIMITED": return "Too many attempts. Try again in a few minutes."

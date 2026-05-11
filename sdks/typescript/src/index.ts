@@ -98,7 +98,7 @@ const ERROR_DEFINITIONS: Record<AuthErrorCode, { userMessage: string; retryable:
   AUTH_EMAIL_PASSWORD_REQUIRED: { userMessage: "Enter your email and password.", retryable: false },
   AUTH_INVALID_EMAIL: { userMessage: "Enter a valid email address.", retryable: false },
   AUTH_PASSWORD_TOO_SHORT: { userMessage: "Use at least 8 characters for your password.", retryable: false },
-  AUTH_INVALID_CREDENTIALS: { userMessage: "The email or password is incorrect.", retryable: false },
+  AUTH_INVALID_CREDENTIALS: { userMessage: "Invalid email or password.", retryable: false },
   AUTH_ACCOUNT_LOCKED: { userMessage: "This account is locked. Check your email for next steps.", retryable: false },
   AUTH_ACCOUNT_DISABLED: { userMessage: "This account cannot sign in right now.", retryable: false },
   AUTH_RATE_LIMITED: { userMessage: "Too many attempts. Try again in a few minutes.", retryable: true },
@@ -161,7 +161,7 @@ const LEGACY_CODE_MAP: Record<string, AuthErrorCode> = {
   invalid_recovery_code: "AUTH_MFA_RECOVERY_CODE_INVALID",
 };
 
-const invalidLoginCredentialsMessage = "The email or password is incorrect.";
+const invalidLoginCredentialsMessage = "Invalid email or password.";
 
 function isAuthErrorCode(value: unknown): value is AuthErrorCode {
   return typeof value === "string" && (AUTH_ERROR_CODES as readonly string[]).includes(value);

@@ -117,7 +117,7 @@
   function authErrorMessage(value) {
     var code = String(value || '').trim().toUpperCase();
     var messages = {
-      AUTH_INVALID_CREDENTIALS: 'The email or password is incorrect.',
+      AUTH_INVALID_CREDENTIALS: 'Invalid email or password.',
       AUTH_RATE_LIMITED: 'Too many attempts. Try again in a few minutes.',
       AUTH_SESSION_EXPIRED: 'Your session expired. Sign in again.',
       AUTH_TOKEN_MISSING: 'Sign in again to continue.',

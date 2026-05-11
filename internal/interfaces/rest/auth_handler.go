@@ -119,7 +119,7 @@ func (h *AuthHandler) login(w http.ResponseWriter, r *http.Request) {
 		case domain.ErrInvalidEmail:
 			writeError(w, r, http.StatusBadRequest, "invalid_email", err.Error())
 		case domain.ErrInvalidPassword:
-			writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "The email or password is incorrect.")
+			writeError(w, r, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password.")
 		case domain.ErrAccountSuspended:
 			writeError(w, r, http.StatusForbidden, "account_suspended", err.Error())
 		case domain.ErrSSORequired:

@@ -5,11 +5,11 @@ existing clients and add canonical app-facing metadata:
 
 ```json
 {
-  "error": "The email or password is incorrect.",
+  "error": "Invalid email or password.",
   "code": "invalid_credentials",
-  "message": "The email or password is incorrect.",
+  "message": "Invalid email or password.",
   "auth_code": "AUTH_INVALID_CREDENTIALS",
-  "user_message": "The email or password is incorrect.",
+  "user_message": "Invalid email or password.",
   "retryable": false,
   "request_id": "req_123"
 }
@@ -22,7 +22,7 @@ for compatibility and diagnostics.
 Required guarantees:
 
 - Login failures for unknown email and wrong password both use
-  `AUTH_INVALID_CREDENTIALS` with the copy "The email or password is incorrect."
+  `AUTH_INVALID_CREDENTIALS` with the copy "Invalid email or password."
 - Password reset requests are enumeration-safe: known and unknown email
   responses are the same success payload; only validation, service
   configuration, and rate limits return distinct errors.

@@ -291,7 +291,7 @@ func TestE2EEmailPasswordSessionLifecycle(t *testing.T) {
 	}, env.apiHeaders())
 	assertStatus(t, badLoginRec, http.StatusUnauthorized)
 	badLogin := assertAuthError(t, badLoginRec, "invalid_credentials", "AUTH_INVALID_CREDENTIALS", false)
-	if badLogin.UserMessage != "The email or password is incorrect." {
+	if badLogin.UserMessage != "Invalid email or password." {
 		t.Fatalf("invalid login copy mismatch: %+v", badLogin)
 	}
 	unknownLoginRec := env.request(t, http.MethodPost, "/api/auth/login", map[string]string{

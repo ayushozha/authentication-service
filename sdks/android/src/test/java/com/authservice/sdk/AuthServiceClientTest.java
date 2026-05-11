@@ -126,7 +126,7 @@ final class AuthServiceClientTest {
     void requestExceptionUsesCanonicalAuthErrorFields() throws Exception {
         HttpServer server = startJsonServer(
                 401,
-                "{\"error\":\"The email or password is incorrect.\",\"code\":\"invalid_credentials\",\"auth_code\":\"AUTH_INVALID_CREDENTIALS\",\"user_message\":\"The email or password is incorrect.\",\"retryable\":false}",
+                "{\"error\":\"Invalid email or password.\",\"code\":\"invalid_credentials\",\"auth_code\":\"AUTH_INVALID_CREDENTIALS\",\"user_message\":\"Invalid email or password.\",\"retryable\":false}",
                 exchange -> {}
         );
 
@@ -138,7 +138,7 @@ final class AuthServiceClientTest {
             } catch (AuthServiceClient.AuthServiceException err) {
                 assertEquals(401, err.getStatusCode());
                 assertEquals("AUTH_INVALID_CREDENTIALS", err.getAuthCode());
-                assertEquals("The email or password is incorrect.", err.getMessage());
+                assertEquals("Invalid email or password.", err.getMessage());
                 assertTrue(!err.isRetryable());
                 return;
             }

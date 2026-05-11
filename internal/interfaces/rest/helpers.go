@@ -36,7 +36,7 @@ var authErrorDefinitions = map[string]authErrorDefinition{
 	"AUTH_EMAIL_PASSWORD_REQUIRED":    {UserMessage: "Enter your email and password."},
 	"AUTH_INVALID_EMAIL":              {UserMessage: "Enter a valid email address."},
 	"AUTH_PASSWORD_TOO_SHORT":         {UserMessage: "Use at least 8 characters for your password."},
-	"AUTH_INVALID_CREDENTIALS":        {UserMessage: "The email or password is incorrect."},
+	"AUTH_INVALID_CREDENTIALS":        {UserMessage: "Invalid email or password."},
 	"AUTH_ACCOUNT_LOCKED":             {UserMessage: "This account is locked. Check your email for next steps."},
 	"AUTH_ACCOUNT_DISABLED":           {UserMessage: "This account cannot sign in right now."},
 	"AUTH_RATE_LIMITED":               {UserMessage: "Too many attempts. Try again in a few minutes.", Retryable: true},

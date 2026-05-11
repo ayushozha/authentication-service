@@ -56,7 +56,7 @@ func TestWriteErrorIncludesCanonicalAuthMetadata(t *testing.T) {
 	req.Header.Set("X-Request-ID", "req-user@example.com-123456")
 	rec := httptest.NewRecorder()
 
-	writeError(rec, req, http.StatusUnauthorized, "invalid_credentials", "The email or password is incorrect.")
+	writeError(rec, req, http.StatusUnauthorized, "invalid_credentials", "Invalid email or password.")
 
 	assertStatus(t, rec, http.StatusUnauthorized)
 	var payload errorPayload
@@ -64,7 +64,7 @@ func TestWriteErrorIncludesCanonicalAuthMetadata(t *testing.T) {
 	if payload.Code != "invalid_credentials" || payload.AuthCode != "AUTH_INVALID_CREDENTIALS" {
 		t.Fatalf("unexpected payload codes: %+v", payload)
 	}
-	if payload.UserMessage != "The email or password is incorrect." || payload.Retryable {
+	if payload.UserMessage != "Invalid email or password." || payload.Retryable {
 		t.Fatalf("unexpected normalized payload: %+v", payload)
 	}
 	if payload.RequestID != "[REDACTED_EMAIL]-[REDACTED_CODE]" {
