@@ -72,6 +72,9 @@ func (h *VerifyHandler) resendVerification(w http.ResponseWriter, r *http.Reques
 			writeError(w, r, http.StatusServiceUnavailable, "email_not_configured", err.Error())
 		case domain.ErrEmailAlreadyVerified:
 			writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		case domain.ErrRateLimit:
+			w.Header().Set("Retry-After", "3600")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited", err.Error())
 		default:
 			writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 		}

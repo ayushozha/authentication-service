@@ -104,7 +104,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	clientSvc := application.NewClientService(clients)
 	adminSvc := application.NewAdminService(adminRepo, audit, rl, e2eAdminKey, time.Hour)
 	authSvc := application.NewAuthService(users, sessions, cache, audit, rl)
-	verifySvc := application.NewEmailVerifyService(users, tokens, mailer)
+	verifySvc := application.NewEmailVerifyService(users, tokens, mailer, rl)
 	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer, rl)
 	magicSvc := application.NewMagicLinkService(clients, users, sessions, cache, mailer, audit, rl)
 	totpSvc := application.NewTOTPService(users, sessions, cache, audit, recoveryCodes)
@@ -496,6 +496,37 @@ func TestE2EPasswordResetIsEnumerationSafeAndRateLimited(t *testing.T) {
 		t.Fatalf("rate-limited reset should include Retry-After")
 	}
 	assertAuthError(t, limitedRec, "rate_limited", "AUTH_RATE_LIMITED", true)
+}
+
+func TestE2EEmailVerificationAndMagicLinkRateLimits(t *testing.T) {
+	env := newE2EEnv(t, e2eOptions{})
+
+	signup := signupE2EUser(t, env, "resend-limit@example.com", e2ePassword)
+	for i := 0; i < 3; i++ {
+		rec := env.request(t, http.MethodPost, "/api/auth/resend-verification", nil, env.bearerHeaders(signup.AccessToken))
+		assertStatus(t, rec, http.StatusOK)
+	}
+	limitedResendRec := env.request(t, http.MethodPost, "/api/auth/resend-verification", nil, env.bearerHeaders(signup.AccessToken))
+	assertStatus(t, limitedResendRec, http.StatusTooManyRequests)
+	if limitedResendRec.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited verification resend should include Retry-After")
+	}
+	assertAuthError(t, limitedResendRec, "rate_limited", "AUTH_RATE_LIMITED", true)
+
+	for i := 0; i < 3; i++ {
+		rec := env.request(t, http.MethodPost, "/api/auth/magic-link/send", map[string]string{
+			"email": "magic-limit@example.com",
+		}, env.apiHeaders())
+		assertStatus(t, rec, http.StatusOK)
+	}
+	limitedMagicRec := env.request(t, http.MethodPost, "/api/auth/magic-link/send", map[string]string{
+		"email": "magic-limit@example.com",
+	}, env.apiHeaders())
+	assertStatus(t, limitedMagicRec, http.StatusTooManyRequests)
+	if limitedMagicRec.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited magic link should include Retry-After")
+	}
+	assertAuthError(t, limitedMagicRec, "rate_limited", "AUTH_RATE_LIMITED", true)
 }
 
 func TestE2EEmailVerificationPasswordResetMagicLinkAndTOTP(t *testing.T) {

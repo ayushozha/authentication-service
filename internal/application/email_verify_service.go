@@ -12,10 +12,15 @@ type EmailVerifyService struct {
 	users  UserRepository
 	tokens TokenRepository
 	mailer EmailSender
+	rl     RateLimiter
 }
 
-func NewEmailVerifyService(users UserRepository, tokens TokenRepository, mailer EmailSender) *EmailVerifyService {
-	return &EmailVerifyService{users: users, tokens: tokens, mailer: mailer}
+func NewEmailVerifyService(users UserRepository, tokens TokenRepository, mailer EmailSender, limiters ...RateLimiter) *EmailVerifyService {
+	var rl RateLimiter
+	if len(limiters) > 0 {
+		rl = limiters[0]
+	}
+	return &EmailVerifyService{users: users, tokens: tokens, mailer: mailer, rl: rl}
 }
 
 func (s *EmailVerifyService) WireSignupHook(baseURL string) {
@@ -60,6 +65,11 @@ func (s *EmailVerifyService) ResendVerification(ctx context.Context, userID, bas
 	}
 	if user.EmailVerified {
 		return domain.ErrEmailAlreadyVerified
+	}
+	if s.rl != nil {
+		if allowed, _, _ := s.rl.Allow(ctx, "rate:user:email_verify_resend:"+userID, 3, time.Hour); !allowed {
+			return domain.ErrRateLimit
+		}
 	}
 	token, err := s.tokens.Create(ctx, userID, "email_verify", 24*time.Hour)
 	if err != nil {
