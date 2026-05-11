@@ -73,6 +73,19 @@ final class AuthServiceClientTest {
     }
 
     @Test
+    void responseMapsAdvancedAuthAliases() {
+        assertMappedAuthError("session_id_required", 400, "AUTH_INVALID_REQUEST", "We could not process that request. Try again.", false);
+        assertMappedAuthError("missing_client", 401, "AUTH_SERVICE_UNAVAILABLE", "We could not sign you in right now. Try again later.", true);
+        assertMappedAuthError("exchange_failed", 401, "AUTH_OAUTH_FAILED", "We could not complete sign-in with that provider.", true);
+        assertMappedAuthError("sso_failed", 401, "AUTH_SSO_FAILED", "We could not complete single sign-on. Try again.", true);
+        assertMappedAuthError("webauthn_failed", 401, "AUTH_PASSKEY_FAILED", "We could not complete passkey sign-in. Try again.", true);
+        assertMappedAuthError("passkey_cancelled", 400, "AUTH_PASSKEY_CANCELLED", "Passkey sign-in was cancelled.", false);
+        assertMappedAuthError("biometric_lockout", 423, "AUTH_BIOMETRIC_LOCKOUT", "Biometric unlock is locked. Use your device passcode.", false);
+        assertMappedAuthError("mfa_push_timeout", 408, "AUTH_MFA_PUSH_TIMEOUT", "The approval request timed out. Try again.", true);
+        assertMappedAuthError("sms_unavailable", 503, "AUTH_MFA_SMS_UNAVAILABLE", "SMS codes are unavailable right now. Try another method.", true);
+    }
+
+    @Test
     void responseErrorFallsBackToBody() {
         AuthServiceClient.AuthServiceResponse response = new AuthServiceClient.AuthServiceResponse(
                 500,
@@ -272,6 +285,17 @@ final class AuthServiceClientTest {
         });
         server.start();
         return server;
+    }
+
+    private static void assertMappedAuthError(String providerCode, int statusCode, String authCode, String userMessage, boolean retryable) {
+        AuthServiceClient.AuthServiceResponse response = new AuthServiceClient.AuthServiceResponse(
+                statusCode,
+                "{\"error\":\"" + providerCode + "\",\"code\":\"" + providerCode + "\"}"
+        );
+
+        assertEquals(authCode, response.getAuthCode());
+        assertEquals(userMessage, response.getUserMessage());
+        assertEquals(retryable, response.isRetryable());
     }
 
     private static String baseUrl(HttpServer server) {

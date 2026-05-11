@@ -79,50 +79,86 @@ public struct AuthServiceAPIError: Error, Decodable, LocalizedError {
             .replacingOccurrences(of: "-", with: "_")
             .replacingOccurrences(of: " ", with: "_")
         switch normalized {
-        case "invalid_request", "invalid_request_body":
+        case "invalid_request", "invalid_request_body", "invalid_json", "malformed_body", "method_not_allowed", "origin_not_allowed",
+             "token_is_required", "code_is_required", "session_id_required", "passkey_id_required", "token_and_code_are_required",
+             "token_and_new_password_are_required":
             return "AUTH_INVALID_REQUEST"
-        case "email_required":
+        case "email_required", "email_is_required":
             return "AUTH_EMAIL_REQUIRED"
+        case "password_required", "password_is_required":
+            return "AUTH_PASSWORD_REQUIRED"
+        case "email_and_password_required":
+            return "AUTH_EMAIL_PASSWORD_REQUIRED"
         case "invalid_email":
             return "AUTH_INVALID_EMAIL"
         case "weak_password", "password_too_short":
             return "AUTH_PASSWORD_TOO_SHORT"
-        case "invalid_credentials", "user_not_found":
+        case "invalid_credentials", "invalid_login_credentials", "wrong_password", "user_not_found":
             return "AUTH_INVALID_CREDENTIALS"
         case "account_locked":
             return "AUTH_ACCOUNT_LOCKED"
-        case "account_suspended", "account_disabled":
+        case "account_suspended", "account_disabled", "user_disabled", "security_policy_blocked":
             return "AUTH_ACCOUNT_DISABLED"
-        case "rate_limited":
+        case "rate_limited", "too_many_requests":
             return "AUTH_RATE_LIMITED"
-        case "refresh_token_missing", "missing_authorization_header":
+        case "missing_authorization_header", "missing_token", "token_missing", "refresh_token_missing", "invalid_authorization_format", "unauthorized":
             return "AUTH_TOKEN_MISSING"
-        case "invalid_access_token":
+        case "invalid_access_token", "invalid_or_expired_token", "token_client_mismatch":
             return "AUTH_SESSION_EXPIRED"
-        case "invalid_refresh_token":
+        case "invalid_refresh_token", "refresh_token_revoked", "token_revoked":
             return "AUTH_TOKEN_REVOKED"
-        case "missing_api_key", "invalid_api_key", "redis_required", "email_not_configured", "internal_error":
+        case "storage_unavailable":
+            return "AUTH_STORAGE_UNAVAILABLE"
+        case "storage_write_failed":
+            return "AUTH_STORAGE_WRITE_FAILED"
+        case "network_error", "timeout":
+            return "AUTH_NETWORK_UNAVAILABLE"
+        case "missing_api_key", "invalid_api_key", "missing_client", "missing_client_context", "invalid_client", "client_suspended",
+             "redis_required", "email_not_configured", "internal_error", "service_unavailable", "redirect_code_unavailable":
             return "AUTH_SERVICE_UNAVAILABLE"
-        case "oauth_failed":
+        case "oauth_failed", "oauth_error", "exchange_failed", "userinfo_failed", "read_failed", "parse_failed", "create_failed":
             return "AUTH_OAUTH_FAILED"
-        case "access_denied":
+        case "access_denied", "oauth_cancelled":
             return "AUTH_OAUTH_CANCELLED"
-        case "invalid_state":
+        case "invalid_state", "state_mismatch", "oauth_state_mismatch":
             return "AUTH_OAUTH_STATE_MISMATCH"
-        case "oauth_provider_unavailable":
+        case "oauth_provider_unavailable", "oauth_requires_redis":
             return "AUTH_OAUTH_PROVIDER_UNAVAILABLE"
-        case "sso_required":
+        case "sso_required", "sso_failed", "invalid_sso_connection":
             return "AUTH_SSO_FAILED"
-        case "passkey_failed", "authentication_failed":
+        case "passkey_failed", "webauthn_failed", "authentication_failed", "registration_failed", "no_registration_in_progress",
+             "no_login_in_progress", "passkey_attestation_rejected":
             return "AUTH_PASSKEY_FAILED"
-        case "invalid_totp", "invalid_code":
+        case "passkey_cancelled":
+            return "AUTH_PASSKEY_CANCELLED"
+        case "biometric_unavailable":
+            return "AUTH_BIOMETRIC_UNAVAILABLE"
+        case "biometric_cancelled":
+            return "AUTH_BIOMETRIC_CANCELLED"
+        case "biometric_lockout":
+            return "AUTH_BIOMETRIC_LOCKOUT"
+        case "requires_2fa", "totp_required", "mfa_required":
+            return "AUTH_MFA_REQUIRED"
+        case "invalid_totp", "totp_invalid", "invalid_code", "mfa_code_invalid":
             return "AUTH_MFA_CODE_INVALID"
-        case "invalid_recovery_code":
+        case "otp_expired", "mfa_code_expired", "invalid_or_expired_2fa_token":
+            return "AUTH_MFA_CODE_EXPIRED"
+        case "invalid_recovery_code", "recovery_code_invalid":
             return "AUTH_MFA_RECOVERY_CODE_INVALID"
+        case "mfa_push_timeout":
+            return "AUTH_MFA_PUSH_TIMEOUT"
+        case "sms_unavailable":
+            return "AUTH_MFA_SMS_UNAVAILABLE"
         default:
             let lowerMessage = message.lowercased()
             if lowerMessage.contains("invalid email or password") { return "AUTH_INVALID_CREDENTIALS" }
+            if lowerMessage.contains("invalid email") { return "AUTH_INVALID_EMAIL" }
+            if lowerMessage.contains("password") && lowerMessage.contains("required") { return "AUTH_PASSWORD_REQUIRED" }
+            if lowerMessage.contains("at least 8") || lowerMessage.contains("password does not meet") { return "AUTH_PASSWORD_TOO_SHORT" }
             if lowerMessage.contains("too many") || lowerMessage.contains("rate") { return "AUTH_RATE_LIMITED" }
+            if lowerMessage.contains("redis") || lowerMessage.contains("not configured") { return "AUTH_SERVICE_UNAVAILABLE" }
+            if lowerMessage.contains("passkey") || lowerMessage.contains("webauthn") { return "AUTH_PASSKEY_FAILED" }
+            if lowerMessage.contains("totp") || lowerMessage.contains("2fa") || lowerMessage.contains("mfa") { return "AUTH_MFA_REQUIRED" }
             if statusCode == 429 { return "AUTH_RATE_LIMITED" }
             if statusCode == 401 { return "AUTH_SESSION_EXPIRED" }
             if statusCode >= 500 { return "AUTH_SERVICE_UNAVAILABLE" }
@@ -145,6 +181,9 @@ public struct AuthServiceAPIError: Error, Decodable, LocalizedError {
         case "AUTH_SESSION_EXPIRED": return "Your session expired. Sign in again."
         case "AUTH_TOKEN_MISSING": return "Sign in again to continue."
         case "AUTH_TOKEN_REVOKED": return "Your session is no longer active. Sign in again."
+        case "AUTH_STORAGE_UNAVAILABLE": return "Secure storage is unavailable on this device."
+        case "AUTH_STORAGE_WRITE_FAILED": return "We could not save your sign-in securely. Try again."
+        case "AUTH_NETWORK_UNAVAILABLE": return "Check your connection and try again."
         case "AUTH_SERVICE_UNAVAILABLE": return "We could not sign you in right now. Try again later."
         case "AUTH_OAUTH_FAILED": return "We could not complete sign-in with that provider."
         case "AUTH_OAUTH_CANCELLED": return "Sign-in was cancelled."
@@ -153,10 +192,15 @@ public struct AuthServiceAPIError: Error, Decodable, LocalizedError {
         case "AUTH_SSO_FAILED": return "We could not complete single sign-on. Try again."
         case "AUTH_PASSKEY_FAILED": return "We could not complete passkey sign-in. Try again."
         case "AUTH_PASSKEY_CANCELLED": return "Passkey sign-in was cancelled."
+        case "AUTH_BIOMETRIC_UNAVAILABLE": return "Biometric unlock is unavailable on this device."
+        case "AUTH_BIOMETRIC_CANCELLED": return "Biometric unlock was cancelled."
+        case "AUTH_BIOMETRIC_LOCKOUT": return "Biometric unlock is locked. Use your device passcode."
         case "AUTH_MFA_REQUIRED": return "Enter the code from your authenticator app."
         case "AUTH_MFA_CODE_INVALID": return "That code is incorrect. Try again."
         case "AUTH_MFA_CODE_EXPIRED": return "That code expired. Request a new one."
         case "AUTH_MFA_RECOVERY_CODE_INVALID": return "That recovery code is incorrect."
+        case "AUTH_MFA_PUSH_TIMEOUT": return "The approval request timed out. Try again."
+        case "AUTH_MFA_SMS_UNAVAILABLE": return "SMS codes are unavailable right now. Try another method."
         default: return "Something went wrong. Try again."
         }
     }

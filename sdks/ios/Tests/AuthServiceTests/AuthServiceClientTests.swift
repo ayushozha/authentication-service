@@ -142,6 +142,27 @@ final class AuthServiceClientTests: XCTestCase {
         }
     }
 
+    func testAPIErrorMapsAdvancedAuthAliases() {
+        let cases: [(providerCode: String, statusCode: Int, expectedAuthCode: String, expectedMessage: String, retryable: Bool)] = [
+            ("session_id_required", 400, "AUTH_INVALID_REQUEST", "We could not process that request. Try again.", false),
+            ("missing_client", 401, "AUTH_SERVICE_UNAVAILABLE", "We could not sign you in right now. Try again later.", true),
+            ("exchange_failed", 401, "AUTH_OAUTH_FAILED", "We could not complete sign-in with that provider.", true),
+            ("sso_failed", 401, "AUTH_SSO_FAILED", "We could not complete single sign-on. Try again.", true),
+            ("webauthn_failed", 401, "AUTH_PASSKEY_FAILED", "We could not complete passkey sign-in. Try again.", true),
+            ("passkey_cancelled", 400, "AUTH_PASSKEY_CANCELLED", "Passkey sign-in was cancelled.", false),
+            ("biometric_lockout", 423, "AUTH_BIOMETRIC_LOCKOUT", "Biometric unlock is locked. Use your device passcode.", false),
+            ("mfa_push_timeout", 408, "AUTH_MFA_PUSH_TIMEOUT", "The approval request timed out. Try again.", true),
+            ("sms_unavailable", 503, "AUTH_MFA_SMS_UNAVAILABLE", "SMS codes are unavailable right now. Try another method.", true)
+        ]
+
+        for item in cases {
+            let error = AuthServiceAPIError(statusCode: item.statusCode, error: item.providerCode, code: item.providerCode)
+            XCTAssertEqual(error.authCode, item.expectedAuthCode, "Expected \(item.providerCode) to map to \(item.expectedAuthCode)")
+            XCTAssertEqual(error.userMessage, item.expectedMessage)
+            XCTAssertEqual(error.retryable, item.retryable)
+        }
+    }
+
     func testForgotPasswordPostsEmail() async throws {
         let client = try makeClient()
         MockURLProtocol.requestHandler = { request in
