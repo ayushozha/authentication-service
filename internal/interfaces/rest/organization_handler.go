@@ -51,7 +51,7 @@ func (h *OrganizationHandler) handleOrganizations(w http.ResponseWriter, r *http
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
@@ -62,7 +62,7 @@ func (h *OrganizationHandler) handleOrganizations(w http.ResponseWriter, r *http
 	case http.MethodGet:
 		orgs, err := h.svc.ListOrganizations(ctx, client.ID, claims.Subject)
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"organizations": orgs})
@@ -73,12 +73,12 @@ func (h *OrganizationHandler) handleOrganizations(w http.ResponseWriter, r *http
 		}
 		org, err := h.svc.CreateOrganization(ctx, client.ID, claims.Subject, req, clientIP(r), r.UserAgent())
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, org)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
@@ -86,13 +86,13 @@ func (h *OrganizationHandler) handleOrganizationPath(w http.ResponseWriter, r *h
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 
 	parts := splitOrganizationPath(r.URL.Path)
 	if len(parts) == 0 || parts[0] == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 		return
 	}
 	organizationID := parts[0]
@@ -117,26 +117,26 @@ func (h *OrganizationHandler) handleOrganizationPath(w http.ResponseWriter, r *h
 	case "security-policy":
 		h.handleSecurityPolicy(w, r, ctx, client, organizationID, claims.Subject, parts)
 	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 	}
 }
 
 func (h *OrganizationHandler) handleAuthorization(w http.ResponseWriter, r *http.Request, ctx context.Context, clientID, organizationID, actorUserID string, parts []string) {
 	if len(parts) < 3 {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 		return
 	}
 	switch parts[2] {
 	case "policy":
 		if len(parts) != 3 {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 			return
 		}
 		switch r.Method {
 		case http.MethodGet:
 			policy, err := h.svc.GetAuthorizationPolicy(ctx, clientID, organizationID, actorUserID)
 			if err != nil {
-				writeOrganizationError(w, err)
+				writeOrganizationError(w, r, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, policy)
@@ -147,18 +147,18 @@ func (h *OrganizationHandler) handleAuthorization(w http.ResponseWriter, r *http
 			}
 			policy, err := h.svc.UpdateAuthorizationPolicy(ctx, clientID, organizationID, actorUserID, req, clientIP(r), r.UserAgent())
 			if err != nil {
-				writeOrganizationError(w, err)
+				writeOrganizationError(w, r, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, policy)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		}
 	case "group-mappings":
 		h.handleAuthorizationGroupMappings(w, r, ctx, clientID, organizationID, actorUserID, parts)
 	case "simulate":
 		if len(parts) != 3 || r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 			return
 		}
 		var req application.AuthorizationSimulationRequest
@@ -167,12 +167,12 @@ func (h *OrganizationHandler) handleAuthorization(w http.ResponseWriter, r *http
 		}
 		decision, err := h.svc.SimulateAuthorization(ctx, clientID, organizationID, actorUserID, req)
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, decision)
 	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 	}
 }
 
@@ -182,7 +182,7 @@ func (h *OrganizationHandler) handleAuthorizationGroupMappings(w http.ResponseWr
 		case http.MethodGet:
 			mappings, err := h.svc.ListGroupMappings(ctx, clientID, organizationID, actorUserID)
 			if err != nil {
-				writeOrganizationError(w, err)
+				writeOrganizationError(w, r, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"group_mappings": mappings})
@@ -193,17 +193,17 @@ func (h *OrganizationHandler) handleAuthorizationGroupMappings(w http.ResponseWr
 			}
 			mapping, err := h.svc.UpsertGroupMapping(ctx, clientID, organizationID, actorUserID, "", req, clientIP(r), r.UserAgent())
 			if err != nil {
-				writeOrganizationError(w, err)
+				writeOrganizationError(w, r, err)
 				return
 			}
 			writeJSON(w, http.StatusCreated, mapping)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		}
 		return
 	}
 	if len(parts) != 4 {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 		return
 	}
 	mappingID := parts[3]
@@ -215,18 +215,18 @@ func (h *OrganizationHandler) handleAuthorizationGroupMappings(w http.ResponseWr
 		}
 		mapping, err := h.svc.UpsertGroupMapping(ctx, clientID, organizationID, actorUserID, mappingID, req, clientIP(r), r.UserAgent())
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, mapping)
 	case http.MethodDelete:
 		if err := h.svc.DeleteGroupMapping(ctx, clientID, organizationID, actorUserID, mappingID, clientIP(r), r.UserAgent()); err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
@@ -235,7 +235,7 @@ func (h *OrganizationHandler) handleOrganization(w http.ResponseWriter, r *http.
 	case http.MethodGet:
 		org, err := h.svc.GetOrganization(ctx, client.ID, organizationID, actorUserID)
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, org)
@@ -249,31 +249,31 @@ func (h *OrganizationHandler) handleOrganization(w http.ResponseWriter, r *http.
 		}
 		org, err := h.svc.UpdateOrganization(ctx, client.ID, organizationID, actorUserID, req, clientIP(r), r.UserAgent())
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, org)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
 func (h *OrganizationHandler) handleMembers(w http.ResponseWriter, r *http.Request, ctx context.Context, client *domain.Client, organizationID, actorUserID string, parts []string) {
 	if len(parts) == 2 {
 		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 			return
 		}
 		members, err := h.svc.ListMembers(ctx, client.ID, organizationID, actorUserID)
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"members": members})
 		return
 	}
 	if len(parts) != 3 {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 		return
 	}
 	targetUserID := parts[2]
@@ -288,7 +288,7 @@ func (h *OrganizationHandler) handleMembers(w http.ResponseWriter, r *http.Reque
 		}
 		member, err := h.svc.UpdateMember(ctx, client.ID, organizationID, targetUserID, actorUserID, req, clientIP(r), r.UserAgent())
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, member)
@@ -297,24 +297,24 @@ func (h *OrganizationHandler) handleMembers(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if err := h.svc.RemoveMember(ctx, client.ID, organizationID, targetUserID, actorUserID, clientIP(r), r.UserAgent()); err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
 func (h *OrganizationHandler) handleSecurityPolicy(w http.ResponseWriter, r *http.Request, ctx context.Context, client *domain.Client, organizationID, actorUserID string, parts []string) {
 	if len(parts) != 2 {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
 		if _, err := h.svc.GetOrganization(ctx, client.ID, organizationID, actorUserID); err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		policy := application.DefaultAdaptiveSecurityPolicy()
@@ -332,12 +332,12 @@ func (h *OrganizationHandler) handleSecurityPolicy(w http.ResponseWriter, r *htt
 		}
 		policy, err := h.svc.UpdateSecurityPolicy(ctx, client.ID, organizationID, actorUserID, req, clientIP(r), r.UserAgent())
 		if err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, policy)
 	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 	}
 }
 
@@ -347,7 +347,7 @@ func (h *OrganizationHandler) handleInvitations(w http.ResponseWriter, r *http.R
 		case http.MethodGet:
 			invitations, err := h.svc.ListInvitations(ctx, clientID, organizationID, actorUserID)
 			if err != nil {
-				writeOrganizationError(w, err)
+				writeOrganizationError(w, r, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"invitations": invitations})
@@ -358,37 +358,37 @@ func (h *OrganizationHandler) handleInvitations(w http.ResponseWriter, r *http.R
 			}
 			invitation, err := h.svc.InviteMember(ctx, clientID, organizationID, actorUserID, req, clientIP(r), r.UserAgent())
 			if err != nil {
-				writeOrganizationError(w, err)
+				writeOrganizationError(w, r, err)
 				return
 			}
 			writeJSON(w, http.StatusCreated, invitation)
 		default:
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		}
 		return
 	}
 	if len(parts) == 4 && parts[3] == "revoke" {
 		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 			return
 		}
 		if err := h.svc.RevokeInvitation(ctx, clientID, organizationID, parts[2], actorUserID, clientIP(r), r.UserAgent()); err != nil {
-			writeOrganizationError(w, err)
+			writeOrganizationError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 		return
 	}
-	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 }
 
 func (h *OrganizationHandler) issueOrganizationToken(w http.ResponseWriter, r *http.Request, ctx context.Context, client *domain.Client, organizationID, userID string, parts []string) {
 	if len(parts) != 2 {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	if !h.requireStepUp(w, r, ctx, client, organizationID, userID, domain.SecurityActionOrganizationTokenIssue) {
@@ -396,7 +396,7 @@ func (h *OrganizationHandler) issueOrganizationToken(w http.ResponseWriter, r *h
 	}
 	token, err := h.svc.IssueOrganizationAccessToken(ctx, client, organizationID, userID, h.cfg.AccessTTL)
 	if err != nil {
-		writeOrganizationError(w, err)
+		writeOrganizationError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, organizationTokenResponse{
@@ -410,11 +410,11 @@ func (h *OrganizationHandler) acceptInvitation(w http.ResponseWriter, r *http.Re
 	client := GetClient(r)
 	claims := GetUserClaims(r)
 	if client == nil || claims == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Unauthorized.")
 		return
 	}
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
 		return
 	}
 	var req struct {
@@ -428,7 +428,7 @@ func (h *OrganizationHandler) acceptInvitation(w http.ResponseWriter, r *http.Re
 
 	result, err := h.svc.AcceptInvitation(ctx, client.ID, claims.Subject, req.Token, clientIP(r), r.UserAgent())
 	if err != nil {
-		writeOrganizationError(w, err)
+		writeOrganizationError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -460,28 +460,42 @@ func splitOrganizationPath(path string) []string {
 
 func decodeOrganizationBody(w http.ResponseWriter, r *http.Request, out interface{}) error {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(out); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		writeError(w, r, http.StatusBadRequest, "invalid_request_body", "Invalid request body.")
 		return err
 	}
 	return nil
 }
 
-func writeOrganizationError(w http.ResponseWriter, err error) {
+func writeOrganizationError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		writeError(w, r, http.StatusNotFound, "not_found", "Not found.")
 	case errors.Is(err, domain.ErrForbidden):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
-	case errors.Is(err, domain.ErrDuplicateOrganization), errors.Is(err, domain.ErrDuplicateMembership), errors.Is(err, domain.ErrAuthorizationPolicyConflict):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, domain.ErrInvalidRole), errors.Is(err, domain.ErrInvalidPermission), errors.Is(err, domain.ErrInvalidInvitation), errors.Is(err, domain.ErrInvitationExpired), errors.Is(err, domain.ErrInvalidAuthorizationPolicy), errors.Is(err, domain.ErrInvalidGroupMapping):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, r, http.StatusForbidden, "forbidden", "Forbidden.")
+	case errors.Is(err, domain.ErrDuplicateOrganization):
+		writeError(w, r, http.StatusConflict, "duplicate_organization", err.Error())
+	case errors.Is(err, domain.ErrDuplicateMembership):
+		writeError(w, r, http.StatusConflict, "duplicate_membership", err.Error())
+	case errors.Is(err, domain.ErrAuthorizationPolicyConflict):
+		writeError(w, r, http.StatusConflict, "authorization_policy_conflict", err.Error())
+	case errors.Is(err, domain.ErrInvalidRole):
+		writeError(w, r, http.StatusBadRequest, "invalid_role", err.Error())
+	case errors.Is(err, domain.ErrInvalidPermission):
+		writeError(w, r, http.StatusBadRequest, "invalid_permission", err.Error())
+	case errors.Is(err, domain.ErrInvalidInvitation):
+		writeError(w, r, http.StatusBadRequest, "invalid_invitation", err.Error())
+	case errors.Is(err, domain.ErrInvitationExpired):
+		writeError(w, r, http.StatusBadRequest, "invitation_expired", err.Error())
+	case errors.Is(err, domain.ErrInvalidAuthorizationPolicy):
+		writeError(w, r, http.StatusBadRequest, "invalid_authorization_policy", err.Error())
+	case errors.Is(err, domain.ErrInvalidGroupMapping):
+		writeError(w, r, http.StatusBadRequest, "invalid_group_mapping", err.Error())
 	default:
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "required") || strings.Contains(msg, "invalid") || strings.Contains(msg, "must") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, r, http.StatusBadRequest, "invalid_organization_request", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "Internal error.")
 	}
 }

@@ -1189,6 +1189,7 @@ func TestE2EOrganizationRBACLifecycle(t *testing.T) {
 		"slug": "acme-workspace",
 	}, env.bearerHeaders(owner.AccessToken))
 	assertStatus(t, duplicateRec, http.StatusConflict)
+	assertAuthError(t, duplicateRec, "duplicate_organization", "AUTH_INVALID_REQUEST", false)
 
 	listRec := env.request(t, http.MethodGet, "/api/auth/organizations", nil, env.bearerHeaders(owner.AccessToken))
 	assertStatus(t, listRec, http.StatusOK)
@@ -1223,6 +1224,7 @@ func TestE2EOrganizationRBACLifecycle(t *testing.T) {
 		"email": "blocked@example.com",
 	}, env.bearerHeaders(member.AccessToken))
 	assertStatus(t, memberInviteRec, http.StatusForbidden)
+	assertAuthError(t, memberInviteRec, "forbidden", "AUTH_INVALID_REQUEST", false)
 
 	updateMemberRec := env.request(t, http.MethodPatch, "/api/auth/organizations/"+orgID+"/members/"+member.User.ID, map[string]interface{}{
 		"role":        domain.OrganizationRoleAdmin,
@@ -1380,6 +1382,7 @@ func TestE2EOrganizationRBACLifecycle(t *testing.T) {
 
 	removedAccessRec := env.request(t, http.MethodGet, "/api/auth/organizations/"+orgID, nil, env.bearerHeaders(member.AccessToken))
 	assertStatus(t, removedAccessRec, http.StatusNotFound)
+	assertAuthError(t, removedAccessRec, "not_found", "AUTH_INVALID_REQUEST", false)
 
 	events, err := env.audit.List(context.Background(), domain.AuditEventFilter{ClientID: env.client.ID, Limit: 50})
 	if err != nil {
