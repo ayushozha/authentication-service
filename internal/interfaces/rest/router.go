@@ -22,6 +22,7 @@ func NewRouter(
 	passkeySvc *application.PasskeyService,
 	adminSvc *application.AdminService,
 	clientSvc *application.ClientService,
+	emailConfigSvc *application.ClientEmailConfigService,
 	auditSvc *application.AuditService,
 	orgSvc *application.OrganizationService,
 	adaptiveSvc *application.AdaptiveSecurityService,
@@ -108,7 +109,7 @@ func NewRouter(
 
 	// Admin routes (protected by admin key)
 	adaptiveHandler.RegisterAdminRoutes(mux, adminMw)
-	clientHandler := NewClientHandler(clientSvc, adaptiveSvc, m2mHandler, ssoHandler, scimHandler)
+	clientHandler := NewClientHandler(clientSvc, emailConfigSvc, adaptiveSvc, m2mHandler, ssoHandler, scimHandler)
 	clientHandler.RegisterRoutes(mux, adminMw)
 	adminHandler.RegisterUserRoutes(mux, adminMw)
 	if auditSvc != nil {

@@ -25,9 +25,11 @@ type Config struct {
 	JWTAccessTTL  time.Duration
 	JWTRefreshTTL time.Duration
 
-	// Email (Resend)
-	ResendAPIKey string
-	EmailFrom    string
+	// Email (Resend) — global fallback when a client has not configured its own transport.
+	ResendAPIKey       string
+	EmailFrom          string
+	EmailReplyTo       string
+	EmailConfigKMSKey  string // base64-encoded 32-byte AES key for encrypting per-client API keys
 
 	// OAuth
 	GoogleClientID     string
@@ -188,8 +190,10 @@ func loadConfig() Config {
 		JWTAccessTTL:  accessTTL,
 		JWTRefreshTTL: refreshTTL,
 
-		ResendAPIKey: envStr("RESEND_API_KEY", ""),
-		EmailFrom:    envStr("EMAIL_FROM", "Auth Service <noreply@example.com>"),
+		ResendAPIKey:      envStr("RESEND_API_KEY", ""),
+		EmailFrom:         envStr("EMAIL_FROM", "Auth Service <noreply@example.com>"),
+		EmailReplyTo:      envStr("EMAIL_REPLY_TO", ""),
+		EmailConfigKMSKey: envStr("EMAIL_CONFIG_KMS_KEY", ""),
 
 		GoogleClientID:     envStr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: envStr("GOOGLE_CLIENT_SECRET", ""),

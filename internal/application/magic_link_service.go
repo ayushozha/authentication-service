@@ -15,13 +15,14 @@ type MagicLinkService struct {
 	sessions SessionRepository
 	cache    CacheClient
 	mailer   EmailSender
+	urls     *EmailURLBuilder
 	audit    AuditRepository
 	rl       RateLimiter
 	sso      EnterpriseSSORepository
 }
 
-func NewMagicLinkService(clients ClientRepository, users UserRepository, sessions SessionRepository, cache CacheClient, mailer EmailSender, audit AuditRepository, rl RateLimiter) *MagicLinkService {
-	return &MagicLinkService{clients: clients, users: users, sessions: sessions, cache: cache, mailer: mailer, audit: audit, rl: rl}
+func NewMagicLinkService(clients ClientRepository, users UserRepository, sessions SessionRepository, cache CacheClient, mailer EmailSender, urls *EmailURLBuilder, audit AuditRepository, rl RateLimiter) *MagicLinkService {
+	return &MagicLinkService{clients: clients, users: users, sessions: sessions, cache: cache, mailer: mailer, urls: urls, audit: audit, rl: rl}
 }
 
 func (s *MagicLinkService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
@@ -73,9 +74,9 @@ func (s *MagicLinkService) SendMagicLink(ctx context.Context, client *domain.Cli
 			log.Printf("store magic token error: %v", err)
 			return domain.ErrRedisRequired
 		}
-		magicURL := baseURL + "/api/auth/magic-link/verify?token=" + token
+		magicURL := s.urls.MagicLinkURL(ctx, client.ID, token)
 		go func() {
-			if err := s.mailer.SendMagicLink(user.Email, magicURL); err != nil {
+			if err := s.mailer.SendMagicLink(context.Background(), client.ID, user.Email, magicURL); err != nil {
 				log.Printf("send magic link email error: %v", err)
 			}
 		}()

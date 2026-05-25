@@ -14,12 +14,13 @@ type PasswordResetService struct {
 	tokens   TokenRepository
 	sessions SessionRepository
 	mailer   EmailSender
+	urls     *EmailURLBuilder
 	rl       RateLimiter
 	sso      EnterpriseSSORepository
 }
 
-func NewPasswordResetService(users UserRepository, tokens TokenRepository, sessions SessionRepository, mailer EmailSender, rateLimiters ...RateLimiter) *PasswordResetService {
-	svc := &PasswordResetService{users: users, tokens: tokens, sessions: sessions, mailer: mailer}
+func NewPasswordResetService(users UserRepository, tokens TokenRepository, sessions SessionRepository, mailer EmailSender, urls *EmailURLBuilder, rateLimiters ...RateLimiter) *PasswordResetService {
+	svc := &PasswordResetService{users: users, tokens: tokens, sessions: sessions, mailer: mailer, urls: urls}
 	if len(rateLimiters) > 0 {
 		svc.rl = rateLimiters[0]
 	}
@@ -65,9 +66,9 @@ func (s *PasswordResetService) ForgotPassword(ctx context.Context, clientID, ema
 		if err != nil {
 			log.Printf("create reset token error: %v", err)
 		} else {
-			resetURL := baseURL + "/reset-password.html?token=" + token
+			resetURL := s.urls.ResetPasswordURL(ctx, clientID, token)
 			go func() {
-				if err := s.mailer.SendPasswordReset(user.Email, user.DisplayName, resetURL); err != nil {
+				if err := s.mailer.SendPasswordReset(context.Background(), clientID, user.Email, user.DisplayName, resetURL); err != nil {
 					log.Printf("send password reset email error: %v", err)
 				}
 			}()

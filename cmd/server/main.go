@@ -78,6 +78,7 @@ func main() {
 
 	// Repositories
 	clientRepo := postgres.NewClientRepo(db)
+	emailConfigRepo := postgres.NewClientEmailConfigRepo(db)
 	userRepo := postgres.NewUserRepo(db)
 	sessionRepo := postgres.NewSessionRepo(db)
 	oauthRepo := postgres.NewOAuthRepo(db)
@@ -133,22 +134,32 @@ func main() {
 		)
 	}
 
-	// Email client
-	var mailer application.EmailSender
-	resendClient := email.NewResendClient(cfg.ResendAPIKey, cfg.EmailFrom)
-	if resendClient != nil {
-		mailer = resendClient
+	// Email client — hybrid: per-client overrides on top of a global Resend fallback.
+	// The router resolves the right transport per request based on client_email_configs.
+	var emailCrypto *email.SecretCrypto
+	if cfg.EmailConfigKMSKey != "" {
+		c, err := email.NewSecretCrypto(cfg.EmailConfigKMSKey)
+		if err != nil {
+			log.Fatalf("email crypto: %v", err)
+		}
+		emailCrypto = c
 	} else {
-		log.Printf("WARNING: RESEND_API_KEY not set, email sending disabled")
+		log.Printf("WARNING: EMAIL_CONFIG_KMS_KEY not set; per-client email overrides disabled (fallback transport only)")
 	}
+	var mailer application.EmailSender = email.NewRouterMailer(emailConfigRepo, emailCrypto, cfg.ResendAPIKey, cfg.EmailFrom, cfg.EmailReplyTo)
+	if cfg.ResendAPIKey == "" {
+		log.Printf("WARNING: RESEND_API_KEY not set; clients without per-client email config will fail to deliver mail")
+	}
+	emailURLBuilder := application.NewEmailURLBuilder(emailConfigRepo, cfg.BaseURL)
 
 	// Application services
 	clientSvc := application.NewClientService(clientRepo)
+	emailConfigSvc := application.NewClientEmailConfigService(clientRepo, emailConfigRepo, emailCrypto)
 	adminSvc := application.NewAdminService(adminRepo, auditRepo, rl, cfg.AdminTokenSecret, cfg.AdminAccessTTL)
 	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditEvents, rl)
-	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer)
-	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer, rl)
-	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, auditEvents, rl)
+	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer, emailURLBuilder)
+	resetSvc := application.NewPasswordResetService(userRepo, tokenRepo, sessionRepo, mailer, emailURLBuilder, rl)
+	magicSvc := application.NewMagicLinkService(clientRepo, userRepo, sessionRepo, rdb, mailer, emailURLBuilder, auditEvents, rl)
 	totpSvc := application.NewTOTPService(userRepo, sessionRepo, rdb, auditEvents, recoveryCodeRepo)
 	oauthSvc := application.NewOAuthService(userRepo, clientRepo, oauthRepo, sessionRepo, rdb, auditEvents)
 	auditSvc := application.NewAuditService(auditRepo)
@@ -169,7 +180,7 @@ func main() {
 	oidcSvc := application.NewOIDCService(clientRepo, userRepo, sessionRepo, rdb, auditEvents)
 
 	// Wire signup email hook
-	verifySvc.WireSignupHook(cfg.BaseURL)
+	verifySvc.WireSignupHook()
 
 	// OAuth providers
 	oauthProviders := application.BuildOAuthProviders(application.OAuthConfig{
@@ -214,7 +225,7 @@ func main() {
 	// Router
 	router := rest.NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, adminSvc, clientSvc, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
+		oauthSvc, passkeySvc, adminSvc, clientSvc, emailConfigSvc, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
 		enterpriseOnboardingSvc, oidcSvc,
 		oauthProviders, handlerCfg,
 		cfg.AdminAPIKey, cfg.ServeFrontend, cfg.PublicDir,

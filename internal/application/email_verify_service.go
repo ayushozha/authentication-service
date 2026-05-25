@@ -12,17 +12,18 @@ type EmailVerifyService struct {
 	users  UserRepository
 	tokens TokenRepository
 	mailer EmailSender
+	urls   *EmailURLBuilder
 }
 
-func NewEmailVerifyService(users UserRepository, tokens TokenRepository, mailer EmailSender) *EmailVerifyService {
-	return &EmailVerifyService{users: users, tokens: tokens, mailer: mailer}
+func NewEmailVerifyService(users UserRepository, tokens TokenRepository, mailer EmailSender, urls *EmailURLBuilder) *EmailVerifyService {
+	return &EmailVerifyService{users: users, tokens: tokens, mailer: mailer, urls: urls}
 }
 
-func (s *EmailVerifyService) WireSignupHook(baseURL string) {
+func (s *EmailVerifyService) WireSignupHook() {
 	if s.mailer == nil {
 		return
 	}
-	OnSignup = func(userID, email, displayName string) {
+	OnSignup = func(clientID, userID, email, displayName string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		token, err := s.tokens.Create(ctx, userID, "email_verify", 24*time.Hour)
@@ -30,9 +31,9 @@ func (s *EmailVerifyService) WireSignupHook(baseURL string) {
 			log.Printf("create verify token on signup error: %v", err)
 			return
 		}
-		verifyURL := baseURL + "/verify-email.html?token=" + token
+		verifyURL := s.urls.VerifyEmailURL(ctx, clientID, token)
 		go func() {
-			if err := s.mailer.SendVerifyEmail(email, displayName, verifyURL); err != nil {
+			if err := s.mailer.SendVerifyEmail(context.Background(), clientID, email, displayName, verifyURL); err != nil {
 				log.Printf("send verify email error: %v", err)
 			}
 		}()
@@ -65,9 +66,9 @@ func (s *EmailVerifyService) ResendVerification(ctx context.Context, userID, bas
 	if err != nil {
 		return err
 	}
-	verifyURL := baseURL + "/verify-email.html?token=" + token
+	verifyURL := s.urls.VerifyEmailURL(ctx, user.ClientID, token)
 	go func() {
-		if err := s.mailer.SendVerifyEmail(user.Email, user.DisplayName, verifyURL); err != nil {
+		if err := s.mailer.SendVerifyEmail(context.Background(), user.ClientID, user.Email, user.DisplayName, verifyURL); err != nil {
 			log.Printf("send verify email error: %v", err)
 		}
 	}()

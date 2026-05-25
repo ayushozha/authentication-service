@@ -184,8 +184,15 @@ type RateLimiter interface {
 }
 
 type EmailSender interface {
-	Send(to, subject, htmlBody string) error
-	SendVerifyEmail(to, displayName, verifyURL string) error
-	SendPasswordReset(to, displayName, resetURL string) error
-	SendMagicLink(to, magicURL string) error
+	Send(ctx context.Context, clientID, to, subject, htmlBody string) error
+	SendVerifyEmail(ctx context.Context, clientID, to, displayName, verifyURL string) error
+	SendPasswordReset(ctx context.Context, clientID, to, displayName, resetURL string) error
+	SendMagicLink(ctx context.Context, clientID, to, magicURL string) error
+}
+
+// EmailConfigRepository stores per-client email transport overrides.
+type EmailConfigRepository interface {
+	Get(ctx context.Context, clientID string) (*domain.ClientEmailConfig, error)
+	Upsert(ctx context.Context, cfg *domain.ClientEmailConfig) error
+	Delete(ctx context.Context, clientID string) error
 }

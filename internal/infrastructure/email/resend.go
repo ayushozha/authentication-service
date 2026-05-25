@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
 	"net/http"
 	"time"
 )
@@ -17,16 +16,21 @@ var emailTemplatesFS embed.FS
 
 var emailTemplates = template.Must(template.ParseFS(emailTemplatesFS, "templates/*.html"))
 
-type ResendClient struct {
-	apiKey string
-	from   string
+// resendTransport is the low-level Resend HTTP client. Each call site that
+// resolves a different (apiKey, from) pair gets its own transport — they're
+// cheap (no connection state of consequence) and held by the RouterMailer
+// for short-lived dispatch.
+type resendTransport struct {
+	apiKey  string
+	from    string
+	replyTo string
 }
 
-func NewResendClient(apiKey, from string) *ResendClient {
-	if apiKey == "" {
+func newResendTransport(apiKey, from, replyTo string) *resendTransport {
+	if apiKey == "" || from == "" {
 		return nil
 	}
-	return &ResendClient{apiKey: apiKey, from: from}
+	return &resendTransport{apiKey: apiKey, from: from, replyTo: replyTo}
 }
 
 type resendRequest struct {
@@ -34,14 +38,16 @@ type resendRequest struct {
 	To      []string `json:"to"`
 	Subject string   `json:"subject"`
 	HTML    string   `json:"html"`
+	ReplyTo string   `json:"reply_to,omitempty"`
 }
 
-func (e *ResendClient) Send(to, subject, htmlBody string) error {
+func (e *resendTransport) Send(to, subject, htmlBody string) error {
 	payload, err := json.Marshal(resendRequest{
 		From:    e.from,
 		To:      []string{to},
 		Subject: subject,
 		HTML:    htmlBody,
+		ReplyTo: e.replyTo,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal email: %w", err)
@@ -69,7 +75,7 @@ func (e *ResendClient) Send(to, subject, htmlBody string) error {
 	return nil
 }
 
-func (e *ResendClient) SendVerifyEmail(to, displayName, verifyURL string) error {
+func (e *resendTransport) SendVerifyEmail(to, displayName, verifyURL string) error {
 	var buf bytes.Buffer
 	if err := emailTemplates.ExecuteTemplate(&buf, "verify_email.html", map[string]string{
 		"DisplayName": displayName,
@@ -80,7 +86,7 @@ func (e *ResendClient) SendVerifyEmail(to, displayName, verifyURL string) error 
 	return e.Send(to, "Verify your email", buf.String())
 }
 
-func (e *ResendClient) SendPasswordReset(to, displayName, resetURL string) error {
+func (e *resendTransport) SendPasswordReset(to, displayName, resetURL string) error {
 	var buf bytes.Buffer
 	if err := emailTemplates.ExecuteTemplate(&buf, "password_reset.html", map[string]string{
 		"DisplayName": displayName,
@@ -91,7 +97,7 @@ func (e *ResendClient) SendPasswordReset(to, displayName, resetURL string) error
 	return e.Send(to, "Reset your password", buf.String())
 }
 
-func (e *ResendClient) SendMagicLink(to, magicURL string) error {
+func (e *resendTransport) SendMagicLink(to, magicURL string) error {
 	var buf bytes.Buffer
 	if err := emailTemplates.ExecuteTemplate(&buf, "magic_link.html", map[string]string{
 		"MagicURL": magicURL,
@@ -99,28 +105,4 @@ func (e *ResendClient) SendMagicLink(to, magicURL string) error {
 		return fmt.Errorf("render magic link template: %w", err)
 	}
 	return e.Send(to, "Sign in to your account", buf.String())
-}
-
-func (e *ResendClient) SendVerifyEmailAsync(to, displayName, verifyURL string) {
-	go func() {
-		if err := e.SendVerifyEmail(to, displayName, verifyURL); err != nil {
-			log.Printf("send verify email error: %v", err)
-		}
-	}()
-}
-
-func (e *ResendClient) SendPasswordResetAsync(to, displayName, resetURL string) {
-	go func() {
-		if err := e.SendPasswordReset(to, displayName, resetURL); err != nil {
-			log.Printf("send password reset email error: %v", err)
-		}
-	}()
-}
-
-func (e *ResendClient) SendMagicLinkAsync(to, magicURL string) {
-	go func() {
-		if err := e.SendMagicLink(to, magicURL); err != nil {
-			log.Printf("send magic link email error: %v", err)
-		}
-	}()
 }

@@ -104,9 +104,10 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	clientSvc := application.NewClientService(clients)
 	adminSvc := application.NewAdminService(adminRepo, audit, rl, e2eAdminKey, time.Hour)
 	authSvc := application.NewAuthService(users, sessions, cache, audit, rl)
-	verifySvc := application.NewEmailVerifyService(users, tokens, mailer)
-	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer, rl)
-	magicSvc := application.NewMagicLinkService(clients, users, sessions, cache, mailer, audit, rl)
+	urls := application.NewEmailURLBuilder(nil, "https://auth.example.com")
+	verifySvc := application.NewEmailVerifyService(users, tokens, mailer, urls)
+	resetSvc := application.NewPasswordResetService(users, tokens, sessions, mailer, urls, rl)
+	magicSvc := application.NewMagicLinkService(clients, users, sessions, cache, mailer, urls, audit, rl)
 	totpSvc := application.NewTOTPService(users, sessions, cache, audit, recoveryCodes)
 	oauthSvc := application.NewOAuthService(users, clients, oauthRepo, sessions, cache, audit)
 	auditSvc := application.NewAuditService(audit)
@@ -131,7 +132,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 		t.Fatalf("new passkey service: %v", err)
 	}
 
-	verifySvc.WireSignupHook("https://auth.example.com")
+	verifySvc.WireSignupHook()
 	application.SetSigningKeyRepository(&signingKeyRepoRouteStub{})
 	t.Cleanup(func() {
 		application.OnSignup = nil
@@ -150,7 +151,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	}
 	router := NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, adminSvc, clientSvc, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
+		oauthSvc, passkeySvc, adminSvc, clientSvc, nil, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
 		nil, oidcSvc,
 		opts.oauthProviders, cfg,
 		e2eAdminKey, false, "",
@@ -3412,20 +3413,22 @@ type recordingMailer struct {
 	magicURLs         []string
 }
 
-func (m *recordingMailer) Send(to, subject, htmlBody string) error { return nil }
-func (m *recordingMailer) SendVerifyEmail(to, displayName, verifyURL string) error {
+func (m *recordingMailer) Send(ctx context.Context, clientID, to, subject, htmlBody string) error {
+	return nil
+}
+func (m *recordingMailer) SendVerifyEmail(ctx context.Context, clientID, to, displayName, verifyURL string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.verifyURLs = append(m.verifyURLs, verifyURL)
 	return nil
 }
-func (m *recordingMailer) SendPasswordReset(to, displayName, resetURL string) error {
+func (m *recordingMailer) SendPasswordReset(ctx context.Context, clientID, to, displayName, resetURL string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.passwordResetURLs = append(m.passwordResetURLs, resetURL)
 	return nil
 }
-func (m *recordingMailer) SendMagicLink(to, magicURL string) error {
+func (m *recordingMailer) SendMagicLink(ctx context.Context, clientID, to, magicURL string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.magicURLs = append(m.magicURLs, magicURL)

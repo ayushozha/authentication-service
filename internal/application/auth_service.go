@@ -185,7 +185,7 @@ type PasswordPolicy struct {
 
 // OnSignup is called after successful signup to send verification email.
 // Set this from outside (e.g., from the email verify service).
-var OnSignup func(userID, email, displayName string)
+var OnSignup func(clientID, userID, email, displayName string)
 var signingKeys SigningKeyRepository
 var passwordPolicy = DefaultPasswordPolicy()
 var blockedSignupEmailDomains = DefaultBlockedSignupEmailDomains()
@@ -447,7 +447,7 @@ func (s *AuthService) Signup(ctx context.Context, client *domain.Client, req Sig
 	s.audit.Log(ctx, client.ID, &uid, "signup", ip, ua, map[string]interface{}{"method": "email"})
 
 	if OnSignup != nil {
-		OnSignup(user.ID, user.Email, user.DisplayName)
+		OnSignup(client.ID, user.ID, user.Email, user.DisplayName)
 	}
 
 	accessToken, err := CreateAccessToken(ctx, client, accessTTL, user)
