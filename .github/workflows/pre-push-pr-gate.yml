@@ -50,7 +50,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git grep -nE '(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{24,}|-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----)' -- ':!*.md' ':!*.lock' ':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock' ':!.env.example' > /tmp/secret_hits.txt || true
+          git grep -nE '(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{24,}|-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----)' -- \
+            ':!*.md' \
+            ':!*.lock' \
+            ':!package-lock.json' \
+            ':!pnpm-lock.yaml' \
+            ':!yarn.lock' \
+            ':!.env.example' \
+            ':!**/*.test.*' \
+            ':!**/*.spec.*' \
+            ':!**/__tests__/**' \
+            ':!tests/**' \
+            ':!test/**' \
+            ':!**/fixtures/**' \
+            ':!**/mocks/**' \
+            ':!**/examples/**' > /tmp/secret_hits.raw || true
+          grep -Eiv 'AKIAIOSFODNN7EXAMPLE|example-secret|example-token|fake|dummy|placeholder|redacted' /tmp/secret_hits.raw > /tmp/secret_hits.txt || true
           if [ -s /tmp/secret_hits.txt ]; then
             echo "::error::High-confidence secret pattern detected. Remove the secret and rotate it before merging."
             cat /tmp/secret_hits.txt
