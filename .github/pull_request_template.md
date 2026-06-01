@@ -1,4 +1,4 @@
-﻿## What and Why
+## What and Why
 
 ## Changes
 

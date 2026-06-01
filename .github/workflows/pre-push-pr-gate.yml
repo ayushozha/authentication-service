@@ -1,4 +1,4 @@
-﻿name: Pre-push Orchestrator Gate
+name: Pre-push Orchestrator Gate
 
 on:
   pull_request:
@@ -38,7 +38,7 @@ jobs:
               "Testing",
               "Size and Notes",
             ];
-            const missing = required.filter((section) => !new RegExp(`^##\\s+${section}\\b`, "im").test(body));
+            const missing = required.filter((section) => !new RegExp(`^##\s+${section}\b`, "im").test(body));
             const testing = body.match(/^##\s+Testing\b([\s\S]*?)(?=^##\s+|\s*$)/im)?.[1] || "";
             const weakTesting = !testing.trim() || /TODO|TBD|not tested|^\s*n\/?a\s*$/im.test(testing.trim());
             const issues = [];
