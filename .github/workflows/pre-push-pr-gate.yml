@@ -1,0 +1,71 @@
+﻿name: Pre-push Orchestrator Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    name: Pre-push Orchestrator Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR packet
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
+            const required = [
+              "What and Why",
+              "Changes",
+              "Reviews and Follow-up",
+              "Files Changed",
+              "Scope and Non-scope",
+              "Validation",
+              "Testing",
+              "Size and Notes",
+            ];
+            const missing = required.filter((section) => !new RegExp(`^##\\s+${section}\\b`, "im").test(body));
+            const testing = body.match(/^##\s+Testing\b([\s\S]*?)(?=^##\s+|\s*$)/im)?.[1] || "";
+            const weakTesting = !testing.trim() || /TODO|TBD|not tested|^\s*n\/?a\s*$/im.test(testing.trim());
+            const issues = [];
+            if (missing.length) issues.push(`Missing PR sections: ${missing.join(", ")}`);
+            if (weakTesting) issues.push("Testing must include concrete commands, logs, screenshots, or an explicit risk-based reason.");
+            if (issues.length) core.setFailed(issues.join("\n"));
+
+      - name: Scan for high-confidence secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          git grep -nE '(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{24,}|-----BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY-----)' -- ':!*.md' ':!*.lock' ':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock' ':!.env.example' > /tmp/secret_hits.txt || true
+          if [ -s /tmp/secret_hits.txt ]; then
+            echo "::error::High-confidence secret pattern detected. Remove the secret and rotate it before merging."
+            cat /tmp/secret_hits.txt
+            exit 1
+          fi
+
+      - name: Check changed size
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --numstat "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > /tmp/pr_numstat.txt || true
+          total=$(awk '{add += $1; del += $2} END {print add + del + 0}' /tmp/pr_numstat.txt)
+          echo "Changed lines: ${total}"
+          if [ "${total}" -gt 2000 ]; then
+            echo "::error::PR exceeds 2000 changed lines. Split it or document an explicit size exception in Size and Notes."
+            exit 1
+          fi
