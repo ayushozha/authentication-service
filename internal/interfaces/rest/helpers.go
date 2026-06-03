@@ -27,6 +27,11 @@ type errorPayload struct {
 type authErrorDefinition struct {
 	UserMessage string
 	Retryable   bool
+	// UseUpstreamMessage surfaces the upstream `message` verbatim as the
+	// user-facing message. Only set this for codes whose upstream messages are
+	// authored to be shown to end users (e.g. password-policy violations);
+	// never for buckets that can contain raw internal errors.
+	UseUpstreamMessage bool
 }
 
 var authErrorDefinitions = map[string]authErrorDefinition{
@@ -35,7 +40,10 @@ var authErrorDefinitions = map[string]authErrorDefinition{
 	"AUTH_PASSWORD_REQUIRED":          {UserMessage: "Enter your password."},
 	"AUTH_EMAIL_PASSWORD_REQUIRED":    {UserMessage: "Enter your email and password."},
 	"AUTH_INVALID_EMAIL":              {UserMessage: "Enter a valid email address."},
+	"AUTH_EMAIL_EXISTS":               {UserMessage: "That email is already registered. Try signing in instead."},
+	"AUTH_EMAIL_DOMAIN_BLOCKED":       {UserMessage: "Sign-ups from that email domain aren't allowed."},
 	"AUTH_PASSWORD_TOO_SHORT":         {UserMessage: "Use at least 8 characters for your password."},
+	"AUTH_PASSWORD_REQUIREMENTS":      {UserMessage: "Choose a stronger password.", UseUpstreamMessage: true},
 	"AUTH_INVALID_CREDENTIALS":        {UserMessage: "The email or password is incorrect."},
 	"AUTH_ACCOUNT_LOCKED":             {UserMessage: "This account is locked. Check your email for next steps."},
 	"AUTH_ACCOUNT_DISABLED":           {UserMessage: "This account cannot sign in right now."},
@@ -86,12 +94,18 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 		message = code
 	}
 	authCode, definition := normalizeAuthError(status, code, message)
+	userMessage := definition.UserMessage
+	if definition.UseUpstreamMessage {
+		if trimmed := strings.TrimSpace(message); trimmed != "" {
+			userMessage = trimmed
+		}
+	}
 	payload := errorPayload{
 		Error:       message,
 		Code:        code,
 		Message:     message,
 		AuthCode:    authCode,
-		UserMessage: definition.UserMessage,
+		UserMessage: userMessage,
 		Retryable:   definition.Retryable,
 	}
 	if r != nil {
@@ -129,6 +143,8 @@ func canonicalAuthCode(status int, code, message string) string {
 		return "AUTH_EMAIL_PASSWORD_REQUIRED"
 	case "invalid_email":
 		return "AUTH_INVALID_EMAIL"
+	case "duplicate_email", "email_exists", "email_already_registered", "email_taken":
+		return "AUTH_EMAIL_EXISTS"
 	case "weak_password", "password_too_short":
 		return "AUTH_PASSWORD_TOO_SHORT"
 	case "invalid_credentials", "wrong_password", "user_not_found":
@@ -184,6 +200,23 @@ func canonicalAuthCode(status int, code, message string) string {
 		return "AUTH_INVALID_CREDENTIALS"
 	case strings.Contains(lowerMessage, "invalid email"):
 		return "AUTH_INVALID_EMAIL"
+	case strings.Contains(lowerMessage, "already registered"):
+		return "AUTH_EMAIL_EXISTS"
+	case strings.Contains(lowerMessage, "email domain is not allowed"):
+		return "AUTH_EMAIL_DOMAIN_BLOCKED"
+	case strings.Contains(lowerMessage, "email is required"):
+		return "AUTH_EMAIL_REQUIRED"
+	// Password-policy rejections from signup carry their own user-facing
+	// reason ("...compromised password list", "...at least N unique
+	// characters", "...must not contain your name"). Surface them verbatim
+	// via AUTH_PASSWORD_REQUIREMENTS instead of burying them under
+	// AUTH_UNKNOWN's "Something went wrong."
+	case strings.HasPrefix(lowerMessage, "password must") || strings.Contains(lowerMessage, "compromised password"):
+		return "AUTH_PASSWORD_REQUIREMENTS"
+	// Internal signup failures share the invalid_signup bucket — keep them
+	// out of the verbatim-passthrough path so we never leak them to users.
+	case strings.Contains(lowerMessage, "internal error") || strings.Contains(lowerMessage, "could not create account"):
+		return "AUTH_SERVICE_UNAVAILABLE"
 	case strings.Contains(lowerMessage, "password") && strings.Contains(lowerMessage, "required"):
 		return "AUTH_PASSWORD_REQUIRED"
 	case strings.Contains(lowerMessage, "at least 8") || strings.Contains(lowerMessage, "password does not meet"):
