@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -176,7 +177,10 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerName, code, s
 
 	providerCfg, err := s.ResolveProviderConfig(ctx, client, providerName)
 	if err != nil {
-		return nil, "", "", "", fmt.Errorf("provider_not_configured")
+		if errors.Is(err, domain.ErrOAuthProviderNotConfigured) {
+			return nil, "", "", "", fmt.Errorf("provider_not_configured")
+		}
+		return nil, "", "", "", fmt.Errorf("resolve_config_failed: %w", err)
 	}
 
 	token, err := providerCfg.OAuth2Config.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", statePayload.CodeVerifier))

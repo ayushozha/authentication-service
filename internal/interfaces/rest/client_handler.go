@@ -351,6 +351,10 @@ func (h *ClientHandler) handleOAuthConfig(w http.ResponseWriter, r *http.Request
 		if provider == "" {
 			resp, err := h.oauthConfig.List(ctx, clientID)
 			if err != nil {
+				if errors.Is(err, domain.ErrNotFound) {
+					writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+					return
+				}
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 				return
 			}
