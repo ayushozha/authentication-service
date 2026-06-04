@@ -15,14 +15,15 @@ import (
 type ClientHandler struct {
 	svc         *application.ClientService
 	emailConfig *application.ClientEmailConfigService
+	oauthConfig *application.ClientOAuthConfigService
 	adaptive    *application.AdaptiveSecurityService
 	m2m         *M2MHandler
 	sso         *EnterpriseSSOHandler
 	scim        *SCIMHandler
 }
 
-func NewClientHandler(svc *application.ClientService, emailConfig *application.ClientEmailConfigService, adaptive *application.AdaptiveSecurityService, m2m *M2MHandler, sso *EnterpriseSSOHandler, scim *SCIMHandler) *ClientHandler {
-	return &ClientHandler{svc: svc, emailConfig: emailConfig, adaptive: adaptive, m2m: m2m, sso: sso, scim: scim}
+func NewClientHandler(svc *application.ClientService, emailConfig *application.ClientEmailConfigService, oauthConfig *application.ClientOAuthConfigService, adaptive *application.AdaptiveSecurityService, m2m *M2MHandler, sso *EnterpriseSSOHandler, scim *SCIMHandler) *ClientHandler {
+	return &ClientHandler{svc: svc, emailConfig: emailConfig, oauthConfig: oauthConfig, adaptive: adaptive, m2m: m2m, sso: sso, scim: scim}
 }
 
 func (h *ClientHandler) RegisterRoutes(mux *http.ServeMux, adminMw func(http.Handler) http.Handler) {
@@ -105,6 +106,17 @@ func (h *ClientHandler) handleClientByID(w http.ResponseWriter, r *http.Request)
 	}
 	if len(parts) == 6 && parts[5] == "email-config" {
 		h.handleEmailConfig(w, r, ctx, clientID)
+		return
+	}
+	if len(parts) >= 6 && parts[5] == "oauth-config" {
+		provider := ""
+		if len(parts) == 7 {
+			provider = parts[6]
+		} else if len(parts) > 7 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		h.handleOAuthConfig(w, r, ctx, clientID, provider)
 		return
 	}
 	if len(parts) >= 6 && parts[5] == "service-accounts" {
@@ -326,6 +338,105 @@ func safeEmailConfigMetadata(cfg *application.EmailConfigResponse) map[string]in
 		"reset_password_url_template": cfg.ResetPasswordURLTemplate,
 		"verify_email_url_template":   cfg.VerifyEmailURLTemplate,
 		"magic_link_url_template":     cfg.MagicLinkURLTemplate,
+	}
+}
+
+func (h *ClientHandler) handleOAuthConfig(w http.ResponseWriter, r *http.Request, ctx context.Context, clientID, provider string) {
+	if h.oauthConfig == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "oauth config service not available"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if provider == "" {
+			resp, err := h.oauthConfig.List(ctx, clientID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"providers": resp})
+			return
+		}
+		resp, err := h.oauthConfig.Get(ctx, clientID, provider)
+		if err != nil {
+			if errors.Is(err, domain.ErrInvalidOAuthConfig) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if errors.Is(err, domain.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "oauth config not set"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPut, http.MethodPost, http.MethodPatch:
+		if provider == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider is required"})
+			return
+		}
+		var req application.SetOAuthConfigRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		before, _ := h.oauthConfig.Get(ctx, clientID, provider)
+		SetAdminAuditBefore(r, safeOAuthConfigMetadata(before))
+		resp, err := h.oauthConfig.Set(ctx, clientID, provider, req)
+		if err != nil {
+			if errors.Is(err, domain.ErrInvalidOAuthConfig) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if errors.Is(err, domain.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		SetAdminAuditTarget(r, "client_oauth_config", clientID, provider)
+		SetAdminAuditAfter(r, safeOAuthConfigMetadata(resp))
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodDelete:
+		if provider == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider is required"})
+			return
+		}
+		before, _ := h.oauthConfig.Get(ctx, clientID, provider)
+		SetAdminAuditBefore(r, safeOAuthConfigMetadata(before))
+		if err := h.oauthConfig.Delete(ctx, clientID, provider); err != nil {
+			if errors.Is(err, domain.ErrInvalidOAuthConfig) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if errors.Is(err, domain.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		SetAdminAuditTarget(r, "client_oauth_config", clientID, provider)
+		SetAdminAuditAfter(r, map[string]interface{}{"deleted": true, "provider": provider})
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func safeOAuthConfigMetadata(cfg *application.OAuthConfigResponse) map[string]interface{} {
+	if cfg == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"provider":         cfg.Provider,
+		"oauth_client_id":  cfg.OAuthClientID,
+		"has_secret":       cfg.HasSecret,
+		"secret_last_four": cfg.SecretLastFour,
+		"scopes":           cfg.Scopes,
+		"enabled":          cfg.Enabled,
 	}
 }
 

@@ -20,15 +20,41 @@ func NewOAuthHandler(svc *application.OAuthService, providers map[string]*applic
 	return &OAuthHandler{svc: svc, providers: providers, cfg: cfg}
 }
 
+// perClientCapableProviders always get begin/callback routes registered so a
+// client with a per-client override can use them even when no global env
+// provider is configured. Whether a given client can actually use a provider
+// is resolved per-request (per-client override → global env fallback); an
+// unconfigured provider returns oauth_provider_not_configured rather than 404.
+var perClientCapableProviders = []string{"google", "github", "microsoft"}
+
+// routeProviderNames is the deduplicated union of globally-configured providers
+// (including any custom ones) and the per-client-capable providers.
+func (h *OAuthHandler) routeProviderNames() []string {
+	seen := make(map[string]bool)
+	var names []string
+	add := func(n string) {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for name := range h.providers {
+		add(name)
+	}
+	for _, name := range perClientCapableProviders {
+		add(name)
+	}
+	return names
+}
+
 func (h *OAuthHandler) RegisterRoutes(mux *http.ServeMux) {
 	h.RegisterBeginRoutes(mux)
 	h.RegisterCallbackRoutes(mux)
 }
 
 func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
-	for name, prov := range h.providers {
+	for _, name := range h.routeProviderNames() {
 		provName := name
-		provCfg := prov
 
 		mux.HandleFunc("/api/auth/oauth/"+provName, CORSHandler(h.cfg.AllowOrigin, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
@@ -43,10 +69,14 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()
 
-			redirectURL, err := h.svc.BeginOAuth(ctx, client, provCfg, provName, r.URL.Query().Get("session_mode"))
+			redirectURL, err := h.svc.BeginOAuth(ctx, client, provName, r.URL.Query().Get("session_mode"))
 			if err != nil {
 				if err == domain.ErrRedisRequired {
 					writeError(w, r, http.StatusServiceUnavailable, "oauth_provider_unavailable", "OAuth requires Redis.")
+					return
+				}
+				if err == domain.ErrOAuthProviderNotConfigured {
+					writeError(w, r, http.StatusNotFound, "oauth_provider_not_configured", "OAuth provider is not configured for this client.")
 					return
 				}
 				writeError(w, r, http.StatusInternalServerError, "oauth_failed", "OAuth failed.")
@@ -58,9 +88,8 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 }
 
 func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
-	for name, prov := range h.providers {
+	for _, name := range h.routeProviderNames() {
 		provName := name
-		provCfg := prov
 
 		mux.HandleFunc("/api/auth/oauth/"+provName+"/callback", CORSHandler(h.cfg.AllowOrigin, func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -81,7 +110,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 
-			_, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provCfg, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+			_, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
 				redirectWithLoginAuthError(w, r, h.cfg, authCodeForOAuthCallbackError(err.Error()))
 				return

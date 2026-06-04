@@ -26,6 +26,13 @@ type OAuthService struct {
 	cache    CacheClient
 	audit    AuditRepository
 	sso      EnterpriseSSORepository
+
+	// Per-client OAuth credential overrides. When a (client, provider) row
+	// exists and is usable, it takes precedence over the global env config.
+	oauthConfigs    OAuthConfigRepository
+	secretCrypto    SecretCipher
+	baseURL         string
+	globalProviders map[string]*OAuthProviderConfig
 }
 
 func NewOAuthService(users UserRepository, clients ClientRepository, oauth OAuthRepository, sessions SessionRepository, cache CacheClient, audit AuditRepository) *OAuthService {
@@ -34,6 +41,54 @@ func NewOAuthService(users UserRepository, clients ClientRepository, oauth OAuth
 
 func (s *OAuthService) SetEnterpriseSSORepository(repo EnterpriseSSORepository) {
 	s.sso = repo
+}
+
+// SetOAuthResolution wires the env-configured fallback providers and the base
+// URL used to derive per-client callback URLs. Called by the router, which is
+// the single place that has both values, so resolution works in tests too.
+func (s *OAuthService) SetOAuthResolution(globalProviders map[string]*OAuthProviderConfig, baseURL string) {
+	s.globalProviders = globalProviders
+	s.baseURL = strings.TrimRight(baseURL, "/")
+}
+
+// SetPerClientOAuthStore wires per-client OAuth credential persistence. Without
+// it, only the global env providers are available (no per-client overrides).
+func (s *OAuthService) SetPerClientOAuthStore(configs OAuthConfigRepository, crypto SecretCipher) {
+	s.oauthConfigs = configs
+	s.secretCrypto = crypto
+}
+
+// callbackURL returns the shared callback URL for a provider, derived from
+// BASE_URL. Every per-client OAuth App must register this exact URL.
+func (s *OAuthService) callbackURL(provider string) string {
+	return s.baseURL + "/api/auth/oauth/" + provider + "/callback"
+}
+
+// ResolveProviderConfig returns the OAuth provider config to use for a given
+// client + provider. A usable per-client row wins; otherwise the global env
+// provider is used. Returns ErrOAuthProviderNotConfigured if neither exists.
+func (s *OAuthService) ResolveProviderConfig(ctx context.Context, client *domain.Client, provider string) (*OAuthProviderConfig, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if client != nil && s.oauthConfigs != nil {
+		row, err := s.oauthConfigs.Get(ctx, client.ID, provider)
+		if err != nil {
+			return nil, err
+		}
+		if row.IsUsable() {
+			if s.secretCrypto == nil {
+				return nil, fmt.Errorf("%w: oauth secret crypto not configured", domain.ErrOAuthProviderNotConfigured)
+			}
+			secret, err := s.secretCrypto.Decrypt(row.ClientSecretCiphertext, row.ClientSecretNonce)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt client secret: %w", err)
+			}
+			return BuildProviderConfig(provider, row.ClientIDPlain, secret, s.callbackURL(provider), parseScopes(row.Scopes))
+		}
+	}
+	if cfg, ok := s.globalProviders[provider]; ok && cfg != nil {
+		return cfg, nil
+	}
+	return nil, domain.ErrOAuthProviderNotConfigured
 }
 
 type OAuthProviderConfig struct {
@@ -51,9 +106,13 @@ type oauthStatePayload struct {
 	CreatedAt    int64  `json:"created_at"`
 }
 
-func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, providerCfg *OAuthProviderConfig, providerName, sessionMode string) (redirectURL string, err error) {
+func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, providerName, sessionMode string) (redirectURL string, err error) {
 	if s.cache == nil {
 		return "", domain.ErrRedisRequired
+	}
+	providerCfg, err := s.ResolveProviderConfig(ctx, client, providerName)
+	if err != nil {
+		return "", err
 	}
 	nonce, err := GenerateToken(16)
 	if err != nil {
@@ -88,7 +147,7 @@ func (s *OAuthService) BeginOAuth(ctx context.Context, client *domain.Client, pr
 	), nil
 }
 
-func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthProviderConfig, providerName, code, state, ip, ua string, accessTTL, refreshTTL time.Duration) (client *domain.Client, accessToken, refreshToken, sessionMode string, err error) {
+func (s *OAuthService) HandleCallback(ctx context.Context, providerName, code, state, ip, ua string, accessTTL, refreshTTL time.Duration) (client *domain.Client, accessToken, refreshToken, sessionMode string, err error) {
 	if s.cache == nil {
 		return nil, "", "", "", domain.ErrRedisRequired
 	}
@@ -113,6 +172,11 @@ func (s *OAuthService) HandleCallback(ctx context.Context, providerCfg *OAuthPro
 	client, err = s.clients.GetByID(ctx, statePayload.ClientID)
 	if err != nil || client == nil {
 		return nil, "", "", "", fmt.Errorf("invalid_client")
+	}
+
+	providerCfg, err := s.ResolveProviderConfig(ctx, client, providerName)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("provider_not_configured")
 	}
 
 	token, err := providerCfg.OAuth2Config.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", statePayload.CodeVerifier))
@@ -241,18 +305,7 @@ func BuildOAuthProviders(cfg OAuthConfig) map[string]*OAuthProviderConfig {
 				},
 			},
 			UserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo",
-			ParseUser: func(data []byte) (string, string, string, string, error) {
-				var u struct {
-					ID      string `json:"id"`
-					Email   string `json:"email"`
-					Name    string `json:"name"`
-					Picture string `json:"picture"`
-				}
-				if err := json.Unmarshal(data, &u); err != nil {
-					return "", "", "", "", err
-				}
-				return u.ID, u.Email, u.Name, u.Picture, nil
-			},
+			ParseUser:   parseGoogleUser,
 		}
 	}
 
@@ -269,23 +322,7 @@ func BuildOAuthProviders(cfg OAuthConfig) map[string]*OAuthProviderConfig {
 				},
 			},
 			UserInfoURL: "https://api.github.com/user",
-			ParseUser: func(data []byte) (string, string, string, string, error) {
-				var u struct {
-					ID        int    `json:"id"`
-					Email     string `json:"email"`
-					Name      string `json:"name"`
-					Login     string `json:"login"`
-					AvatarURL string `json:"avatar_url"`
-				}
-				if err := json.Unmarshal(data, &u); err != nil {
-					return "", "", "", "", err
-				}
-				name := u.Name
-				if name == "" {
-					name = u.Login
-				}
-				return fmt.Sprintf("%d", u.ID), u.Email, name, u.AvatarURL, nil
-			},
+			ParseUser:   parseGithubUser,
 		}
 	}
 
@@ -302,22 +339,7 @@ func BuildOAuthProviders(cfg OAuthConfig) map[string]*OAuthProviderConfig {
 				},
 			},
 			UserInfoURL: "https://graph.microsoft.com/v1.0/me",
-			ParseUser: func(data []byte) (string, string, string, string, error) {
-				var u struct {
-					ID          string `json:"id"`
-					Mail        string `json:"mail"`
-					DisplayName string `json:"displayName"`
-					UPN         string `json:"userPrincipalName"`
-				}
-				if err := json.Unmarshal(data, &u); err != nil {
-					return "", "", "", "", err
-				}
-				e := u.Mail
-				if e == "" {
-					e = u.UPN
-				}
-				return u.ID, e, u.DisplayName, "", nil
-			},
+			ParseUser:   parseMicrosoftUser,
 		}
 	}
 
@@ -347,6 +369,109 @@ func BuildOAuthProviders(cfg OAuthConfig) map[string]*OAuthProviderConfig {
 	}
 
 	return providers
+}
+
+func parseGoogleUser(data []byte) (string, string, string, string, error) {
+	var u struct {
+		ID      string `json:"id"`
+		Email   string `json:"email"`
+		Name    string `json:"name"`
+		Picture string `json:"picture"`
+	}
+	if err := json.Unmarshal(data, &u); err != nil {
+		return "", "", "", "", err
+	}
+	return u.ID, u.Email, u.Name, u.Picture, nil
+}
+
+func parseGithubUser(data []byte) (string, string, string, string, error) {
+	var u struct {
+		ID        int    `json:"id"`
+		Email     string `json:"email"`
+		Name      string `json:"name"`
+		Login     string `json:"login"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err := json.Unmarshal(data, &u); err != nil {
+		return "", "", "", "", err
+	}
+	name := u.Name
+	if name == "" {
+		name = u.Login
+	}
+	return fmt.Sprintf("%d", u.ID), u.Email, name, u.AvatarURL, nil
+}
+
+func parseMicrosoftUser(data []byte) (string, string, string, string, error) {
+	var u struct {
+		ID          string `json:"id"`
+		Mail        string `json:"mail"`
+		DisplayName string `json:"displayName"`
+		UPN         string `json:"userPrincipalName"`
+	}
+	if err := json.Unmarshal(data, &u); err != nil {
+		return "", "", "", "", err
+	}
+	e := u.Mail
+	if e == "" {
+		e = u.UPN
+	}
+	return u.ID, e, u.DisplayName, "", nil
+}
+
+// defaultProviderScopes are the scopes used when a per-client config does not
+// override them. They match the global BuildOAuthProviders definitions.
+var defaultProviderScopes = map[string][]string{
+	"google":    {"openid", "email", "profile"},
+	"github":    {"user:email", "read:user"},
+	"microsoft": {"openid", "email", "profile", "User.Read"},
+}
+
+// BuildProviderConfig builds an OAuthProviderConfig for a single provider from
+// per-client credentials. Only github/google/microsoft are supported (Apple
+// uses a private-key flow that does not fit this model). When scopes is empty
+// the provider's default scopes are used. Microsoft uses the "common" tenant.
+func BuildProviderConfig(provider, clientID, clientSecret, redirectURL string, scopes []string) (*OAuthProviderConfig, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if len(scopes) == 0 {
+		scopes = defaultProviderScopes[provider]
+	}
+	base := &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Scopes:       scopes,
+	}
+	switch provider {
+	case "google":
+		base.Endpoint = oauth2.Endpoint{
+			AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL: "https://oauth2.googleapis.com/token",
+		}
+		return &OAuthProviderConfig{OAuth2Config: base, UserInfoURL: "https://www.googleapis.com/oauth2/v2/userinfo", ParseUser: parseGoogleUser}, nil
+	case "github":
+		base.Endpoint = oauth2.Endpoint{
+			AuthURL:  "https://github.com/login/oauth/authorize",
+			TokenURL: "https://github.com/login/oauth/access_token",
+		}
+		return &OAuthProviderConfig{OAuth2Config: base, UserInfoURL: "https://api.github.com/user", ParseUser: parseGithubUser}, nil
+	case "microsoft":
+		base.Endpoint = oauth2.Endpoint{
+			AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+			TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		}
+		return &OAuthProviderConfig{OAuth2Config: base, UserInfoURL: "https://graph.microsoft.com/v1.0/me", ParseUser: parseMicrosoftUser}, nil
+	default:
+		return nil, fmt.Errorf("%w: %s", domain.ErrOAuthProviderNotConfigured, provider)
+	}
+}
+
+// parseScopes splits a stored scopes string on whitespace or commas.
+func parseScopes(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t' || r == '\n'
+	})
+	return fields
 }
 
 func encodeOAuthState(payload oauthStatePayload) (string, error) {
