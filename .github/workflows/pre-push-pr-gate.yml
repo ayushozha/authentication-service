@@ -38,8 +38,16 @@ jobs:
               "Testing",
               "Size and Notes",
             ];
-            const missing = required.filter((section) => !new RegExp(`^##\s+${section}\b`, "im").test(body));
-            const testing = body.match(/^##\s+Testing\b([\s\S]*?)(?=^##\s+|\s*$)/im)?.[1] || "";
+            const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const missing = required.filter((section) => !new RegExp(`^##\\s+${escapeRegExp(section)}\\b`, "im").test(body));
+            const sectionBody = (section) => {
+              const heading = body.match(new RegExp(`^##\\s+${escapeRegExp(section)}\\b`, "im"));
+              if (!heading) return "";
+              const rest = body.slice(heading.index + heading[0].length);
+              const nextHeading = rest.search(/^##\s+/im);
+              return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+            };
+            const testing = sectionBody("Testing");
             const weakTesting = !testing.trim() || /TODO|TBD|not tested|^\s*n\/?a\s*$/im.test(testing.trim());
             const issues = [];
             if (missing.length) issues.push(`Missing PR sections: ${missing.join(", ")}`);
@@ -80,7 +88,22 @@ jobs:
           git diff --numstat "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > /tmp/pr_numstat.txt || true
           total=$(awk '{add += $1; del += $2} END {print add + del + 0}' /tmp/pr_numstat.txt)
           echo "Changed lines: ${total}"
-          if [ "${total}" -gt 2000 ]; then
+          size_exception=$(node <<'NODE'
+          const fs = require("fs");
+          const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+          const body = event.pull_request?.body || "";
+          const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const sectionBody = (section) => {
+            const heading = body.match(new RegExp(`^##\\s+${escapeRegExp(section)}\\b`, "im"));
+            if (!heading) return "";
+            const rest = body.slice(heading.index + heading[0].length);
+            const nextHeading = rest.search(/^##\s+/im);
+            return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+          };
+          process.stdout.write(/\bsize exception\b/i.test(sectionBody("Size and Notes")) ? "true" : "false");
+          NODE
+          )
+          if [ "${total}" -gt 2000 ] && [ "${size_exception}" != "true" ]; then
             echo "::error::PR exceeds 2000 changed lines. Split it or document an explicit size exception in Size and Notes."
             exit 1
           fi
