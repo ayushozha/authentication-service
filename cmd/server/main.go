@@ -79,6 +79,7 @@ func main() {
 	// Repositories
 	clientRepo := postgres.NewClientRepo(db)
 	emailConfigRepo := postgres.NewClientEmailConfigRepo(db)
+	oauthConfigRepo := postgres.NewClientOAuthConfigRepo(db)
 	userRepo := postgres.NewUserRepo(db)
 	sessionRepo := postgres.NewSessionRepo(db)
 	oauthRepo := postgres.NewOAuthRepo(db)
@@ -155,6 +156,7 @@ func main() {
 	// Application services
 	clientSvc := application.NewClientService(clientRepo)
 	emailConfigSvc := application.NewClientEmailConfigService(clientRepo, emailConfigRepo, emailCrypto)
+	oauthConfigSvc := application.NewClientOAuthConfigService(clientRepo, oauthConfigRepo, emailCrypto)
 	adminSvc := application.NewAdminService(adminRepo, auditRepo, rl, cfg.AdminTokenSecret, cfg.AdminAccessTTL)
 	authSvc := application.NewAuthService(userRepo, sessionRepo, rdb, auditEvents, rl)
 	verifySvc := application.NewEmailVerifyService(userRepo, tokenRepo, mailer, emailURLBuilder)
@@ -198,6 +200,12 @@ func main() {
 		AppleRedirectURL:      cfg.AppleRedirectURL,
 	})
 
+	// Per-client OAuth credential overrides: a usable (client, provider) row in
+	// client_oauth_configs wins over the global env providers above, so each
+	// project can present its own branded consent screen on a shared callback.
+	// (The global providers + base URL are wired into the service by NewRouter.)
+	oauthSvc.SetPerClientOAuthStore(oauthConfigRepo, emailCrypto)
+
 	// Passkey service (optional)
 	var passkeySvc *application.PasskeyService
 	passkeySvc, err = application.NewPasskeyService(
@@ -225,7 +233,7 @@ func main() {
 	// Router
 	router := rest.NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, adminSvc, clientSvc, emailConfigSvc, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
+		oauthSvc, passkeySvc, adminSvc, clientSvc, emailConfigSvc, oauthConfigSvc, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
 		enterpriseOnboardingSvc, oidcSvc,
 		oauthProviders, handlerCfg,
 		cfg.AdminAPIKey, cfg.ServeFrontend, cfg.PublicDir,

@@ -196,3 +196,19 @@ type EmailConfigRepository interface {
 	Upsert(ctx context.Context, cfg *domain.ClientEmailConfig) error
 	Delete(ctx context.Context, clientID string) error
 }
+
+// OAuthConfigRepository stores per-client OAuth provider credential overrides.
+type OAuthConfigRepository interface {
+	Get(ctx context.Context, clientID, provider string) (*domain.ClientOAuthConfig, error)
+	List(ctx context.Context, clientID string) ([]*domain.ClientOAuthConfig, error)
+	Upsert(ctx context.Context, cfg *domain.ClientOAuthConfig) error
+	Delete(ctx context.Context, clientID, provider string) error
+}
+
+// SecretCipher encrypts and decrypts secrets at rest. It is satisfied by the
+// AES-256-GCM cipher in the email infra package (a generic secret cipher,
+// reused here for OAuth client secrets under the same EMAIL_CONFIG_KMS_KEY).
+type SecretCipher interface {
+	Encrypt(plaintext string) (ciphertext, nonce []byte, err error)
+	Decrypt(ciphertext, nonce []byte) (string, error)
+}

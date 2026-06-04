@@ -151,7 +151,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	}
 	router := NewRouter(
 		authSvc, verifySvc, resetSvc, magicSvc, totpSvc,
-		oauthSvc, passkeySvc, adminSvc, clientSvc, nil, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
+		oauthSvc, passkeySvc, adminSvc, clientSvc, nil, nil, auditSvc, orgSvc, adaptiveSvc, m2mSvc, ssoSvc, scimSvc,
 		nil, oidcSvc,
 		opts.oauthProviders, cfg,
 		e2eAdminKey, false, "",

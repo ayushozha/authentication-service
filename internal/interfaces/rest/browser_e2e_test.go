@@ -485,7 +485,17 @@ func evalAwaitPromise(params *runtime.EvaluateParams) *runtime.EvaluateParams {
 
 func newBrowserContext(t *testing.T, chromePath string) (context.Context, context.CancelFunc) {
 	t.Helper()
-	userDataDir := t.TempDir()
+	// Use a self-managed temp dir rather than t.TempDir() for Chrome's profile.
+	// t.TempDir()'s auto-cleanup does a strict os.RemoveAll that FAILS the test
+	// if it errors — and Chrome shuts down asynchronously after cancel(), so it
+	// is often still flushing its "Default/" profile when cleanup runs, yielding
+	// "unlinkat .../Default: directory not empty". Here we clean up best-effort:
+	// wait for Chrome to release the dir, retry, and never fail the test on a
+	// lingering file (the CI runner is ephemeral anyway).
+	userDataDir, err := os.MkdirTemp("", "chrome-e2e-")
+	if err != nil {
+		t.Fatalf("create chrome user-data-dir: %v", err)
+	}
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(chromePath),
 		chromedp.UserDataDir(userDataDir),
@@ -502,6 +512,15 @@ func newBrowserContext(t *testing.T, chromePath string) (context.Context, contex
 		browserCancel()
 		allocCancel()
 	}
+	t.Cleanup(func() {
+		cancel() // idempotent; ensures Chrome is signaled to exit before removal
+		for i := 0; i < 50; i++ {
+			if err := os.RemoveAll(userDataDir); err == nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	return ctx, cancel
 }
 

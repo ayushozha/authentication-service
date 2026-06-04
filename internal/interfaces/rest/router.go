@@ -23,6 +23,7 @@ func NewRouter(
 	adminSvc *application.AdminService,
 	clientSvc *application.ClientService,
 	emailConfigSvc *application.ClientEmailConfigService,
+	oauthConfigSvc *application.ClientOAuthConfigService,
 	auditSvc *application.AuditService,
 	orgSvc *application.OrganizationService,
 	adaptiveSvc *application.AdaptiveSecurityService,
@@ -66,7 +67,8 @@ func NewRouter(
 	adaptiveHandler := NewAdaptiveSecurityHandler(adaptiveSvc, cfg)
 	adaptiveHandler.RegisterRoutes(authMux, authMw)
 
-	if oauthSvc != nil && oauthProviders != nil {
+	if oauthSvc != nil {
+		oauthSvc.SetOAuthResolution(oauthProviders, cfg.BaseURL)
 		oauthHandler := NewOAuthHandler(oauthSvc, oauthProviders, cfg)
 		oauthHandler.RegisterBeginRoutes(authMux)
 		oauthHandler.RegisterCallbackRoutes(mux)
@@ -109,7 +111,7 @@ func NewRouter(
 
 	// Admin routes (protected by admin key)
 	adaptiveHandler.RegisterAdminRoutes(mux, adminMw)
-	clientHandler := NewClientHandler(clientSvc, emailConfigSvc, adaptiveSvc, m2mHandler, ssoHandler, scimHandler)
+	clientHandler := NewClientHandler(clientSvc, emailConfigSvc, oauthConfigSvc, adaptiveSvc, m2mHandler, ssoHandler, scimHandler)
 	clientHandler.RegisterRoutes(mux, adminMw)
 	adminHandler.RegisterUserRoutes(mux, adminMw)
 	if auditSvc != nil {

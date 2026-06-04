@@ -52,4 +52,6 @@ var (
 	ErrStepUpEnrollmentRequired    = errors.New("step-up factor enrollment required")
 	ErrSecurityPolicyBlocked       = errors.New("blocked by adaptive security policy")
 	ErrInvalidEmailConfig          = errors.New("invalid email configuration")
+	ErrInvalidOAuthConfig          = errors.New("invalid oauth configuration")
+	ErrOAuthProviderNotConfigured  = errors.New("oauth provider not configured")
 )
