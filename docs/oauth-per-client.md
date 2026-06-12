@@ -73,6 +73,32 @@ redirect the browser to it. The shared callback then bounces back to
 `BASE_URL/login.html?auth_code=...`, which the SPA exchanges via
 `POST /api/auth/redirect/exchange`.
 
+## Per-client redirect override (`settings.ui.oauth_redirect_url`)
+
+External apps with their own login UI can opt out of the hosted-page hop.
+When a client's `settings.ui.oauth_redirect_url` is set AND its origin
+(scheme + host + port) matches one of the client's `allowed_origins`, the
+OAuth callback redirects to that URL with `?auth_code=<code>` appended
+(`&auth_code=` if the URL already has a query) instead of the hosted
+`login.html`. The app then exchanges the code — typically server-side — via
+`POST /api/auth/redirect/exchange` (public endpoint; codes are single-use
+with a 2-minute TTL) and stores the resulting tokens itself, e.g. as
+httpOnly cookies on its own domain.
+
+URLs that fail validation (origin not allowed, scheme other than http/https,
+fragments, relative paths) are ignored and the flow falls back to the hosted
+page. Set it via the admin API:
+
+```bash
+curl -X PATCH https://authservice.ayushojha.com/api/admin/clients/<client_id> \
+  -H "X-Admin-Key: <ADMIN_KEY>" -H "Content-Type: application/json" \
+  -d '{"settings": {"ui": {"oauth_redirect_url": "https://app.example.com/auth/callback"}}}'
+```
+
+Error redirects (state mismatch, cancelled consent, provider failure) still
+land on the hosted `login.html?error=...` — the originating client cannot be
+recovered reliably on those paths.
+
 ## Code map
 
 - `internal/infrastructure/postgres/migrations/019_create_client_oauth_configs.sql`
