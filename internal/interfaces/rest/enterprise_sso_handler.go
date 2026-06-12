@@ -122,7 +122,7 @@ func (h *EnterpriseSSOHandler) handleCallback(w http.ResponseWriter, r *http.Req
 	if !tokenMode {
 		SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
 	}
-	redirectWithAuthCode(w, r, h.cfg, resp, refreshToken, tokenMode)
+	redirectWithAuthCode(w, r, h.cfg, nil, resp, refreshToken, tokenMode)
 }
 
 func (h *EnterpriseSSOHandler) handleMetadata(w http.ResponseWriter, r *http.Request) {

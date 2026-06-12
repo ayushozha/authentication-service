@@ -41,13 +41,54 @@ func RegisterRedirectCodeRoute(mux *http.ServeMux, cfg *HandlerConfig) {
 	})))
 }
 
-func redirectWithAuthCode(w http.ResponseWriter, r *http.Request, cfg *HandlerConfig, resp *application.AuthResponse, refreshToken string, includeRefresh bool) {
+func redirectWithAuthCode(w http.ResponseWriter, r *http.Request, cfg *HandlerConfig, client *domain.Client, resp *application.AuthResponse, refreshToken string, includeRefresh bool) {
 	code, err := issueRedirectAuthCode(r.Context(), cfg, resp, refreshToken, includeRefresh)
 	if err != nil {
 		redirectWithLoginAuthError(w, r, cfg, "AUTH_SERVICE_UNAVAILABLE")
 		return
 	}
-	http.Redirect(w, r, strings.TrimRight(cfg.BaseURL, "/")+"/login.html?auth_code="+url.QueryEscape(code), http.StatusFound)
+	target := strings.TrimRight(cfg.BaseURL, "/") + "/login.html"
+	if override := clientOAuthRedirectURL(client); override != "" {
+		target = override
+	}
+	separator := "?"
+	if strings.Contains(target, "?") {
+		separator = "&"
+	}
+	http.Redirect(w, r, target+separator+"auth_code="+url.QueryEscape(code), http.StatusFound)
+}
+
+// clientOAuthRedirectURL returns the client's opt-in post-OAuth redirect
+// target (settings.ui.oauth_redirect_url). The URL is only honored when its
+// origin matches one of the client's allowed origins, so a tampered or
+// misconfigured setting can never send auth codes to a foreign origin.
+func clientOAuthRedirectURL(client *domain.Client) string {
+	if client == nil || client.Settings == nil {
+		return ""
+	}
+	ui, ok := client.Settings["ui"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	raw, _ := ui["oauth_redirect_url"].(string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Fragment != "" {
+		return ""
+	}
+	for _, origin := range client.AllowedOrigins {
+		allowed, err := url.Parse(strings.TrimSpace(origin))
+		if err != nil {
+			continue
+		}
+		if allowed.Scheme == parsed.Scheme && allowed.Host == parsed.Host {
+			return parsed.String()
+		}
+	}
+	return ""
 }
 
 func issueRedirectAuthCode(ctx context.Context, cfg *HandlerConfig, resp *application.AuthResponse, refreshToken string, includeRefresh bool) (string, error) {

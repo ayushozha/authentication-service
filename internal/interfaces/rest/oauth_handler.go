@@ -110,7 +110,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 
-			_, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+			client, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
 				redirectWithLoginAuthError(w, r, h.cfg, authCodeForOAuthCallbackError(err.Error()))
 				return
@@ -125,7 +125,7 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 				TokenType:   "Bearer",
 				ExpiresIn:   int(h.cfg.AccessTTL.Seconds()),
 			}
-			redirectWithAuthCode(w, r, h.cfg, resp, refreshToken, tokenMode)
+			redirectWithAuthCode(w, r, h.cfg, client, resp, refreshToken, tokenMode)
 		}))
 	}
 }
