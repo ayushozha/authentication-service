@@ -69,8 +69,17 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 			defer cancel()
 
-			redirectURL, err := h.svc.BeginOAuth(ctx, client, provName, r.URL.Query().Get("session_mode"))
+			options := application.AppOAuthOptions{
+				CodeChallenge:       r.URL.Query().Get("app_code_challenge"),
+				CodeChallengeMethod: r.URL.Query().Get("app_code_challenge_method"),
+				IdentityPolicy:      r.URL.Query().Get("identity_policy"),
+			}
+			redirectURL, err := h.svc.BeginOAuth(ctx, client, provName, r.URL.Query().Get("session_mode"), options)
 			if err != nil {
+				if err == application.ErrInvalidAppOAuthBinding {
+					writeError(w, r, http.StatusBadRequest, "invalid_app_oauth_binding", "App binding requires Google, a valid S256 challenge, and identity_policy=provider_subject.")
+					return
+				}
 				if err == domain.ErrRedisRequired {
 					writeError(w, r, http.StatusServiceUnavailable, "oauth_provider_unavailable", "OAuth requires Redis.")
 					return
@@ -81,6 +90,9 @@ func (h *OAuthHandler) RegisterBeginRoutes(mux *http.ServeMux) {
 				}
 				writeError(w, r, http.StatusInternalServerError, "oauth_failed", "OAuth failed.")
 				return
+			}
+			if options.CodeChallenge != "" {
+				w.Header().Set("X-App-Session-Binding", "S256")
 			}
 			http.Redirect(w, r, redirectURL, http.StatusFound)
 		}))
@@ -110,22 +122,28 @@ func (h *OAuthHandler) RegisterCallbackRoutes(mux *http.ServeMux) {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
 
-			client, accessToken, refreshToken, sessionMode, err := h.svc.HandleCallback(ctx, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
+			result, err := h.svc.HandleCallback(ctx, provName, code, state, clientIP(r), r.UserAgent(), h.cfg.AccessTTL, h.cfg.RefreshTTL)
 			if err != nil {
 				redirectWithLoginAuthError(w, r, h.cfg, authCodeForOAuthCallbackError(err.Error()))
 				return
 			}
 
-			tokenMode := isTokenSessionMode(r, sessionMode)
+			tokenMode := isTokenSessionMode(r, result.SessionMode)
 			if !tokenMode {
-				SetRefreshCookie(w, refreshToken, h.cfg.RefreshTTL, h.cfg)
+				SetRefreshCookie(w, result.RefreshToken, h.cfg.RefreshTTL, h.cfg)
 			}
 			resp := &application.AuthResponse{
-				AccessToken: accessToken,
-				TokenType:   "Bearer",
-				ExpiresIn:   int(h.cfg.AccessTTL.Seconds()),
+				AccessToken:     result.AccessToken,
+				TokenType:       "Bearer",
+				ExpiresIn:       int(h.cfg.AccessTTL.Seconds()),
+				IdentityPolicy:  result.IdentityPolicy,
+				Provider:        result.Provider,
+				ProviderSubject: result.ProviderSubject,
 			}
-			redirectWithAuthCode(w, r, h.cfg, client, resp, refreshToken, tokenMode)
+			if result.AppCodeChallenge != "" {
+				resp.AppSessionBinding = "S256"
+			}
+			redirectWithAuthCode(w, r, h.cfg, result.Client, resp, result.RefreshToken, tokenMode, result.AppCodeChallenge)
 		}))
 	}
 }

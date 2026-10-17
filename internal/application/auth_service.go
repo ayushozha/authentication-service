@@ -121,17 +121,21 @@ func WithOIDCAccessTokenClaims(issuer, authorizedParty string, audiences, scopes
 }
 
 type AuthResponse struct {
-	AccessToken  string       `json:"access_token,omitempty"`
-	RefreshToken string       `json:"refresh_token,omitempty"`
-	Refresh      *RefreshInfo `json:"refresh,omitempty"`
-	TokenType    string       `json:"token_type,omitempty"`
-	ExpiresIn    int          `json:"expires_in,omitempty"`
-	User         *domain.User `json:"user,omitempty"`
-	Risk         *LoginRisk   `json:"risk,omitempty"`
-	Requires2FA  bool         `json:"requires_2fa,omitempty"`
-	TwoFAToken   string       `json:"two_factor_token,omitempty"`
-	TwoFAMethods []string     `json:"two_factor_methods,omitempty"`
-	SessionMode  string       `json:"-"`
+	AppSessionBinding string       `json:"app_session_binding,omitempty"`
+	IdentityPolicy    string       `json:"identity_policy,omitempty"`
+	Provider          string       `json:"provider,omitempty"`
+	ProviderSubject   string       `json:"provider_subject,omitempty"`
+	AccessToken       string       `json:"access_token,omitempty"`
+	RefreshToken      string       `json:"refresh_token,omitempty"`
+	Refresh           *RefreshInfo `json:"refresh,omitempty"`
+	TokenType         string       `json:"token_type,omitempty"`
+	ExpiresIn         int          `json:"expires_in,omitempty"`
+	User              *domain.User `json:"user,omitempty"`
+	Risk              *LoginRisk   `json:"risk,omitempty"`
+	Requires2FA       bool         `json:"requires_2fa,omitempty"`
+	TwoFAToken        string       `json:"two_factor_token,omitempty"`
+	TwoFAMethods      []string     `json:"two_factor_methods,omitempty"`
+	SessionMode       string       `json:"-"`
 }
 
 type RefreshInfo struct {

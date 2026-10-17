@@ -93,7 +93,7 @@ func newE2EEnv(t *testing.T, opts e2eOptions) *e2eEnv {
 	adminRepo := newMemoryAdminRepo()
 	mailer := &recordingMailer{}
 	rl := newMemoryRateLimiter()
-	oauthRepo := newMemoryOAuthRepo()
+	oauthRepo := newMemoryOAuthRepo(users)
 	webauthnRepo := newMemoryWebAuthnRepo()
 	orgRepo := newMemoryOrganizationRepo()
 	deviceRepo := newMemoryDeviceRepo()
@@ -3102,6 +3102,17 @@ func (c *memoryCache) Get(ctx context.Context, key string) (string, error) {
 	return item.value, nil
 }
 
+func (c *memoryCache) GetDel(ctx context.Context, key string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	item, ok := c.items[key]
+	delete(c.items, key)
+	if !ok || time.Now().After(item.expiresAt) {
+		return "", domain.ErrNotFound
+	}
+	return item.value, nil
+}
+
 func (c *memoryCache) Del(ctx context.Context, key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -3154,6 +3165,9 @@ func (nilCache) Set(ctx context.Context, key string, value interface{}, ttl time
 	return domain.ErrRedisRequired
 }
 func (nilCache) Get(ctx context.Context, key string) (string, error) {
+	return "", domain.ErrRedisRequired
+}
+func (nilCache) GetDel(ctx context.Context, key string) (string, error) {
 	return "", domain.ErrRedisRequired
 }
 func (nilCache) Del(ctx context.Context, key string) error { return domain.ErrRedisRequired }
@@ -3471,10 +3485,26 @@ func (m *recordingMailer) waitForURL(t *testing.T, getURLs func() []string, desc
 type memoryOAuthRepo struct {
 	mu       sync.Mutex
 	accounts map[string]*domain.OAuthAccount
+	users    *memoryUserRepo
 }
 
-func newMemoryOAuthRepo() *memoryOAuthRepo {
-	return &memoryOAuthRepo{accounts: map[string]*domain.OAuthAccount{}}
+func newMemoryOAuthRepo(users *memoryUserRepo) *memoryOAuthRepo {
+	return &memoryOAuthRepo{accounts: map[string]*domain.OAuthAccount{}, users: users}
+}
+
+func (r *memoryOAuthRepo) CreateProviderSubjectAccount(ctx context.Context, clientID, provider, providerUserID, email, displayName, avatarURL, accessToken, refreshToken string, rawProfile []byte) (*domain.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := clientID + "|" + provider + "|" + providerUserID
+	if r.accounts[key] != nil {
+		return nil, fmt.Errorf("provider subject already linked")
+	}
+	user, err := r.users.CreateOAuth(ctx, clientID, email, displayName, avatarURL)
+	if err != nil {
+		return nil, err
+	}
+	r.accounts[key] = &domain.OAuthAccount{UserID: user.ID, ClientID: clientID, Provider: provider, ProviderUserID: providerUserID}
+	return user, nil
 }
 
 func (r *memoryOAuthRepo) FindByProvider(ctx context.Context, clientID, provider, providerUserID string) (*domain.OAuthAccount, error) {

@@ -50,6 +50,15 @@ func (r *Client) Get(ctx context.Context, key string) (string, error) {
 	return r.client.Get(ctx, r.key(key)).Result()
 }
 
+// GetDel atomically consumes one-time codes and OAuth state across instances.
+func (r *Client) GetDel(ctx context.Context, key string) (string, error) {
+	// Lua preserves atomic consumption without requiring Redis 6.2's GETDEL.
+	return r.client.Eval(ctx, `
+		local value = redis.call('GET', KEYS[1])
+		if value then redis.call('DEL', KEYS[1]) end
+		return value`, []string{r.key(key)}).Text()
+}
+
 func (r *Client) Del(ctx context.Context, key string) error {
 	return r.client.Del(ctx, r.key(key)).Err()
 }

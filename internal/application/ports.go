@@ -57,6 +57,12 @@ type OAuthRepository interface {
 	Link(ctx context.Context, userID, clientID, provider, providerUserID, email, accessToken, refreshToken string, rawProfile []byte) error
 }
 
+// ProviderSubjectAccountRepository creates an unseen strict provider identity
+// atomically, so a failed link cannot strand an email-owning unlinked user.
+type ProviderSubjectAccountRepository interface {
+	CreateProviderSubjectAccount(ctx context.Context, clientID, provider, providerUserID, email, displayName, avatarURL, accessToken, refreshToken string, rawProfile []byte) (*domain.User, error)
+}
+
 type WebAuthnRepository interface {
 	Save(ctx context.Context, userID string, cred *webauthn.Credential, friendlyName string) error
 	GetByUser(ctx context.Context, userID string) ([]webauthn.Credential, error)
@@ -169,6 +175,7 @@ type EnterpriseDomainVerificationRepository interface {
 type CacheClient interface {
 	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
 	Get(ctx context.Context, key string) (string, error)
+	GetDel(ctx context.Context, key string) (string, error)
 	Del(ctx context.Context, key string) error
 	Incr(ctx context.Context, key string) (int64, error)
 	Expire(ctx context.Context, key string, ttl time.Duration) error

@@ -101,6 +101,11 @@ recovered reliably on those paths.
 
 ## Code map
 
+Confidential app backends can opt into the
+[strict Google app OAuth contract](strict-app-oauth.md) for S256-bound redirect
+codes and provider-subject identity. This is an explicit per-transaction opt-in;
+the legacy contract above remains the default.
+
 - `internal/infrastructure/postgres/migrations/019_create_client_oauth_configs.sql`
 - `internal/domain/client_oauth_config.go`
 - `internal/infrastructure/postgres/client_oauth_config_repo.go`
