@@ -7,6 +7,12 @@ tokens and TTLs. It creates no new provider registration and changes no global
 session policy. Deployment and client/provider registration remain separate
 operator actions.
 
+For an auth-only rollout, temporarily set the repository variable
+`AUTH_DEPLOY_DEPENDENTS=false` before merging. The auth deployment and its health
+checks still run; dependent application restarts are skipped. Restore the prior
+variable value after the deployment completes. Leaving the variable unset
+preserves the existing dependent cascade.
+
 ## Begin and capability check
 
 The app backend generates a fresh random RFC 7636 verifier (43-128 unreserved
