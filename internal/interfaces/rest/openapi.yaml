@@ -991,6 +991,7 @@ paths:
       summary: Exchange a browser redirect auth code
       description: |
         Exchanges the short-lived one-time `auth_code` issued by OAuth, enterprise SSO, and magic-link browser redirects for an auth response. Codes are single-use and expire quickly, preventing access-token leakage through browser history, referrers, and logs.
+        Strict Google app codes additionally require the backend-held S256 `code_verifier`; missing or mismatched verifiers do not consume the code. Strict codes use a separate cache namespace so older deployments cannot exchange them without verification.
       tags: [Authentication]
       requestBody:
         required: true
@@ -1002,6 +1003,11 @@ paths:
               properties:
                 code:
                   type: string
+                code_verifier:
+                  type: string
+                  minLength: 43
+                  maxLength: 128
+                  description: Required for codes from the opt-in Google app S256 flow; omitted for legacy flows.
       responses:
         "200":
           description: Auth code exchanged
@@ -1261,6 +1267,7 @@ paths:
         Redirects the user to the OAuth provider's authorization page. After the user authorizes, they are redirected back to the callback URL.
 
         Requires Redis for PKCE state management.
+        Google confidential app backends may opt into verifier-bound redirect codes and provider-subject-only account linking by supplying all three app binding parameters together. Successful strict begins include `X-App-Session-Binding: S256`; old deployments do not advertise that capability.
       tags: [OAuth2]
       security:
         - ApiKeyAuth: []
@@ -1271,9 +1278,32 @@ paths:
           schema:
             type: string
             enum: [google, github, microsoft, apple]
+        - name: app_code_challenge
+          in: query
+          schema:
+            type: string
+          description: Google-only app S256 challenge; requires app_code_challenge_method and identity_policy.
+        - name: app_code_challenge_method
+          in: query
+          schema:
+            type: string
+            enum: [S256]
+        - name: identity_policy
+          in: query
+          schema:
+            type: string
+            enum: [provider_subject]
       responses:
         "302":
           description: Redirect to OAuth provider
+          headers:
+            X-App-Session-Binding:
+              schema:
+                type: string
+                enum: [S256]
+              description: Present only after strict app binding has been accepted and cached.
+        "400":
+          description: Incomplete or invalid app binding options.
         "503":
           description: Redis required
           content:
@@ -4319,6 +4349,20 @@ components:
     AuthResponse:
       type: object
       properties:
+        app_session_binding:
+          type: string
+          enum: [S256]
+          description: Present only for a successfully verified strict app code exchange.
+        identity_policy:
+          type: string
+          enum: [provider_subject]
+          description: No email lookup or automatic linking was used for this strict transaction.
+        provider:
+          type: string
+          enum: [google]
+        provider_subject:
+          type: string
+          description: Stable provider user ID, present only for strict app code exchange; namespace by issuer, client, and provider.
         access_token:
           type: string
           description: JWT access token (15 min TTL)

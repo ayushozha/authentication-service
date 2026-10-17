@@ -178,7 +178,8 @@ jobs:
   deploy-dependents:
     name: Deploy ${{ matrix.service.name }}
     needs: deploy-auth-service
-    if: needs.deploy-auth-service.outputs.healthy == 'true'
+    # Default preserves the existing cascade; scoped auth rollouts can opt out.
+    if: needs.deploy-auth-service.outputs.healthy == 'true' && vars.AUTH_DEPLOY_DEPENDENTS != 'false'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

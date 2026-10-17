@@ -3,13 +3,43 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"strings"
+	"time"
 
 	"github.com/Ayush10/authentication-service/internal/domain"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type OAuthRepo struct {
 	db *sql.DB
+}
+
+// CreateProviderSubjectAccount rolls back the user insert if linking fails.
+// It never queries email to select an existing identity and never upserts a link.
+func (r *OAuthRepo) CreateProviderSubjectAccount(ctx context.Context, clientID, provider, providerUserID, email, displayName, avatarURL, accessToken, refreshToken string, rawProfile []byte) (*domain.User, error) {
+	now := time.Now().UTC()
+	u := &domain.User{ID: uuid.NewString(), ClientID: clientID, Email: strings.ToLower(email), EmailVerified: true,
+		DisplayName: displayName, AvatarURL: avatarURL, Timezone: "UTC", Locale: "en", Role: "user", Status: "active", CreatedAt: now, UpdatedAt: now}
+	err := r.db.QueryRowContext(ctx, `
+		WITH created_user AS (
+			INSERT INTO users (id, client_id, email, email_verified, display_name, avatar_url)
+			VALUES ($1, $2, $3, TRUE, $4, $5) RETURNING id
+		), linked AS (
+			INSERT INTO oauth_accounts (id, user_id, client_id, provider, provider_user_id, email, access_token, refresh_token, raw_profile)
+			SELECT $6, id, $2, $7, $8, $3, $9, $10, $11 FROM created_user
+			RETURNING user_id
+		) SELECT user_id::text FROM linked`, u.ID, clientID, u.Email, displayName, avatarURL,
+		uuid.NewString(), provider, providerUserID, accessToken, refreshToken, string(rawProfile)).Scan(&u.ID)
+	if err != nil {
+		var constraint *pq.Error
+		if errors.As(err, &constraint) && constraint.Code == "23505" && constraint.Constraint == "idx_users_client_email" {
+			return nil, domain.ErrDuplicateEmail
+		}
+		return nil, err
+	}
+	return u, nil
 }
 
 func NewOAuthRepo(db *sql.DB) *OAuthRepo {
